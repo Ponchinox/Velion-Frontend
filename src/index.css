@@ -1,0 +1,99 @@
+@import '@fontsource/plus-jakarta-sans/300.css';
+@import '@fontsource/plus-jakarta-sans/400.css';
+@import '@fontsource/plus-jakarta-sans/500.css';
+@import '@fontsource/plus-jakarta-sans/600.css';
+@import '@fontsource/plus-jakarta-sans/700.css';
+@import url('https://fonts.googleapis.com/css2?family=Space+Mono&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ─────────────────────────────────────────────────────
+   Design Tokens — Commercial Light / Accessible
+───────────────────────────────────────────────────── */
+:root {
+  --c-app:          #F3F4F6;
+  --c-card:         #FFFFFF;
+  --c-panel:        #FFFFFF;
+  --c-line:         #E5E7EB;
+  --c-line-strong:  #D1D5DB;
+  --c-hi:           #111827;
+  --c-mid:          #374151;
+  --c-lo:           #6B7280;
+  --c-muted:        #9CA3AF;
+  --c-brand:        #2563EB;
+  --c-brand-hover:  #1D4ED8;
+  --c-brand-light:  #EFF6FF;
+  --c-success:      #16A34A;
+  --c-danger:       #DC2626;
+  --c-warning:      #D97706;
+
+  --sidebar-w:  18rem;
+  --topbar-h:   64px;
+  --radius:     8px;
+  --radius-sm:  6px;
+  --radius-lg:  12px;
+  --shadow-card: 0 1px 3px 0 rgb(0 0 0 / 0.07), 0 1px 2px -1px rgb(0 0 0 / 0.07);
+  --tx-fast:    120ms ease;
+  --tx-base:    200ms ease;
+}
+
+/* ─── Reset ───────────────────────────────────────── */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+html {
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  color-scheme: light;
+}
+
+body {
+  background: var(--c-app);
+  color: var(--c-hi);
+  font-family: 'Plus Jakarta Sans', sans-serif;
+  font-size: 1rem;
+  line-height: 1.6;
+  min-height: 100dvh;
+}
+
+h1, h2, h3, h4, h5, h6 {
+  font-family: 'Plus Jakarta Sans', sans-serif;
+  font-weight: 600;
+  color: var(--c-hi);
+  line-height: 1.25;
+}
+
+a {
+  color: var(--c-brand);
+  text-decoration: none;
+  transition: color var(--tx-fast);
+}
+a:hover { color: var(--c-brand-hover); }
+
+/* ─── Scrollbar ───────────────────────────────────── */
+::-webkit-scrollbar            { width: 6px; height: 6px; }
+::-webkit-scrollbar-track      { background: var(--c-app); }
+::-webkit-scrollbar-thumb      { background: var(--c-line-strong); border-radius: 9999px; }
+::-webkit-scrollbar-thumb:hover{ background: var(--c-muted); }
+
+/* ─── Focus Ring (accesibilidad) ─────────────────── */
+:focus-visible {
+  outline: 2px solid var(--c-brand);
+  outline-offset: 2px;
+  border-radius: var(--radius-sm);
+}
+
+/* ─── Selection ───────────────────────────────────── */
+::selection {
+  background: #BFDBFE;
+  color: var(--c-hi);
+}
+
+/* ─── Reduced Motion ──────────────────────────────── */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}

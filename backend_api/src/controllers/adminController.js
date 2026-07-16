@@ -1,0 +1,639 @@
+import prisma from '../db.js';
+import fs from 'fs';
+import path from 'path';
+import bcrypt from 'bcryptjs';
+
+// Claves de configuración que se gestionan en la tabla SystemConfig de PostgreSQL
+const CONFIG_KEYS = [
+  'evoUrl', 'evoApiKey', 'wahaUrl', 'wahaApiKey', 'wahaIsPrimary',
+  'geminiKey', 'groqKey', 'systemPrompt', 'smtpHost', 'smtpPort',
+  'smtpUser', 'smtpPassword', 'errorWebhook',
+];
+
+// Valores por defecto que se usan SOLO si la clave aún no existe en la BD
+const CONFIG_DEFAULTS = {
+  evoUrl:       '',
+  evoApiKey:    '',
+  wahaUrl:      '',
+  wahaApiKey:   '',
+  wahaIsPrimary:'false',
+  geminiKey:    '',
+  groqKey:      '',
+  systemPrompt: 'Eres un asistente de atención al cliente educado, eficiente y servicial.',
+  smtpHost:     '',
+  smtpPort:     '587',
+  smtpUser:     '',
+  smtpPassword: '',
+  errorWebhook: '',
+};
+
+// ==========================================
+// 1. GESTIÓN DE TENANTS (Base de datos real)
+// ==========================================
+
+export async function getTenants(req, res) {
+  try {
+    // Calcular el inicio del mes vigente para acotar el conteo de mensajes
+    const startOfMonth = new Date();
+    startOfMonth.setDate(1);
+    startOfMonth.setHours(0, 0, 0, 0);
+
+    const tenants = await prisma.tenant.findMany({
+      orderBy: { createdAt: 'desc' },
+      include: {
+        users:    { select: { email: true } },
+        chats:    { select: { id: true } },
+        messages: { where: { createdAt: { gte: startOfMonth } }, select: { id: true } },
+      },
+    });
+
+    // Mapear campos para que el frontend coincida
+    const formatted = tenants.map(t => ({
+      id:        t.id,
+      name:      t.name,
+      email:     t.users[0]?.email || 'sin-propietario@plataforma.com',
+      plan:      t.plan,
+      active:    t.active,
+      connUsed:  t.chats.length,           // Conversaciones activas como proxy de conexiones
+      msgUsed:   t.messages.length,        // Mensajes enviados en el mes vigente
+      connLimit: t.connLimit,
+      msgLimit:  t.msgLimit,
+      createdAt: t.createdAt.toLocaleDateString('es-ES', { month: 'short', year: 'numeric' })
+    }));
+
+    return res.json(formatted);
+  } catch (error) {
+    console.error('Error en getTenants:', error);
+    return res.status(500).json({ error: 'Error al obtener los inquilinos.' });
+  }
+}
+
+export async function updateTenantStatus(req, res) {
+  try {
+    const { id } = req.params;
+    const { status } = req.body; // 'active' | 'suspended'
+
+    if (!status) {
+      return res.status(400).json({ error: 'El estado es requerido.' });
+    }
+
+    const isActive = status === 'active';
+
+    const tenant = await prisma.tenant.update({
+      where: { id },
+      data: { active: isActive },
+    });
+
+    return res.json({
+      message: `El inquilino ha sido ${isActive ? 'reactivado' : 'suspendido'}.`,
+      tenant,
+    });
+  } catch (error) {
+    console.error('Error en updateTenantStatus:', error);
+    return res.status(500).json({ error: 'Error al actualizar el estado del inquilino.' });
+  }
+}
+
+export async function updateTenantLimits(req, res) {
+  try {
+    const { id } = req.params;
+    const { connLimit, msgLimit } = req.body;
+
+    if (connLimit === undefined || msgLimit === undefined) {
+      return res.status(400).json({ error: 'Faltan parámetros de límites.' });
+    }
+
+    const tenant = await prisma.tenant.update({
+      where: { id },
+      data: {
+        connLimit: Number(connLimit),
+        msgLimit: Number(msgLimit),
+      },
+    });
+
+    return res.json({
+      message: 'Límites de tenant actualizados con éxito.',
+      tenant,
+    });
+  } catch (error) {
+    console.error('Error en updateTenantLimits:', error);
+    return res.status(500).json({ error: 'Error al actualizar límites de cuotas.' });
+  }
+}
+
+export async function createTenant(req, res) {
+  try {
+    const { name, email, plan, msgLimit, connLimit } = req.body;
+
+    if (!name || !email) {
+      return res.status(400).json({ error: 'Nombre de empresa y correo del propietario son requeridos.' });
+    }
+
+    // Verificar si el correo ya existe en la BD
+    const existingUser = await prisma.user.findUnique({
+      where: { email },
+    });
+
+    if (existingUser) {
+      return res.status(400).json({ error: 'El correo electrónico ya se encuentra registrado.' });
+    }
+
+    // Determinar límites por plan si no se especificaron explícitamente
+    let finalMsgLimit = Number(msgLimit);
+    let finalConnLimit = Number(connLimit);
+
+    if (!finalMsgLimit || !finalConnLimit) {
+      if (plan === 'Pro') {
+        finalMsgLimit = finalMsgLimit || 10000;
+        finalConnLimit = finalConnLimit || 3;
+      } else if (plan === 'Elite') {
+        finalMsgLimit = finalMsgLimit || 50000;
+        finalConnLimit = finalConnLimit || 10;
+      } else {
+        finalMsgLimit = finalMsgLimit || 1000;
+        finalConnLimit = finalConnLimit || 1;
+      }
+    }
+
+    // Contraseña por defecto para el nuevo inquilino: admin123
+    const hashedPassword = await bcrypt.hash('admin123', 10);
+
+    // Transacción atómica
+    const result = await prisma.$transaction(async (tx) => {
+      // 1. Crear el Tenant
+      const tenant = await tx.tenant.create({
+        data: {
+          name,
+          plan: plan || 'Básico',
+          msgLimit: finalMsgLimit,
+          connLimit: finalConnLimit,
+          active: true,
+        },
+      });
+
+      // 2. Crear el Usuario Administrador (role client)
+      const user = await tx.user.create({
+        data: {
+          email,
+          password: hashedPassword,
+          role: 'client',
+          tenantId: tenant.id,
+        },
+      });
+
+      return { tenant, user };
+    });
+
+    // Dar formato compatible con el listado del frontend
+    const formatted = {
+      id: result.tenant.id,
+      name: result.tenant.name,
+      email: result.user.email,
+      plan: result.tenant.plan,
+      active: result.tenant.active,
+      connUsed: 0,
+      msgUsed: 0,
+      connLimit: result.tenant.connLimit,
+      msgLimit: result.tenant.msgLimit,
+      createdAt: result.tenant.createdAt.toLocaleDateString('es-ES', { month: 'short', year: 'numeric' })
+    };
+
+    return res.status(201).json(formatted);
+  } catch (error) {
+    console.error('Error en createTenant:', error);
+    return res.status(500).json({ error: 'Error interno al registrar la empresa y su propietario.' });
+  }
+}
+
+// ==========================================
+// 2. GESTIÓN DE PLANES (PostgreSQL via Prisma)
+// ==========================================
+
+export async function getPlans(req, res) {
+  try {
+    const plans = await prisma.plan.findMany({
+      where: { active: true },
+      orderBy: { createdAt: 'asc' },
+    });
+    return res.json(plans);
+  } catch (error) {
+    console.error('Error en getPlans:', error);
+    return res.status(500).json({ error: 'Error al obtener los planes comerciales.' });
+  }
+}
+
+export async function createPlan(req, res) {
+  try {
+    const planData = req.body;
+    if (!planData.name || planData.price === undefined) {
+      return res.status(400).json({ error: 'Nombre y precio son requeridos.' });
+    }
+
+    const newPlan = await prisma.plan.create({
+      data: {
+        name:        planData.name,
+        price:       Number(planData.price),
+        connLimit:   Number(planData.connLimit  || 1),
+        msgLimit:    Number(planData.msgLimit   || 1000),
+        flowBuilder: Boolean(planData.flowBuilder),
+        aiBrain:     Boolean(planData.aiBrain),
+        popular:     Boolean(planData.popular),
+        features:    planData.features || [],
+      },
+    });
+
+    return res.status(201).json(newPlan);
+  } catch (error) {
+    console.error('Error en createPlan:', error);
+    if (error.code === 'P2002') {
+      return res.status(409).json({ error: 'Ya existe un plan con ese nombre.' });
+    }
+    return res.status(500).json({ error: 'Error al crear el plan comercial.' });
+  }
+}
+
+export async function updatePlan(req, res) {
+  try {
+    const { id } = req.params;
+    const planData = req.body;
+
+    const updated = await prisma.plan.update({
+      where: { id },
+      data: {
+        name:        planData.name,
+        price:       Number(planData.price),
+        connLimit:   Number(planData.connLimit),
+        msgLimit:    Number(planData.msgLimit),
+        flowBuilder: Boolean(planData.flowBuilder),
+        aiBrain:     Boolean(planData.aiBrain),
+        popular:     Boolean(planData.popular),
+        features:    planData.features,
+      },
+    });
+
+    return res.json(updated);
+  } catch (error) {
+    console.error('Error en updatePlan:', error);
+    if (error.code === 'P2025') {
+      return res.status(404).json({ error: 'Plan no encontrado.' });
+    }
+    return res.status(500).json({ error: 'Error al modificar el plan comercial.' });
+  }
+}
+
+export async function deletePlan(req, res) {
+  try {
+    const { id } = req.params;
+    // Soft-delete: marcar como inactivo en lugar de borrar físicamente
+    const deleted = await prisma.plan.update({
+      where: { id },
+      data: { active: false },
+    });
+    return res.json({ message: 'Plan eliminado correctamente.', deleted });
+  } catch (error) {
+    console.error('Error en deletePlan:', error);
+    if (error.code === 'P2025') {
+      return res.status(404).json({ error: 'Plan no encontrado.' });
+    }
+    return res.status(500).json({ error: 'Error al eliminar el plan comercial.' });
+  }
+}
+
+// ==========================================
+// 3. CONFIGURACIÓN MAESTRO (PostgreSQL via Prisma — tabla SystemConfig)
+// ==========================================
+
+/**
+ * Lee todos los registros de SystemConfig y los convierte en un objeto { key: value }
+ * Rellena con valores por defecto las claves que no existan todavía en la BD.
+ */
+export async function getGlobalConfig(req, res) {
+  try {
+    const rows = await prisma.systemConfig.findMany();
+    const configMap = { ...CONFIG_DEFAULTS };
+    for (const row of rows) {
+      configMap[row.key] = row.value;
+    }
+    // Deserializar wahaIsPrimary y smtpPort a sus tipos nativos para el frontend
+    configMap.wahaIsPrimary = configMap.wahaIsPrimary === 'true';
+    configMap.smtpPort      = Number(configMap.smtpPort) || 587;
+    return res.json(configMap);
+  } catch (error) {
+    console.error('Error en getGlobalConfig:', error);
+    return res.status(500).json({ error: 'Error al obtener la configuración global.' });
+  }
+}
+
+/**
+ * Recibe un objeto plano con las claves de configuración y hace upsert de cada una
+ * en la tabla SystemConfig de PostgreSQL.
+ */
+export async function saveGlobalConfig(req, res) {
+  try {
+    const configData = req.body;
+
+    // Filtrar solo las claves válidas y hacer upsert de cada una
+    const upsertPromises = CONFIG_KEYS
+      .filter(key => configData[key] !== undefined)
+      .map(key =>
+        prisma.systemConfig.upsert({
+          where:  { key },
+          create: { key, value: String(configData[key]) },
+          update: { value: String(configData[key]) },
+        })
+      );
+
+    await Promise.all(upsertPromises);
+    return res.json({ message: 'Configuración global actualizada con éxito en PostgreSQL.' });
+  } catch (error) {
+    console.error('Error en saveGlobalConfig:', error);
+    return res.status(500).json({ error: 'Error al guardar la configuración global.' });
+  }
+}
+
+/**
+ * Obtiene métricas del sistema globales reales desde PostgreSQL para el Dashboard de SuperAdmin
+ */
+export async function getGlobalStats(req, res) {
+  try {
+    const totalTenants = await prisma.tenant.count();
+    const activeTenants = await prisma.tenant.count({ where: { active: true } });
+    const suspendedTenants = totalTenants - activeTenants;
+
+    const totalUsers = await prisma.user.count();
+    const totalProducts = await prisma.product.count();
+
+    const totalChats = await prisma.chat.count();
+    const totalMessages = await prisma.message.count();
+
+    return res.json({
+      tenants: {
+        total: totalTenants,
+        active: activeTenants,
+        suspended: suspendedTenants,
+      },
+      users: {
+        total: totalUsers,
+      },
+      products: {
+        total: totalProducts,
+      },
+      chats: {
+        total: totalChats,
+      },
+      messages: {
+        total: totalMessages,
+      }
+    });
+  } catch (error) {
+    console.error('Error en getGlobalStats:', error);
+    return res.status(500).json({ error: 'Error al calcular las estadísticas globales del sistema.' });
+  }
+}
+
+/**
+ * Devuelve las últimas 5 alertas del sistema para usarlas como feed de "Actividad Reciente"
+ * en el Dashboard del SuperAdmin.
+ */
+export async function getRecentActivity(req, res) {
+  try {
+    const alerts = await prisma.alert.findMany({
+      take: 5,
+      orderBy: { createdAt: 'desc' },
+      include: {
+        tenant: { select: { name: true } },
+      },
+    });
+
+    const activity = alerts.map(al => ({
+      id:     al.id,
+      action: al.type.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase()),
+      detail: al.tenant?.name ? `${al.tenant.name} — ${al.message.slice(0, 50)}` : al.message.slice(0, 60),
+      time:   al.createdAt,
+      resolved: al.resolved,
+    }));
+
+    return res.json(activity);
+  } catch (error) {
+    console.error('Error en getRecentActivity:', error);
+    return res.status(500).json({ error: 'Error al obtener la actividad reciente.' });
+  }
+}
+
+/**
+ * Hace un ping real al gateway de WhatsApp configurado (Evolution API o WAHA).
+ * Lee la URL desde SystemConfig y devuelve si responde o no.
+ */
+export async function checkGatewayHealth(req, res) {
+  const { gateway } = req.params; // 'evolution' | 'waha'
+
+  try {
+    const keyUrl    = gateway === 'evolution' ? 'evoUrl'    : 'wahaUrl';
+    const keyApiKey = gateway === 'evolution' ? 'evoApiKey' : 'wahaApiKey';
+
+    const [urlRow, keyRow] = await Promise.all([
+      prisma.systemConfig.findUnique({ where: { key: keyUrl    } }),
+      prisma.systemConfig.findUnique({ where: { key: keyApiKey } }),
+    ]);
+
+    const gatewayUrl = urlRow?.value;
+    if (!gatewayUrl) {
+      return res.status(400).json({ ok: false, message: 'URL del gateway no configurada todavía.' });
+    }
+
+    // Intento de ping real con un timeout de 5 segundos
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 5000);
+
+    try {
+      const pingResponse = await fetch(`${gatewayUrl}`, {
+        method: 'GET',
+        headers: keyRow?.value ? { 'apikey': keyRow.value } : {},
+        signal: controller.signal,
+      });
+      clearTimeout(timeout);
+
+      return res.json({
+        ok:      pingResponse.ok || pingResponse.status < 500,
+        status:  pingResponse.status,
+        message: pingResponse.ok ? 'Gateway respondiendo correctamente.' : `Gateway respondió con estado ${pingResponse.status}.`,
+      });
+    } catch (fetchErr) {
+      clearTimeout(timeout);
+      const timedOut = fetchErr.name === 'AbortError';
+      return res.json({
+        ok:      false,
+        message: timedOut ? 'Timeout: el gateway no respondió en 5 segundos.' : `No se pudo conectar: ${fetchErr.message}`,
+      });
+    }
+  } catch (error) {
+    console.error('Error en checkGatewayHealth:', error);
+    return res.status(500).json({ ok: false, message: 'Error interno al verificar el gateway.' });
+  }
+}
+
+/**
+ * Obtiene la lista de todas las alertas ordenadas por fecha reciente, incluyendo información del tenant asociado
+ */
+export async function getAlerts(req, res) {
+  try {
+    const alerts = await prisma.alert.findMany({
+      include: {
+        tenant: {
+          select: {
+            name: true,
+          }
+        }
+      },
+      orderBy: {
+        createdAt: 'desc',
+      }
+    });
+
+    return res.json(alerts);
+  } catch (error) {
+    console.error('Error en getAlerts:', error);
+    return res.status(500).json({ error: 'Error al obtener la lista de alertas globales.' });
+  }
+}
+
+/**
+ * Marca una alerta específica como resuelta
+ */
+export async function resolveAlert(req, res) {
+  try {
+    const { id } = req.params;
+
+    const alert = await prisma.alert.update({
+      where: { id },
+      data: { resolved: true },
+    });
+
+    return res.json({
+      success: true,
+      message: 'Alerta marcada como resuelta con éxito.',
+      alert
+    });
+  } catch (error) {
+    console.error('Error en resolveAlert:', error);
+    return res.status(500).json({ error: 'Error al marcar la alerta como resuelta.' });
+  }
+}
+
+/**
+ * Obtiene la lista de backups generados en el directorio local de backups
+ */
+export async function getBackups(req, res) {
+  try {
+    const backupsDir = path.join(process.cwd(), 'backups');
+
+    // Asegurar la existencia física del directorio
+    if (!fs.existsSync(backupsDir)) {
+      fs.mkdirSync(backupsDir, { recursive: true });
+    }
+
+    const files = fs.readdirSync(backupsDir);
+    const backupList = files
+      .filter((file) => file.endsWith('.json'))
+      .map((file) => {
+        const filePath = path.join(backupsDir, file);
+        const stats = fs.statSync(filePath);
+        return {
+          filename: file,
+          sizeBytes: stats.size,
+          createdAt: stats.birthtime || stats.mtime,
+        };
+      });
+
+    // Ordenar por fecha de creación descendente
+    backupList.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+
+    return res.json(backupList);
+  } catch (error) {
+    console.error('Error en getBackups:', error);
+    return res.status(500).json({ error: 'Error al escanear los respaldos en el servidor.' });
+  }
+}
+
+/**
+ * Genera un backup estructurado en formato JSON con la información principal de la BD
+ */
+export async function generateBackup(req, res) {
+  try {
+    const backupsDir = path.join(process.cwd(), 'backups');
+
+    if (!fs.existsSync(backupsDir)) {
+      fs.mkdirSync(backupsDir, { recursive: true });
+    }
+
+    // Recopilar datos reales de la base de datos PostgreSQL
+    const tenants = await prisma.tenant.findMany();
+    const users = await prisma.user.findMany();
+    const products = await prisma.product.findMany();
+    const contacts = await prisma.contact.findMany();
+    const chats = await prisma.chat.findMany();
+    const messages = await prisma.message.findMany();
+    const flows = await prisma.automationFlow.findMany();
+    const alerts = await prisma.alert.findMany();
+
+    const backupPayload = {
+      metadata: {
+        version: '1.0.0',
+        generatedAt: new Date(),
+        scope: 'SaaS Bot Database Backup',
+      },
+      data: {
+        tenants,
+        users,
+        products,
+        contacts,
+        chats,
+        messages,
+        flows,
+        alerts,
+      },
+    };
+
+    // Nombre de archivo con marca de tiempo: backup_YYYYMMDD_HHMMSS.json
+    const now = new Date();
+    const timestamp = now.toISOString()
+      .replace(/[-T:]/g, '')
+      .split('.')[0];
+    const filename = `backup_${timestamp}.json`;
+    const filePath = path.join(backupsDir, filename);
+
+    // Escribir el respaldo en el disco
+    fs.writeFileSync(filePath, JSON.stringify(backupPayload, null, 2), 'utf-8');
+
+    return res.status(201).json({
+      success: true,
+      message: 'Respaldo del sistema generado con éxito.',
+      filename,
+      sizeBytes: fs.statSync(filePath).size,
+      createdAt: now,
+    });
+  } catch (error) {
+    console.error('Error en generateBackup:', error);
+    return res.status(500).json({ error: 'Error al volcar y generar el respaldo de base de datos.' });
+  }
+}
+
+/**
+ * Descarga físicamente un archivo de backup del servidor
+ */
+export async function downloadBackup(req, res) {
+  try {
+    const { filename } = req.params;
+    const safeFilename = path.basename(filename);
+    const filePath = path.join(process.cwd(), 'backups', safeFilename);
+
+    if (!fs.existsSync(filePath)) {
+      return res.status(404).json({ error: 'El archivo de respaldo no existe.' });
+    }
+
+    return res.download(filePath, safeFilename);
+  } catch (error) {
+    console.error('Error en downloadBackup:', error);
+    return res.status(500).json({ error: 'Error al descargar el archivo de respaldo.' });
+  }
+}
