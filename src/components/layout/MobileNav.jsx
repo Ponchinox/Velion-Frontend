@@ -5,7 +5,6 @@ import {
   Gear,
   ChartBar,
   Megaphone,
-  Brain,
   DeviceMobile,
   AddressBook,
   ChatTeardrop,
@@ -99,13 +98,6 @@ const CLIENT_ITEMS = [
     desc:    'Flujos de bot',
   },
   {
-    label:   'Cerebro IA',
-    to:      '/cerebro-ia',
-    Icon:    Brain,
-    iconCls: 'text-purple-600',
-    desc:    'Inteligencia',
-  },
-  {
     label:   'Conexiones',
     to:      '/conexiones',
     Icon:    DeviceMobile,
@@ -114,7 +106,7 @@ const CLIENT_ITEMS = [
   },
   {
     label:   'Inventario',
-    to:      '/inventario',
+    to:      '/productos',
     Icon:    Package,
     iconCls: 'text-indigo-600',
     desc:    'Catálogo',

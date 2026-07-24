@@ -18,8 +18,11 @@ import {
   WarningCircle,
   ArrowClockwise,
   SignIn,
+  Key,
 } from '@phosphor-icons/react';
 import * as tenantService from '../services/tenantService';
+import * as planService from '../services/planService';
+import { useUnsavedChanges } from '../context/UnsavedChangesContext';
 
 const PLAN_CONFIG = {
   Básico: {
@@ -44,14 +47,7 @@ const PLAN_CONFIG = {
 
 const PLANS = ['Básico', 'Pro', 'Elite'];
 
-/* ─── Respaldos estáticos locales ─── */
-const MOCK_COMPANIES = [
-  { id: 't1', name: 'TechCorp S.A.', email: 'admin@techcorp.pe', plan: 'Elite', active: true, connUsed: 7, msgUsed: 38400, createdAt: 'Mar 2024' },
-  { id: 't2', name: 'Finanza Pro Ltda.', email: 'ceo@finanzapro.mx', plan: 'Pro', active: true, connUsed: 2, msgUsed: 6200, createdAt: 'Jun 2024' },
-  { id: 't3', name: 'Grupo Nexo', email: 'ops@gruponexo.co', plan: 'Pro', active: false, connUsed: 0, msgUsed: 0, createdAt: 'Ene 2025' },
-  { id: 't4', name: 'Constructora Digital', email: 'it@constructoradigital.cl', plan: 'Básico', active: true, connUsed: 1, msgUsed: 870, createdAt: 'Ago 2023' },
-  { id: 't5', name: 'DataBridge Corp', email: 'admin@databridge.io', plan: 'Elite', active: true, connUsed: 10, msgUsed: 49800, createdAt: 'Nov 2023' },
-];
+
 
 /* ─── Helpers ─── */
 function pct(used, limit) {
@@ -103,7 +99,7 @@ function StatusBadge({ active }) {
 }
 
 /* ─── Fila Desktop ─── */
-function CompanyRow({ company, onToggleStatus, onEditLimits, onImpersonate, onShowAnalytics }) {
+function CompanyRow({ company, onToggleStatus, onEditCompany, onImpersonate }) {
   const cfg = PLAN_CONFIG[company.plan] || PLAN_CONFIG['Básico'];
   return (
     <tr className="border-b border-line hover:bg-app/50 transition-colors duration-fast group">
@@ -138,19 +134,21 @@ function CompanyRow({ company, onToggleStatus, onEditLimits, onImpersonate, onSh
       <td className="px-5 py-4">
         <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity duration-fast">
           <button
-            onClick={() => onEditLimits(company)}
+            onClick={() => onEditCompany(company)}
             className="p-1.5 rounded-md text-muted hover:text-brand hover:bg-brand/10 transition-colors duration-fast cursor-pointer"
-            title="Editar límites"
+            title="Editar Empresa"
           >
             <PencilSimple size={15} />
           </button>
+          {/* 
           <button
-            onClick={() => onShowAnalytics(company)}
+            onClick={() => {}}
             className="p-1.5 rounded-md text-muted hover:text-violet-600 hover:bg-violet-50 transition-colors duration-fast cursor-pointer"
-            title="Ver analíticas"
+            title="Ver analíticas (En construcción)"
           >
             <ChartBar size={15} />
           </button>
+          */}
           <button
             onClick={() => onImpersonate(company.id, company.name)}
             className="p-1.5 rounded-md text-muted hover:text-emerald-600 hover:bg-emerald-50 transition-colors duration-fast cursor-pointer"
@@ -176,7 +174,7 @@ function CompanyRow({ company, onToggleStatus, onEditLimits, onImpersonate, onSh
 }
 
 /* ─── Tarjeta Móvil ─── */
-function CompanyCard({ company, onToggleStatus, onEditLimits, onImpersonate }) {
+function CompanyCard({ company, onToggleStatus, onEditCompany, onImpersonate }) {
   const cfg = PLAN_CONFIG[company.plan] || PLAN_CONFIG['Básico'];
   return (
     <div className="bg-card border border-line rounded-lg shadow-card p-4 flex flex-col gap-3">
@@ -202,12 +200,12 @@ function CompanyCard({ company, onToggleStatus, onEditLimits, onImpersonate }) {
         <p className="text-2xs text-lo uppercase tracking-wider font-medium pt-1">Mensajes</p>
         <QuotaBar used={company.msgUsed} limit={company.msgLimit || cfg.msgLimit} />
       </div>
-      <div className="flex items-center gap-2 border-t border-line pt-3">
+      <div className="flex items-center gap-2 border-t border-line pt-3 flex-wrap">
         <button
-          onClick={() => onEditLimits(company)}
+          onClick={() => onEditCompany(company)}
           className="flex items-center gap-1.5 px-3 py-1.5 rounded-md border border-line text-xs font-medium text-mid hover:bg-app cursor-pointer transition-colors"
         >
-          <PencilSimple size={12} /> Límites
+          <PencilSimple size={12} /> Editar
         </button>
         <button
           onClick={() => onImpersonate(company.id, company.name)}
@@ -232,7 +230,7 @@ function CompanyCard({ company, onToggleStatus, onEditLimits, onImpersonate }) {
 }
 
 /* ─── Modal Registrar Nueva Empresa ─── */
-function NewCompanyModal({ onClose, onSave }) {
+function NewCompanyModal({ onClose, onSave, setIsDirty }) {
   const [planOpen, setPlanOpen] = useState(false);
   const [plan, setPlan] = useState('');
   const [name, setName] = useState('');
@@ -262,6 +260,7 @@ function NewCompanyModal({ onClose, onSave }) {
         msgUsed: 0,
         createdAt: new Date().toLocaleDateString('es-ES', { month: 'short', year: 'numeric' }),
       });
+      setIsDirty(false);
       onClose();
     } catch {
       setSaving(false);
@@ -289,7 +288,7 @@ function NewCompanyModal({ onClose, onSave }) {
         </div>
 
         {/* Formulario */}
-        <form onSubmit={handleSubmit} className="px-6 py-5 space-y-4">
+        <form onSubmit={handleSubmit} onChange={() => setIsDirty(true)} className="px-6 py-5 space-y-4">
           <div>
             <label htmlFor="emp-name" className="block text-sm font-semibold text-hi mb-1">Nombre del Negocio</label>
             <input
@@ -341,7 +340,7 @@ function NewCompanyModal({ onClose, onSave }) {
                     <li key={p}>
                       <button
                         type="button"
-                        onClick={() => { setPlan(p); setPlanOpen(false); }}
+                        onClick={() => { setPlan(p); setPlanOpen(false); setIsDirty(true); }}
                         className={`flex items-center justify-between w-full px-4 py-3 text-sm hover:bg-app cursor-pointer ${plan === p ? 'text-brand font-semibold' : 'text-mid'}`}
                       >
                         <PlanBadge plan={p} />
@@ -390,20 +389,43 @@ function NewCompanyModal({ onClose, onSave }) {
   );
 }
 
-/* ─── Modal Editar Límites ─── */
-function EditLimitsModal({ company, onClose, onSave }) {
-  const [connLimit, setConnLimit] = useState(company.connLimit || 1);
-  const [msgLimit, setMsgLimit] = useState(company.msgLimit || 1000);
+/* ─── Modal Editar Empresa Unificado ─── */
+function EditCompanyModal({ company, onClose, onSave, setIsDirty }) {
+  const [name, setName] = useState(company.name || '');
+  const [password, setPassword] = useState('');
+  const [plan, setPlan] = useState(company.plan || '');
+  const [plans, setPlans] = useState([]);
+  const [loadingPlans, setLoadingPlans] = useState(true);
   const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    const fetchPlans = async () => {
+      try {
+        const data = await planService.getPlans();
+        setPlans(data || []);
+      } catch (err) {
+        console.error('Error al cargar planes:', err);
+      } finally {
+        setLoadingPlans(false);
+      }
+    };
+    fetchPlans();
+  }, []);
 
   const handleSubmit = async (e) => {
     e.preventDefault();
+    if (!name.trim()) return;
     setSaving(true);
     try {
-      await onSave(company.id, {
-        connLimit: Number(connLimit),
-        msgLimit: Number(msgLimit),
-      });
+      const payload = {
+        name: name.trim(),
+        plan: plan,
+      };
+      if (password.trim().length >= 4) {
+        payload.password = password.trim();
+      }
+      await onSave(company.id, payload);
+      setIsDirty(false);
       onClose();
     } catch {
       setSaving(false);
@@ -413,10 +435,10 @@ function EditLimitsModal({ company, onClose, onSave }) {
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4" role="dialog">
       <div className="absolute inset-0 bg-hi/25 backdrop-blur-sm" onClick={onClose} />
-      <div className="relative bg-card border border-line rounded-lg shadow-card-md w-full max-w-sm overflow-hidden">
+      <div className="relative bg-card border border-line rounded-lg shadow-card-md w-full max-w-sm overflow-hidden z-10">
         <div className="flex items-center justify-between px-5 py-4 border-b border-line">
           <div>
-            <p className="text-sm font-bold text-hi">Editar Límites</p>
+            <p className="text-sm font-bold text-hi">Editar Empresa</p>
             <p className="text-xs text-lo mt-0.5">{company.name}</p>
           </div>
           <button onClick={onClose} className="p-1 rounded-md text-lo hover:bg-app cursor-pointer">
@@ -424,31 +446,53 @@ function EditLimitsModal({ company, onClose, onSave }) {
           </button>
         </div>
 
-        <form onSubmit={handleSubmit} className="p-5 space-y-4">
+        <form onSubmit={handleSubmit} onChange={() => setIsDirty(true)} className="p-5 space-y-4">
+          {/* Nombre de la Empresa */}
           <div>
-            <label htmlFor="edit-conn-limit" className="block text-xs font-semibold text-hi mb-1">Límite de Conexiones WhatsApp</label>
+            <label htmlFor="edit-company-name" className="block text-xs font-semibold text-hi mb-1">Nombre de la Empresa</label>
             <input
-              id="edit-conn-limit"
-              type="number"
-              min={1}
+              id="edit-company-name"
+              type="text"
               required
-              value={connLimit}
-              onChange={e => setConnLimit(Number(e.target.value))}
-              className="w-full px-3 py-2 text-sm bg-card border border-line rounded-md focus:outline-none"
+              value={name}
+              onChange={e => setName(e.target.value)}
+              className="w-full px-3 py-2 text-sm bg-card border border-line rounded-md focus:outline-none text-hi"
             />
           </div>
 
+          {/* Contraseña Administrador (Opcional) */}
           <div>
-            <label htmlFor="edit-msg-limit" className="block text-xs font-semibold text-hi mb-1">Límite de Mensajes Mensuales</label>
+            <label htmlFor="edit-company-password" className="block text-xs font-semibold text-hi mb-1">Nueva Contraseña de Administrador (Opcional)</label>
             <input
-              id="edit-msg-limit"
-              type="number"
-              min={100}
-              required
-              value={msgLimit}
-              onChange={e => setMsgLimit(Number(e.target.value))}
-              className="w-full px-3 py-2 text-sm bg-card border border-line rounded-md focus:outline-none font-mono"
+              id="edit-company-password"
+              type="password"
+              minLength={4}
+              value={password}
+              onChange={e => setPassword(e.target.value)}
+              placeholder="Dejar vacío para no cambiar"
+              className="w-full px-3 py-2 text-sm bg-card border border-line rounded-md focus:outline-none text-hi placeholder:text-muted"
             />
+          </div>
+
+          {/* Plan comercial select */}
+          <div>
+            <label htmlFor="edit-company-plan" className="block text-xs font-semibold text-hi mb-1">Plan Comercial</label>
+            {loadingPlans ? (
+              <div className="text-xs text-lo py-2">Cargando planes...</div>
+            ) : (
+              <select
+                id="edit-company-plan"
+                value={plan}
+                onChange={e => setPlan(e.target.value)}
+                className="w-full px-3 py-2 text-sm bg-card border border-line rounded-md focus:outline-none text-hi cursor-pointer"
+              >
+                {plans.map(p => (
+                  <option key={p.id} value={p.name}>
+                    {p.name} - S/ {p.price}/mes
+                  </option>
+                ))}
+              </select>
+            )}
           </div>
 
           <div className="flex justify-end gap-2 pt-3 border-t border-line">
@@ -462,9 +506,9 @@ function EditLimitsModal({ company, onClose, onSave }) {
             <button
               type="submit"
               disabled={saving}
-              className="px-3.5 py-2 text-xs font-semibold bg-brand text-white hover:bg-brand-hover rounded-md shadow"
+              className="px-3.5 py-2 text-xs font-semibold bg-brand text-white hover:bg-brand-hover rounded-md shadow cursor-pointer disabled:opacity-50"
             >
-              {saving ? 'Guardando...' : 'Guardar Límites'}
+              {saving ? 'Guardando...' : 'Guardar Cambios'}
             </button>
           </div>
         </form>
@@ -472,6 +516,8 @@ function EditLimitsModal({ company, onClose, onSave }) {
     </div>
   );
 }
+
+
 
 /* ─── Skeleton de Tabla ─── */
 function TableSkeleton() {
@@ -512,7 +558,10 @@ export default function AdminEmpresasPage() {
 
   const [search, setSearch]       = useState('');
   const [showModal, setShowModal] = useState(false);
-  const [selectedCompanyForLimits, setSelectedCompanyForLimits] = useState(null);
+  const [selectedCompanyForEdit, setSelectedCompanyForEdit] = useState(null);
+
+  const { setIsDirty } = useUnsavedChanges();
+  const setIsFormDirty = setIsDirty;
 
   const showToast = (msg, type = 'success') => {
     setToast({ msg, type });
@@ -524,13 +573,11 @@ export default function AdminEmpresasPage() {
     setErrorMsg('');
     try {
       const data = await tenantService.getTenants();
-      // Si el backend responde, usamos sus datos. Si no hay nada pero se cargó vacío sin error, aseguramos un array
       setCompanies(data || []);
     } catch {
-      setErrorMsg('Error de conexión con el servidor maestro.');
-      // Cargamos mock temporal para no romper la demo interactiva visual
-      setCompanies(MOCK_COMPANIES);
-      showToast('Error de red. Cargando modo local temporal.', 'error');
+      setErrorMsg('No se pudieron obtener las empresas registradas.');
+      setCompanies([]);
+      showToast('Error al conectar con el servidor maestro.', 'error');
     } finally {
       setIsLoading(false);
     }
@@ -543,8 +590,7 @@ export default function AdminEmpresasPage() {
   const handleImpersonate = (tenantId, tenantName) => {
     localStorage.setItem('impersonatedTenantId', tenantId);
     localStorage.setItem('impersonatedTenantName', tenantName);
-    // Redirigir al inventario del cliente para operar y forzar recarga
-    window.location.href = '/inventario';
+    window.location.href = '/productos';
   };
 
   const handleShowAnalytics = (company) => {
@@ -582,25 +628,28 @@ export default function AdminEmpresasPage() {
       setCompanies(prev => prev.map(c => c.id === id ? { ...c, active: !currentActive } : c));
       showToast(`Estado de la empresa ${name} actualizado.`);
     } catch {
-      // Fallback local para demo interactiva
       setCompanies(prev => prev.map(c => c.id === id ? { ...c, active: !currentActive } : c));
       showToast(`Modo Local: Estado de ${name} actualizado.`, 'success');
     }
   };
 
-  const handleUpdateLimits = async (id, limitsData) => {
+  const handleUpdateCompany = async (id, companyData) => {
     try {
-      await tenantService.updateTenantLimits(id, limitsData);
+      const response = await tenantService.updateTenantLimits(id, companyData);
+      const updatedTenant = response.tenant;
       setCompanies(prev =>
-        prev.map(c => (c.id === id ? { ...c, connLimit: limitsData.connLimit, msgLimit: limitsData.msgLimit } : c))
+        prev.map(c => (c.id === id ? {
+          ...c,
+          name: updatedTenant.name || c.name,
+          plan: updatedTenant.plan || c.plan,
+          connLimit: updatedTenant.connLimit ?? c.connLimit,
+          msgLimit: updatedTenant.msgLimit ?? c.msgLimit
+        } : c))
       );
-      showToast('Límite de empresa actualizados');
-    } catch {
-      // Fallback local
-      setCompanies(prev =>
-        prev.map(c => (c.id === id ? { ...c, connLimit: limitsData.connLimit, msgLimit: limitsData.msgLimit } : c))
-      );
-      showToast('Modo Local: Límites actualizados', 'success');
+      showToast('Empresa actualizada exitosamente.');
+    } catch (err) {
+      console.error(err);
+      showToast(err.message || 'Error al actualizar los datos de la empresa.', 'error');
     }
   };
 
@@ -630,8 +679,8 @@ export default function AdminEmpresasPage() {
     return [
       {
         label: 'Ingresos Recurrentes',
-        value: `$${mrr.toLocaleString()}`,
-        sub: 'MRR real de tenants activos',
+        value: `S/ ${mrr.toLocaleString()}`,
+        sub: 'MRR real de empresas activas',
         Icon: CurrencyDollar,
         color: 'text-emerald-600',
         bg: 'bg-emerald-50',
@@ -639,7 +688,7 @@ export default function AdminEmpresasPage() {
       {
         label: 'Empresas Activas',
         value: String(active),
-        sub: `${companies.length} tenants en total`,
+        sub: `${companies.length} empresas en total`,
         Icon: Buildings,
         color: 'text-brand',
         bg: 'bg-blue-50',
@@ -664,7 +713,7 @@ export default function AdminEmpresasPage() {
             Gestión de Empresas <span className="text-brand">(SaaS)</span>
           </h1>
           <p className="text-sm text-lo mt-0.5">
-            Centro de control global — administra tenants, planes y cuotas.
+            Centro de control global — administra empresas, planes y cuotas.
           </p>
         </div>
 
@@ -723,7 +772,7 @@ export default function AdminEmpresasPage() {
           <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 px-5 py-4 border-b border-line">
             <div className="flex items-center gap-2">
               <Buildings size={16} className="text-lo" aria-hidden="true" />
-              <p className="text-sm font-semibold text-hi">Directorio de Tenants</p>
+              <p className="text-sm font-semibold text-hi">Directorio de Empresas</p>
               <span className="text-xs text-muted font-mono bg-app px-1.5 py-0.5 rounded-full">
                 {companies.length}
               </span>
@@ -761,9 +810,8 @@ export default function AdminEmpresasPage() {
                         key={c.id}
                         company={c}
                         onToggleStatus={handleToggleStatus}
-                        onEditLimits={setSelectedCompanyForLimits}
+                        onEditCompany={setSelectedCompanyForEdit}
                         onImpersonate={handleImpersonate}
-                        onShowAnalytics={handleShowAnalytics}
                       />
                     ))}
                   </tbody>
@@ -777,9 +825,8 @@ export default function AdminEmpresasPage() {
                     key={c.id}
                     company={c}
                     onToggleStatus={handleToggleStatus}
-                    onEditLimits={setSelectedCompanyForLimits}
+                    onEditCompany={setSelectedCompanyForEdit}
                     onImpersonate={handleImpersonate}
-                    onShowAnalytics={handleShowAnalytics}
                   />
                 ))}
               </div>
@@ -795,7 +842,7 @@ export default function AdminEmpresasPage() {
           {/* Footer */}
           <div className="px-5 py-3.5 border-t border-line bg-app flex items-center justify-between">
             <p className="text-xs text-lo">
-              Mostrando <span className="font-semibold text-hi">{filtered.length}</span> de <span className="font-semibold text-hi">{companies.length}</span> empresas registrados
+              Mostrando <span className="font-semibold text-hi">{filtered.length}</span> de <span className="font-semibold text-hi">{companies.length}</span> empresas registradas
             </p>
           </div>
         </div>
@@ -804,17 +851,19 @@ export default function AdminEmpresasPage() {
       {/* Modal Registrar Empresa */}
       {showModal && (
         <NewCompanyModal
-          onClose={() => setShowModal(false)}
+          onClose={() => { setShowModal(false); setIsFormDirty(false); }}
           onSave={handleCreateTenant}
+          setIsDirty={setIsFormDirty}
         />
       )}
 
-      {/* Modal Editar Límites */}
-      {selectedCompanyForLimits && (
-        <EditLimitsModal
-          company={selectedCompanyForLimits}
-          onClose={() => setSelectedCompanyForLimits(null)}
-          onSave={handleUpdateLimits}
+      {/* Modal Editar Empresa Unificado */}
+      {selectedCompanyForEdit && (
+        <EditCompanyModal
+          company={selectedCompanyForEdit}
+          onClose={() => { setSelectedCompanyForEdit(null); setIsFormDirty(false); }}
+          onSave={handleUpdateCompany}
+          setIsDirty={setIsFormDirty}
         />
       )}
 

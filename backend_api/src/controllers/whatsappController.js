@@ -2,16 +2,18 @@ import axios from 'axios';
 import prisma from '../db.js';
 import { generateAIResponse, transcribeAudio, extractFrameFromVideo } from '../services/aiService.js';
 import * as flowService from '../services/flowService.js';
+import { validateAndRegisterWhatsAppConnection } from '../services/antiFraudService.js';
 
 /**
  * Helper para generar los headers de autenticación del Evolution API
  */
-function getEvoHeaders() {
+function getEvoHeaders(customApiKey) {
+  const key = (customApiKey || process.env.EVOLUTION_API_KEY || 'A59F9002-9FFF-41CF-8EA6-58AEEB06ED7B').trim();
   return {
     headers: {
-      apikey: process.env.EVOLUTION_API_KEY || 'tu_global_api_key_aqui',
-      'Content-Type': 'application/json',
-    },
+      apikey: key,
+      'Content-Type': 'application/json'
+    }
   };
 }
 
@@ -19,7 +21,7 @@ function getEvoHeaders() {
  * Helper para formatear el nombre de la instancia en base al tenantId
  */
 function getEvoInstanceName(tenantId) {
-  return `velion_instance_${tenantId.slice(0, 8)}`;
+  return `bot_prod_${tenantId.slice(0, 8)}`;
 }
 
 /**
@@ -35,8 +37,63 @@ function containsKeywords(errorObj, keywords) {
   return keywords.some(keyword => lowerMessageStr.includes(keyword.toLowerCase()));
 }
 
+/**
+ * Sanea el nombre de usuario recibido de WhatsApp (pushName)
+ * Si está vacío, es solo símbolos o caracteres invisibles, asigna "Cliente Desconocido"
+ */
+function sanitizePushName(pushName) {
+  if (!pushName || typeof pushName !== 'string') return 'Cliente Desconocido';
+
+  // Eliminar caracteres invisibles de ancho cero, caracteres de uso privado y espacios sobrantes
+  const cleaned = pushName
+    .replace(/[\u200B-\u200D\uFEFF]/g, '')
+    .replace(/[\uE000-\uF8FF]/g, '')
+    .trim();
+
+  // Verificar que contenga al menos una letra o número legible
+  const hasAlphanumeric = /[a-zA-Z0-9\u00C0-\u024F]/.test(cleaned);
+
+  if (!cleaned || !hasAlphanumeric) {
+    return 'Cliente Desconocido';
+  }
+
+  return cleaned;
+}
+
+/**
+ * Helper para obtener el teléfono de destino de notificaciones y alertas
+ * 1. Prioriza notificationPhone del tenant
+ * 2. Si está vacío/null, realiza fallback al teléfono del Perfil de Administrador
+ */
+async function resolveNotificationPhone(tenantId, tenantDetails) {
+  let phone = tenantDetails?.notificationPhone?.replace(/[^0-9]/g, '') || '';
+  if (!phone && tenantId) {
+    try {
+      const adminUser = await prisma.user.findFirst({
+        where: {
+          tenantId: tenantId,
+          phone: { not: null }
+        },
+        select: { phone: true }
+      });
+      if (adminUser?.phone) {
+        phone = adminUser.phone.replace(/[^0-9]/g, '');
+      }
+    } catch (err) {
+      console.error('❌ [Alert Helper] Error buscando teléfono de administrador fallback:', err.message);
+    }
+  }
+  return phone || null;
+}
+
 // Escudo Anti-Spam: Cache en memoria para rate limiting por número
 const spamCache = new Map();
+
+// Buffer de Mensajes (Debounce / Message Collector): Acumula mensajes enviados en ráfaga antes de llamar a la IA (4000ms)
+const messageBuffers = new Map();
+
+// Escudo de Facturación: Cache en memoria para rate limiting de llamadas de IA (OpenAI)
+const iaRateLimitCache = new Map();
 
 /**
  * Obtiene el estado real de la conexión de la instancia desde Evolution API
@@ -57,6 +114,19 @@ export async function getStatus(req, res) {
     );
 
     const state = response.data?.instance?.state || 'close';
+    const phone = response.data?.instance?.phone || null;
+
+    if (state === 'open' && phone) {
+      const validation = await validateAndRegisterWhatsAppConnection(tenantId, instanceName, phone);
+      if (!validation.allowed) {
+        return res.status(403).json({
+          status: 'DISCONNECTED',
+          instanceName,
+          phone: null,
+          error: validation.errorMessage,
+        });
+      }
+    }
 
     // Mapeo al formato de estados de la UI del Frontend
     let status = 'DISCONNECTED';
@@ -66,7 +136,7 @@ export async function getStatus(req, res) {
     return res.json({
       status,
       instanceName,
-      phone: response.data?.instance?.phone || null,
+      phone,
     });
   } catch (error) {
     // Si la instancia no existe en Evolution (error 404), la tratamos como desconectada
@@ -125,14 +195,21 @@ export async function connectDevice(req, res) {
 
   // 1.5. Configurar el webhook en Evolution API para que los mensajes lleguen al backend
   try {
-    const webhookUrl = process.env.WEBHOOK_URL || 'http://host.docker.internal:3000/api/whatsapp/webhook';
-    console.log(`🔌 [Evolution API] Configurando webhook en: ${webhookUrl} para la instancia: ${instanceName}`);
+    const rawWebhookUrl = process.env.WEBHOOK_URL || 'http://host.docker.internal:3000/api/whatsapp/webhook';
+    const cleanApiKey = (process.env.EVOLUTION_API_KEY || '').trim();
+    const apiKeyParam = cleanApiKey ? `?apikey=${cleanApiKey}` : '';
+    const webhookUrl = rawWebhookUrl.includes('?') ? `${rawWebhookUrl}&apikey=${cleanApiKey}` : `${rawWebhookUrl}${apiKeyParam}`;
+
+    console.log(`🔌 [Evolution API] Sobrescribiendo webhook en: ${webhookUrl} para la instancia: ${instanceName}`);
     await axios.post(
       `${evoUrl}/webhook/set/${instanceName}`,
       {
         webhook: {
           enabled: true,
           url: webhookUrl,
+          headers: {
+            apikey: cleanApiKey
+          },
           webhookByEvents: false,
           events: [
             "MESSAGES_UPSERT"
@@ -141,7 +218,7 @@ export async function connectDevice(req, res) {
       },
       getEvoHeaders()
     );
-    console.log('✅ [Evolution API] Webhook configurado con éxito.');
+    console.log('✅ [Evolution API] Webhook sobrescrito y actualizado con éxito.');
   } catch (webhookError) {
     console.error('🚨 Detalle Webhook:', JSON.stringify(webhookError?.response?.data || webhookError.message, null, 2));
   }
@@ -207,7 +284,7 @@ export async function connectDevice(req, res) {
 }
 
 /**
- * Cierra la sesión activa de WhatsApp destruyendo la conexión en Evolution API
+ * Cierra la sesión activa y destruye por completo la conexión en Evolution API (evitando instancias zombis)
  */
 export async function disconnectDevice(req, res) {
   const tenantId = req.user.tenantId;
@@ -219,26 +296,50 @@ export async function disconnectDevice(req, res) {
   const evoUrl = process.env.EVOLUTION_API_URL || 'http://localhost:8080';
 
   try {
-    await axios.delete(
-      `${evoUrl}/instance/logout/${instanceName}`,
-      getEvoHeaders()
-    );
+    // 1. Logout previo en Evolution API (cerrar sesión WhatsApp Baileys)
+    try {
+      await axios.delete(
+        `${evoUrl}/instance/logout/${instanceName}`,
+        getEvoHeaders()
+      );
+      console.log(`🔌 [Evolution API] Logout exitoso para la instancia "${instanceName}".`);
+    } catch (logoutErr) {
+      console.log(`ℹ️ [Evolution API] Aviso en logout (${logoutErr.response?.status}):`, logoutErr.response?.data || logoutErr.message);
+    }
+
+    // 2. Destrucción total de la instancia en Evolution API
+    try {
+      await axios.delete(
+        `${evoUrl}/instance/delete/${instanceName}`,
+        getEvoHeaders()
+      );
+      console.log(`🗑️ [Evolution API] Instancia "${instanceName}" eliminada/destruida por completo.`);
+    } catch (deleteErr) {
+      if (deleteErr.response && (deleteErr.response.status === 404 || deleteErr.response.status === 400)) {
+        console.log(`ℹ️ [Evolution API] Instancia "${instanceName}" ya no existía en el servidor (404/400).`);
+      } else {
+        console.warn(`⚠️ Advertencia al eliminar la instancia "${instanceName}" en Evolution API:`, deleteErr.response?.data || deleteErr.message);
+      }
+    }
+
+    // 3. Limpieza en Prisma DB
+    try {
+      if (prisma.whatsappConnection) {
+        await prisma.whatsappConnection.deleteMany({
+          where: { tenantId }
+        });
+      }
+    } catch (dbErr) {
+      console.log(`ℹ️ Limpieza en Prisma completada o no requerida:`, dbErr.message);
+    }
 
     return res.json({
       status: 'DISCONNECTED',
-      message: 'Sesión de WhatsApp cerrada con éxito.',
+      message: 'Instancia eliminada y sesión de WhatsApp destruida con éxito.',
     });
   } catch (error) {
-    // Si ya estaba eliminada o da 404, confirmamos el estado desconectado
-    if (error.response && error.response.status === 404) {
-      return res.json({
-        status: 'DISCONNECTED',
-        message: 'La instancia ya no existía en el servidor.',
-      });
-    }
-
     console.error("DETALLE DEL ERROR DE EVOLUTION:", error.response?.data || error.message);
-    return res.status(500).json({ error: 'Error al desconectar la instancia en Evolution API.' });
+    return res.status(500).json({ error: 'Error al desconectar y destruir la instancia en Evolution API.' });
   }
 }
 
@@ -254,12 +355,16 @@ export async function sendMessage(req, res) {
 
   const evoUrl = process.env.EVOLUTION_API_URL || 'http://localhost:8080';
 
+  const cleanNumber = number.replace(/\D/g, '');
   try {
     const response = await axios.post(
       `${evoUrl}/message/sendText/${instanceName}`,
       {
-        number,
+        number: cleanNumber,
         text: message,
+        options: {
+          delay: 0
+        }
       },
       getEvoHeaders()
     );
@@ -282,38 +387,35 @@ export async function sendMessage(req, res) {
  * y responde automáticamente consultando la base de datos de productos de ese tenant e invocando a la IA
  */
 export async function receiveWebhook(req, res) {
+  const requestApiKey = (req.query?.apikey || req.headers?.apikey || req.body?.apikey || req.headers?.['x-api-key'] || '').trim();
+  const systemApiKey = (process.env.EVOLUTION_API_KEY || '').trim();
+
+  // Validación de Seguridad: Si se envía una ApiKey explícita y no coincide con la del sistema, se bloquea.
+  if (systemApiKey && requestApiKey && requestApiKey !== systemApiKey) {
+    console.log('🔍 [DEBUG KEY] Recibida:', requestApiKey, '|| Esperada:', systemApiKey);
+    console.error('🚨 [Seguridad Webhook] Petición bloqueada por ApiKey explícitamente inválida.');
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
+
   const { event, instance, data } = req.body;
   const remoteJid = data?.key?.remoteJid || '';
   const clientNumber = remoteJid.split('@')[0] || 'desconocido';
+  const tenantTag = instance ? instance.replace('bot_prod_', '').substring(0, 8) : 'sistema';
 
-  // Escudo Anti-Spam: Rate limiting de 2 segundos (2000ms)
-  if (remoteJid) {
-    const now = Date.now();
-    const lastTime = spamCache.get(remoteJid);
-    if (lastTime && (now - lastTime < 2000)) {
-      console.log(`🛡️ [Spam Cache] Spam detectado de +${clientNumber}, ignorando...`);
-      return res.status(200).send("Spam detectado, ignorando...");
-    }
-    spamCache.set(remoteJid, now);
+  // Identificar si el mensaje proviene o pertenece a un grupo de WhatsApp (@g.us)
+  const isGroup = remoteJid.endsWith('@g.us') || remoteJid.includes('@g.us') || !!data?.key?.participant || data?.isGroup === true;
+
+  // REGLA ESTRICTA HARDCODEADA: Bloquear siempre respuestas e interacciones en grupos de WhatsApp
+  if (isGroup) {
+    console.log(`🛡️ [Bloqueo Estricto de Grupos] Mensaje de grupo ignorado para ${remoteJid}.`);
+    return res.status(200).send('Group message ignored (hardcoded policy)');
   }
 
   // Verificar tipo de mensaje entrante
-  const messageType = data?.message ? Object.keys(data.message)[0] : '';
-  const isMedia = ['imageMessage', 'videoMessage', 'audioMessage', 'documentMessage'].includes(messageType);
+  const messageType = data?.message ? Object.keys(data.message)[0] : 'event';
 
-  if (isMedia) {
-    if (messageType === 'imageMessage') {
-      console.log(`📸 Imagen recibida de +${clientNumber} en instancia "${instance}"`);
-    } else if (messageType === 'audioMessage') {
-      console.log(`🎙️ Audio recibido de +${clientNumber} en instancia "${instance}"`);
-    } else if (messageType === 'videoMessage') {
-      console.log(`🎥 Video recibido de +${clientNumber} en instancia "${instance}"`);
-    } else {
-      console.log(`🎥 Multimedia (${messageType}) recibido de +${clientNumber} en instancia "${instance}"`);
-    }
-  } else {
-    console.log('🚨 WEBHOOK RECIBIDO:', JSON.stringify(req.body, null, 2));
-  }
+  // Log estructurado limpio en formato SaaS de una sola línea (Sin Log Pollution)
+  console.log(`[🏢 TENANT: ${tenantTag}] 📥 EVENTO: ${event || 'N/A'} | De: +${clientNumber} | Tipo: ${messageType}`);
 
   try {
     // Solo procesar la creación/recepción de nuevos mensajes
@@ -321,11 +423,12 @@ export async function receiveWebhook(req, res) {
       return res.sendStatus(200);
     }
 
-    if (!data || !data.key) {
-      return res.sendStatus(200);
-    }
-
     const key = data.key;
+
+    // SI EL MENSAJE ES NUESTRO (ENVIADO POR EL BOT O EL AGENTE HUMANO)
+    if (key.fromMe) {
+      // No procesar IA ni activar buffer para mensajes salientes de nuestra propia cuenta
+    }
 
     const evoUrl = process.env.EVOLUTION_API_URL || 'http://localhost:8080';
 
@@ -346,7 +449,7 @@ export async function receiveWebhook(req, res) {
         const mediaRes = await axios.post(
           `${evoUrl}/chat/getBase64FromMediaMessage/${instance}`,
           { message: data },
-          getEvoHeaders()
+          getEvoHeaders(requestApiKey)
         );
         let resData = mediaRes.data;
         if (resData) {
@@ -364,7 +467,7 @@ export async function receiveWebhook(req, res) {
         const mediaRes = await axios.post(
           `${evoUrl}/chat/getBase64FromMediaMessage/${instance}`,
           { message: data },
-          getEvoHeaders()
+          getEvoHeaders(requestApiKey)
         );
         let resData = mediaRes.data;
         let audioBase64 = null;
@@ -391,11 +494,15 @@ export async function receiveWebhook(req, res) {
       const match = userMessageText.match(/segundo\s+(\d+)/i);
       if (!match) {
         console.log('🛡️ [Escudo Video] No se detectó palabra clave de segundo en el mensaje del video. Cancelando descarga y respondiendo.');
+        const cleanClientNumber = clientNumber.replace(/\D/g, '');
         await axios.post(
           `${evoUrl}/message/sendText/${instance}`,
           {
-            number: clientNumber,
-            text: "🎥 He recibido tu video. Para evitar confusiones, ¿podrías enviarme una *captura de pantalla* del momento exacto, o volver a enviarme el video escribiendo el *segundo* en el mensaje? (Ej: 'segundo 5')"
+            number: cleanClientNumber,
+            text: "🎥 He recibido tu video. Para evitar confusiones, ¿podrías enviarme una *captura de pantalla* del momento exacto, o volver a enviarme el video escribiendo el *segundo* en el mensaje? (Ej: 'segundo 5')",
+            options: {
+              delay: 0
+            }
           },
           getEvoHeaders()
         );
@@ -407,7 +514,7 @@ export async function receiveWebhook(req, res) {
         const mediaRes = await axios.post(
           `${evoUrl}/chat/getBase64FromMediaMessage/${instance}`,
           { message: data },
-          getEvoHeaders()
+          getEvoHeaders(requestApiKey)
         );
         let resData = mediaRes.data;
         let videoBase64 = null;
@@ -419,13 +526,17 @@ export async function receiveWebhook(req, res) {
           const frameBase64 = await extractFrameFromVideo(videoBase64, userMessageText);
           if (frameBase64 === 'REQUIRE_SECOND') {
             console.log('🛡️ [Escudo Video] extractFrameFromVideo solicitó segundo. Respondiendo plantilla.');
+            const cleanClientNumber = clientNumber.replace(/\D/g, '');
             await axios.post(
               `${evoUrl}/message/sendText/${instance}`,
               {
-                number: clientNumber,
-                text: "🎥 He recibido tu video. Para evitar confusiones, ¿podrías enviarme una *captura de pantalla* del momento exacto, o volver a enviarme el video escribiendo el *segundo* en el mensaje? (Ej: 'segundo 5')"
+                number: cleanClientNumber,
+                text: "🎥 He recibido tu video. Para evitar confusiones, ¿podrías enviarme una *captura de pantalla* del momento exacto, o volver a enviarme el video escribiendo el *segundo* en el mensaje? (Ej: 'segundo 5')",
+                options: {
+                  delay: 0
+                }
               },
-              getEvoHeaders()
+              getEvoHeaders(requestApiKey)
             );
             return res.sendStatus(200);
           }
@@ -447,39 +558,57 @@ export async function receiveWebhook(req, res) {
     console.log(`💬 [Webhook Evolution] Mensaje entrante de +${clientNumber} en instancia ${instance}: "${userMessageText}"`);
 
     // Mapear el nombre de la instancia al Tenant correspondiente en PostgreSQL
-    // El nombre de la instancia sigue el formato: velion_instance_8c975d84 (los primeros 8 caracteres del tenantId)
-    const tenantPrefix = instance.replace('velion_instance_', '');
-    const tenant = await prisma.tenant.findFirst({
-      where: {
-        id: {
-          startsWith: tenantPrefix
-        }
-      }
+    // El nombre de la instancia sigue el formato: bot_prod_8c975d84 (los primeros 8 caracteres del tenantId)
+    const tenantPrefix = instance.replace('bot_prod_', '');
+    
+    const tenants = await prisma.tenant.findMany({ select: { id: true } });
+    console.log("🔍 [DEBUG] Tenants en la base de datos:", tenants.map(t => t.id));
+    console.log("🔍 [DEBUG] Buscando el prefijo exacto:", tenantPrefix);
+
+    const matchingTenant = tenants.find(t => t.id.toLowerCase().startsWith(tenantPrefix.toLowerCase()));
+
+    if (!matchingTenant) {
+        console.log(`⚠️ [Webhook Evolution] No se encontró ningún Tenant registrado en DB para el prefijo: ${tenantPrefix}`);
+        return res.status(200).send('Tenant no encontrado, pero mensaje recibido.');
+    }
+
+    const tenant = await prisma.tenant.findUnique({
+      where: { id: matchingTenant.id }
     });
 
-    if (!tenant) {
-      console.warn(`⚠️ [Webhook Evolution] No se encontró ningún Tenant registrado en DB para el prefijo: ${tenantPrefix}`);
-      return res.sendStatus(200);
+    // ESCUDO DE GRUPOS: Validar si el mensaje es de un grupo y si el Tenant permite responder en grupos
+    if (isGroup && !tenant?.respondInGroups) {
+      console.log(`🛡️ [Seguridad] Mensaje de grupo ignorado para ${remoteJid} (respondInGroups es false)`);
+      return res.status(200).send('Group message ignored');
     }
 
     // --- Persistencia en Chat y Mensajes (Live Chat CRM) ---
+    const cleanPhone = clientNumber.replace(/\D/g, '') || clientNumber;
+    const rawPushName = data?.pushName || data?.key?.pushName || req.body?.pushName || null;
+    const contactName = sanitizePushName(rawPushName);
+
+    // Búsqueda ESTRICTA por tenantId y phone exacto (Evita duplicados o cruces de nombres)
     let contact = await prisma.contact.findFirst({
       where: {
         tenantId: tenant.id,
-        phone: {
-          contains: clientNumber
-        }
+        phone: cleanPhone
       }
     });
 
     if (!contact) {
       contact = await prisma.contact.create({
         data: {
-          name: data?.pushName || `Cliente +${clientNumber}`,
-          phone: clientNumber,
+          name: contactName,
+          phone: cleanPhone,
           tenantId: tenant.id,
           category: 'Whatsapp'
         }
+      });
+    } else if (contact.name === 'Cliente Desconocido' && contactName !== 'Cliente Desconocido') {
+      // Si el contacto existía como desconocido y ahora nos envía un pushName válido, actualizar su nombre
+      contact = await prisma.contact.update({
+        where: { id: contact.id },
+        data: { name: contactName }
       });
     }
 
@@ -527,7 +656,7 @@ export async function receiveWebhook(req, res) {
     }
 
     // SI EL MENSAJE ES ENTRANTE (DEL CLIENTE)
-    // Registrar el mensaje entrante en la base de datos
+    // 1. Registrar el mensaje entrante en la base de datos inmediatamente para el panel
     await prisma.message.create({
       data: {
         content: userMessageText,
@@ -537,7 +666,7 @@ export async function receiveWebhook(req, res) {
       }
     });
 
-    // Emitir mensaje entrante a través de WebSocket en tiempo real
+    // 2. Emitir mensaje entrante a través de WebSocket en tiempo real inmediatamente
     if (req.io) {
       req.io.emit('new_whatsapp_message', {
         chatId: chat.id,
@@ -547,6 +676,74 @@ export async function receiveWebhook(req, res) {
         timestamp: new Date()
       });
     }
+
+    // 3. Sistema de Message Buffer / Debounce: Acumular mensajes si el usuario escribe en ráfaga (espera 4000ms)
+    const existingBuffer = messageBuffers.get(remoteJid);
+    if (existingBuffer) {
+      clearTimeout(existingBuffer.timer);
+      existingBuffer.text += '\n' + userMessageText;
+      if (imageBase64) {
+        existingBuffer.imageBase64 = imageBase64;
+      }
+      existingBuffer.timer = setTimeout(() => {
+        processBufferedMessage(remoteJid);
+      }, 4000);
+      console.log(`⏳ [Message Buffer] Mensaje en ráfaga concatenado para +${clientNumber}. Reiniciando temporizador a 4000ms...`);
+    } else {
+      const bufferEntry = {
+        remoteJid,
+        clientNumber,
+        text: userMessageText,
+        imageBase64,
+        tenant,
+        contact,
+        chat,
+        instance,
+        requestApiKey,
+        data,
+        reqIo: req.io,
+        timer: setTimeout(() => {
+          processBufferedMessage(remoteJid);
+        }, 4000)
+      };
+      messageBuffers.set(remoteJid, bufferEntry);
+      console.log(`⏳ [Message Buffer] Primer mensaje en ráfaga de +${clientNumber}. Esperando 4000ms para acumular mensajes adicionales...`);
+    }
+
+    return res.sendStatus(200);
+  } catch (error) {
+    console.error('❌ Error en webhook de recepción:', error.response?.data || error.message);
+    return res.sendStatus(200);
+  }
+}
+
+/**
+ * Procesa la ráfaga acumulada de mensajes en el buffer tras caducar el temporizador de 4000ms
+ */
+async function processBufferedMessage(remoteJid) {
+  const buffer = messageBuffers.get(remoteJid);
+  if (!buffer) return;
+
+  // Sacar y eliminar del buffer
+  messageBuffers.delete(remoteJid);
+
+  const {
+    text: userMessageText,
+    imageBase64,
+    tenant,
+    contact,
+    chat,
+    instance,
+    requestApiKey,
+    clientNumber,
+    data,
+    reqIo
+  } = buffer;
+
+  console.log(`🤖 [Message Buffer] Procesando ráfaga acumulada para +${clientNumber} (${userMessageText.length} caracteres): "${userMessageText.replace(/\n/g, ' ')}"`);
+
+  try {
+    const evoUrl = process.env.EVOLUTION_API_URL || 'http://localhost:8080';
 
     // Buscar o registrar al cliente en el CRM (Memoria a Largo Plazo / Anti-Banes)
     let customer = await prisma.customer.findUnique({
@@ -572,20 +769,39 @@ export async function receiveWebhook(req, res) {
     // El Martillo del Ban: Si el usuario está baneado, ignorar de inmediato
     if (customer.isBanned) {
       console.log(`🔨 [Martillo del Ban] Mensaje de +${clientNumber} ignorado debido a baneo activo.`);
-      return res.status(200).send("Usuario baneado, ignorando");
+      return;
     }
 
     // --- SEGURO DE ATENCIÓN HUMANA (HUMAN HANDOFF) ---
     if (customer.isBotPaused) {
       console.log(`👥 [Human Handoff] Bot pausado para +${clientNumber}. Conversación atendida por asesor.`);
-      return res.sendStatus(200);
+      return;
     }
 
     // --- MOTOR DE FLUJOS AUTOMATIZADOS (FASE 2) ---
     const isFlowHandled = await flowService.executeFlowContext(customer, userMessageText, instance);
     if (isFlowHandled) {
       console.log(`🤖 [Flow Engine] Flujo visual tomó control de la conversación para +${clientNumber}`);
-      return res.sendStatus(200);
+      return;
+    }
+
+    // --- ESCUDO DE FACTURACIÓN: Rate Limiter de IA (Máximo 10 mensajes de IA por minuto por usuario) ---
+    if (remoteJid) {
+      const now = Date.now();
+      const limitData = iaRateLimitCache.get(remoteJid);
+      if (limitData) {
+        if (now < limitData.resetTime) {
+          if (limitData.count >= 10) {
+            console.warn(`🛡️ [IA Rate Limiter] Límite de IA excedido para +${clientNumber}. Bloqueando respuesta para proteger tokens de OpenAI.`);
+            return;
+          }
+          limitData.count += 1;
+        } else {
+          iaRateLimitCache.set(remoteJid, { count: 1, resetTime: now + 60000 });
+        }
+      } else {
+        iaRateLimitCache.set(remoteJid, { count: 1, resetTime: now + 60000 });
+      }
     }
 
     // Consultar el catálogo de inventario del Tenant
@@ -602,58 +818,195 @@ export async function receiveWebhook(req, res) {
       where: { id: tenant.id }
     });
 
+    // ─── CONTROL DE CUOTA / LÍMITE DE MENSAJES MENSUALES DEL TENANT ───
+    const startOfMonth = new Date();
+    startOfMonth.setDate(1);
+    startOfMonth.setHours(0, 0, 0, 0);
+
+    const monthMsgCount = await prisma.message.count({
+      where: {
+        tenantId: tenant.id,
+        createdAt: { gte: startOfMonth }
+      }
+    });
+
+    const tenantMsgLimit = tenantDetails?.msgLimit || 1000;
+
+    if (monthMsgCount >= tenantMsgLimit) {
+      console.warn(`🛑 [Límite Excedido] Tenant '${tenant.name}' alcanzó su límite mensual (${monthMsgCount}/${tenantMsgLimit}). Se detiene la IA y se notifica al usuario.`);
+      const finalCleanNumber = clientNumber.replace(/[^0-9]/g, '');
+      try {
+        await axios.post(
+          `${evoUrl}/message/sendText/${instance}`,
+          {
+            number: finalCleanNumber,
+            text: "Has alcanzado el límite mensual de mensajes de tu plan."
+          },
+          getEvoHeaders(requestApiKey)
+        );
+      } catch (limitSendErr) {
+        console.error(`❌ Error enviando mensaje de límite excedido:`, limitSendErr.message);
+      }
+      return;
+    }
+
     // Formatear el catálogo de inventario en una lista compacta de texto
+    const hoy = new Date();
     const lines = products.map((p) => {
       const disponibilidad = p.isAvailable ? 'Disponible' : 'Agotado';
-      const precio = p.price ? `$${p.price.toFixed(2)}` : 'precio no definido';
       const descripcion = p.description ? `. ${p.description}` : '';
       const imagenUrl = p.imageUrl ? ` | Imagen: ${p.imageUrl}` : ' | Imagen: Sin imagen';
-      return `- ${p.name}: ${precio}, Estado: ${disponibilidad}${descripcion}${imagenUrl}`;
+
+      let tienePromoActiva = false;
+      if (p.promotionalPrice !== null && p.promotionalPrice !== undefined) {
+        const start = p.promoStartDate ? new Date(p.promoStartDate) : null;
+        const end = p.promoEndDate ? new Date(p.promoEndDate) : null;
+
+        const despuesDeInicio = !start || hoy >= start;
+        const antesDeFin = !end || hoy <= end;
+
+        if (despuesDeInicio && antesDeFin) {
+          tienePromoActiva = true;
+        }
+      }
+
+      let precioTexto = '';
+      if (tienePromoActiva) {
+        const fechaFinTexto = p.promoEndDate
+          ? new Date(p.promoEndDate).toLocaleDateString('es-ES', { day: 'numeric', month: 'long', year: 'numeric' })
+          : 'tiempo limitado';
+        precioTexto = `Precio Normal: S/. ${p.price.toFixed(2)} - PRECIO DE PROMOCIÓN ACTIVO: S/. ${p.promotionalPrice.toFixed(2)} (Válido hasta ${fechaFinTexto})`;
+      } else {
+        precioTexto = p.price ? `S/. ${p.price.toFixed(2)}` : 'precio no definido';
+      }
+
+      return `- ${p.name}: ${precioTexto}, Estado: ${disponibilidad}${descripcion}${imagenUrl}`;
     });
 
     const inventarioTexto = lines.length > 0
       ? lines.join('\n')
       : 'El catálogo de inventario se encuentra actualmente vacío.';
 
-    // Construir bloque de contexto institucional del Tenant
+    // ─── CAPA 1: CAPA GLOBAL (Guardrails de Seguridad y Límites de la IA) ───
+    const globalGuardrails = `
+Eres el asistente virtual oficial de la tienda. En ningún momento actúes como un asistente de IA general. Tu función es representar a la tienda y ayudar únicamente en temas relacionados con sus productos, servicios, pedidos, horarios, promociones, políticas y atención al cliente.
+
+Si un cliente hace preguntas que no tienen relación con la tienda (por ejemplo: resolver tareas, programar, traducir textos, dar consejos médicos, legales, financieros, crear historias, responder cultura general o cualquier otra consulta ajena al negocio), responde de forma amable indicando que tu función es brindar atención sobre la tienda y redirige la conversación hacia ese propósito. No respondas esas solicitudes.
+
+Mantén siempre un tono profesional, amable, natural y cercano. Escribe como una persona del equipo de atención al cliente, nunca menciones que eres una inteligencia artificial, un modelo de lenguaje o ChatGPT, salvo que la configuración de la tienda lo indique explícitamente.
+
+Responde de forma breve y clara. Evita mensajes largos o innecesarios. Da únicamente la información necesaria para responder la consulta. Si el cliente necesita más detalles, proporcionalos paso a paso.
+
+REGLA DE CIERRE DE CONVERSACIÓN (OBLIGATORIA Y ESTRICTA):
+Si el usuario responde con un simple agradecimiento ('gracias', 'ok', 'listo', 'muchas gracias', 'perfecto') o se despide cerrando la venta, DEBES responder con una despedida final muy breve (máximo 5 palabras, ej: '¡De nada, vuelve pronto!'). BAJO NINGUNA CIRCUNSTANCIA debes hacer preguntas de seguimiento, ni decir '¿En qué más puedo ayudarte?' en estos casos. Cierra la conversación de forma seca pero amable para evitar bucles infinitos.
+
+No inventes información. Si no conoces un dato o este no aparece en las instrucciones de la tienda, indícalo con honestidad y solicita la información necesaria o sugiere contactar con un asesor humano.
+
+No prometas descuentos, disponibilidad, tiempos de entrega, garantías, devoluciones o cualquier condición que no esté especificada por la tienda.
+
+Adapta el lenguaje al cliente, pero mantén siempre el respeto. Usa emojis solo si la configuración de la tienda lo permite o si el estilo de la conversación lo hace apropiado.
+
+Si el cliente envía un saludo, responde al saludo e invita a explicar qué necesita. Si hace varias preguntas, respóndelas en un solo mensaje de forma organizada.
+
+Prioriza ayudar al cliente a realizar una compra, resolver dudas sobre productos o dar seguimiento a pedidos, sin ser insistente ni presionar para vender.
+
+ESTRATEGIA DE VENTAS CONTEXTUAL:
+- Fase de Exploración/Consulta: Si el cliente pregunta por productos, precios o tiene dudas, usa una estructura persuasiva: 1) Empatía o beneficio rápido, 2) Información directa, 3) Termina SIEMPRE con una pregunta corta para avanzar la venta.
+- Fase de Pago/Cierre o Respuestas Simples: Si el cliente está pagando, enviando datos o la conversación ya fluyó al cierre, OLVIDA la estructura anterior. Responde de forma natural, corta y al grano (ej. '¡Excelente! Envíame el comprobante por aquí'). Adapta tu nivel de persuasión al contexto para sonar 100% como un humano real.
+
+Las instrucciones específicas de la tienda tienen prioridad sobre este mensaje global. En caso de conflicto, sigue siempre las instrucciones particulares de la tienda, siempre que no contradigan estas reglas generales.
+`.trim();
+
+    // ─── CAPA 2: CAPA DEL SISTEMA (Reglas Duras de Plataforma e Inventario PostgreSQL) ───
     let infoInstitucional = '';
     if (tenantDetails) {
       const nombreComercial = tenantDetails.companyName || tenantDetails.name || 'nuestra empresa';
-      infoInstitucional = `Eres el asistente virtual de ventas de "${nombreComercial}".`;
-      if (tenantDetails.businessSector) infoInstitucional += ` Nos dedicamos a: ${tenantDetails.businessSector}.`;
-      if (tenantDetails.address) infoInstitucional += ` Nuestra dirección física es: ${tenantDetails.address}.`;
-      if (tenantDetails.phone) infoInstitucional += ` Teléfono de contacto: ${tenantDetails.phone}.`;
-      if (tenantDetails.email) infoInstitucional += ` Email de soporte: ${tenantDetails.email}.`;
-      if (tenantDetails.businessHours) infoInstitucional += ` Horarios de atención: ${tenantDetails.businessHours}.`;
-      if (tenantDetails.bankAccounts) infoInstitucional += ` Cuentas bancarias e instrucciones de pago: ${tenantDetails.bankAccounts}.`;
-      if (tenantDetails.termsAndPolicies) infoInstitucional += ` Políticas de devolución, envíos y términos: ${tenantDetails.termsAndPolicies}.`;
-    } else {
-      infoInstitucional = `Eres un asistente virtual de ventas amable.`;
+      const sector = tenantDetails.businessSector || 'sector comercial';
+      
+      infoInstitucional = `\n\nINFORMACIÓN DE LA EMPRESA: ${nombreComercial}, sector: ${sector}.`;
+
+      let detallesExt = '\nINFORMACIÓN COMPLEMENTARIA DE LA EMPRESA:';
+      if (tenantDetails.address) detallesExt += `\n- Dirección física: ${tenantDetails.address}.`;
+      if (tenantDetails.phone) detallesExt += `\n- Teléfono de contacto: ${tenantDetails.phone}.`;
+      if (tenantDetails.email) detallesExt += `\n- Email de soporte: ${tenantDetails.email}.`;
+      if (tenantDetails.businessHours) detallesExt += `\n- Horarios de atención: ${tenantDetails.businessHours}.`;
+      if (tenantDetails.bankAccounts) detallesExt += `\n- Cuentas bancarias e instrucciones de pago: ${tenantDetails.bankAccounts}.`;
+      if (tenantDetails.termsAndPolicies) detallesExt += `\n- Políticas de envío, devolución y términos: ${tenantDetails.termsAndPolicies}.`;
+      
+      infoInstitucional += detallesExt;
     }
 
-    // Inyectar el inventario al System Prompt de GPT-4o-mini
-    const systemPrompt = `${infoInstitucional} Responde siempre de forma breve, amable y concisa.
-Este es el inventario actual de productos disponibles (datos en tiempo real desde la base de datos):
-${inventarioTexto}
+    const isMultiMessageActive = tenantDetails?.multiMessageMode !== false; // Activo por defecto (true)
+    let splitRule = '';
+    if (isMultiMessageActive) {
+      splitRule = `\nREGLA CRÍTICA DEL SISTEMA (OBLIGATORIA): 
+Sin importar tus instrucciones anteriores, DEBES separar tus respuestas en múltiples globos de chat cortos y fluidos para simular a un humano escribiendo. 
+Para hacer esto, usa el separador exacto '[SPLIT]' entre cada idea. 
+Ejemplo: '¡Hola! Claro que sí 😃 [SPLIT] ¿Qué producto buscas hoy? [SPLIT] Hacemos envíos a todo el Perú 🚚.'\n`;
+    }
 
-Usa esta información para responder preguntas sobre disponibilidad, precios y productos del catálogo. Si el estado de un producto es Agotado, infórmale claramente al cliente que no está disponible por el momento.`;
+    let orderNotificationRule = '';
+    if (tenantDetails?.notifySalesWhatsApp === true) {
+      orderNotificationRule = `\nINSTRUCCIÓN DE CONFIRMACIÓN DE VENTA/PEDIDO (OBLIGATORIA):
+Cuando el cliente confirme todos los datos de una compra/envío (producto, dirección, método de pago, monto), genera un resumen estandarizado del pedido e inclúyelo al final de tu respuesta entre la etiqueta exacta [ORDER_CONFIRMED: ...] (ej. '[ORDER_CONFIRMED: Producto: Camiseta Anime | Monto: S/ 85 | Dirección: Av. Brasil 123, Lima | Método: Yape]').\n`;
+    }
+
+    const humanHandoffRule = `\nREGLA DE TRANSFERENCIA A HUMANO (FILTRO INTELIGENTE - OBLIGATORIO):
+1. Si el usuario pide hablar con un humano, asesor o persona en su PRIMER mensaje o sin explicar su problema, NO emitirás la etiqueta [HUMAN_HANDOFF: ...] de inmediato.
+2. En su lugar, responde de forma empática ofreciendo tu ayuda primero: 'Con gusto te comunico con un asesor, pero quizás yo pueda resolver tu consulta más rápido. ¿Sobre qué tema necesitas ayuda?'.
+3. Si el usuario procede a explicar su duda y está dentro de tus capacidades (horarios, precios, información básica, catálogo), RESUÉLVELA directamente.
+4. PERO, si el usuario explica un problema complejo (quejas, reembolsos, reclamos, errores de sistema), O si INSISTE agresivamente o por segunda vez en hablar con un humano tras tu ofrecimiento, ENTONCES SÍ debes activar la transferencia. En ese caso, despídete amablemente indicando que un asesor lo atenderá y emite al final de tu respuesta la etiqueta exacta: [HUMAN_HANDOFF: Motivo o breve resumen de la solicitud].\n`;
+
+    let marketingInstructionRule = '';
+    if (tenantDetails?.marketingModeEnabled === true) {
+      marketingInstructionRule = `\nMODO VENDEDOR PERSUASIVO (ESTRATEGIAS DE MARKETING):
+tu objetivo principal será aumentar las probabilidades de concretar una venta sin sacrificar la honestidad ni la buena experiencia del cliente.
+
+Antes de responder, analiza la intención del cliente y adapta la conversación para guiarla de forma natural hacia una compra cuando sea apropiado.
+
+No te limites a responder preguntas de forma literal. Explica primero el valor, los beneficios y cómo el producto o servicio puede ayudar al cliente utilizando únicamente la información proporcionada por la tienda. Nunca inventes características, ventajas o promociones.
+
+Cuando un cliente pregunte el precio, si la conversación lo permite, presenta primero de forma breve los beneficios más relevantes del producto y luego indica el precio. No ocultes el precio ni evites responderlo si el cliente lo solicita.
+
+Personaliza la respuesta según la necesidad del cliente. Relaciona los beneficios con lo que el cliente está buscando en lugar de repetir una lista de características.
+
+Resuelve dudas y objeciones con calma, utilizando información real. Si el cliente compara con otros productos o menciona un precio más bajo, destaca el valor diferencial de la tienda o del producto cuando exista, sin hablar mal de la competencia ni hacer afirmaciones sin fundamento.
+
+No presiones al cliente para comprar. Evita insistir repetidamente, generar sensación de culpa o utilizar tácticas agresivas. Si el cliente no está interesado, respeta su decisión.
+
+Cuando existan varias opciones, ayuda al cliente a elegir la más adecuada según sus necesidades en lugar de intentar vender siempre la más cara.
+
+Siempre que sea natural, finaliza la respuesta con una pregunta que mantenga la conversación, por ejemplo para conocer la necesidad del cliente, confirmar una característica importante o facilitar el siguiente paso hacia la compra.
+
+Mantén un tono cercano, profesional y seguro. Evita mensajes excesivamente largos o con apariencia de publicidad. La conversación debe sentirse natural y útil.
+
+No inventes descuentos, promociones, disponibilidad, urgencia, escasez, testimonios, garantías o cualquier otro dato comercial que no haya sido proporcionado por la tienda.
+
+El éxito de este modo no consiste en convencer a toda costa, sino en ayudar al cliente a tomar una decisión de compra informada, generando confianza mediante respuestas claras, útiles y orientadas al valor.\n`;
+    }
+
+    const systemRulesAndInventory = `${splitRule}${orderNotificationRule}${humanHandoffRule}${marketingInstructionRule}${infoInstitucional}`.trim();
+
+    // ─── ENSAMBLAJE FINAL CON INYECCIÓN DE IDENTIDAD E INSTRUCCIONES EN LA CÚSPIDE ───
+    const mainInstructions = (tenantDetails?.botRole || tenantDetails?.customPrompt || 'Eres un asistente virtual de ventas amable, atento y amigable.').trim();
+    const mainInstructionsHeader = `IDENTIDAD E INSTRUCCIONES PRINCIPALES DEL BOT:\n${mainInstructions}\n\n`;
+
+    const systemPrompt = `${mainInstructionsHeader}${globalGuardrails}\n\n${systemRulesAndInventory}`;
 
     console.log(`🤖 [GPT-4o-mini] Generando respuesta de IA para +${clientNumber}...`);
 
-    // Simular estado "escribiendo..." en WhatsApp de forma asíncrona no bloqueante
-    axios.post(
-      `${evoUrl}/chat/sendPresence/${instance}`,
-      {
-        number: key.remoteJid,
-        presence: "composing",
-        delay: 5000
-      },
-      getEvoHeaders()
-    ).catch(err => {
-      console.warn('⚠️ [Evolution API] No se pudo enviar estado de presencia:', err.message);
-    });
+    try {
+      axios.post(
+        `${evoUrl}/chat/sendPresence/${instance}`,
+        {
+          number: remoteJid,
+          presence: "composing",
+          delay: 2000
+        },
+        getEvoHeaders()
+      ).catch(err => {});
+    } catch {}
 
-    // Obtener respuesta de GPT-4o-mini pasando las preferencias históricas del cliente
     const aiResponse = await generateAIResponse(
       systemPrompt, 
       [{ role: 'user', content: userMessageText }],
@@ -663,32 +1016,28 @@ Usa esta información para responder preguntas sobre disponibilidad, precios y p
     );
 
     if (!aiResponse || aiResponse === '...') {
-      return res.sendStatus(200);
+      return;
     }
 
-    // El Martillo del Ban: Si la respuesta es exactamente '[BAN_USER]'
     if (aiResponse.trim() === '[BAN_USER]') {
       console.log(`🔨 [Martillo del Ban] Detectado comportamiento troll de +${clientNumber}. Aplicando baneo.`);
       await prisma.customer.update({
         where: { id: customer.id },
         data: { isBanned: true }
       });
-      return res.sendStatus(200);
+      return;
     }
 
-    // 1. Buscar y extraer etiquetas [MEDIA: url_de_la_imagen] de la respuesta de la IA
     const mediaRegex = /\[MEDIA:\s*(.+?)\]/g;
     const mediaUrls = [];
     let match;
     while ((match = mediaRegex.exec(aiResponse)) !== null) {
       if (match[1]) {
-        // En caso de que se envíen múltiples imágenes separadas por coma en la etiqueta
         const urls = match[1].split(',').map(url => url.trim());
         mediaUrls.push(...urls);
       }
     }
 
-    // Buscar y extraer etiquetas [SAVE_MEM: ...] para la memoria a largo plazo
     const saveMemRegex = /\[SAVE_MEM:\s*(.+?)\]/g;
     const newMemories = [];
     let memMatch;
@@ -698,7 +1047,70 @@ Usa esta información para responder preguntas sobre disponibilidad, precios y p
       }
     }
 
-    // Guardar nuevas preferencias en la base de datos de forma incremental
+    // ─── DETECCIÓN DE TRANSFERENCIA A HUMANO [HUMAN_HANDOFF: ...] ───
+    const handoffRegex = /\[HUMAN_HANDOFF:\s*([\s\S]+?)\]/g;
+    const handoffMatches = [];
+    let handoffMatch;
+    while ((handoffMatch = handoffRegex.exec(aiResponse)) !== null) {
+      if (handoffMatch[1]) {
+        handoffMatches.push(handoffMatch[1].trim());
+      }
+    }
+
+    if (handoffMatches.length > 0) {
+      const destPhone = await resolveNotificationPhone(tenant.id, tenantDetails);
+      if (destPhone) {
+        for (const reason of handoffMatches) {
+          const alertMessage = `🚨 *ALERTA DE ASESOR REQUERIDO* 🚨\nEl cliente *+${clientNumber}* ha solicitado hablar con un humano.\n*Motivo / Último mensaje:* ${reason}\n¡Por favor, entra al chat y atiéndelo!`;
+          try {
+            await axios.post(
+              `${evoUrl}/message/sendText/${instance}`,
+              {
+                number: destPhone,
+                text: alertMessage,
+              },
+              getEvoHeaders(requestApiKey)
+            );
+            console.log(`🚨 [Human Handoff] Alerta enviada a +${destPhone} para cliente +${clientNumber}`);
+          } catch (errHandoff) {
+            console.error(`❌ [Human Handoff] Error al enviar alerta a +${destPhone}:`, errHandoff.response?.data || errHandoff.message);
+          }
+        }
+      }
+    }
+
+    // ─── DETECCIÓN DE CONFIRMACIÓN DE VENTA/PEDIDO [ORDER_CONFIRMED: ...] ───
+    const orderRegex = /\[ORDER_CONFIRMED:\s*([\s\S]+?)\]/g;
+    const orderSummaries = [];
+    let orderMatch;
+    while ((orderMatch = orderRegex.exec(aiResponse)) !== null) {
+      if (orderMatch[1]) {
+        orderSummaries.push(orderMatch[1].trim());
+      }
+    }
+
+    if (orderSummaries.length > 0 && tenantDetails?.notifySalesWhatsApp === true) {
+      const destPhone = await resolveNotificationPhone(tenant.id, tenantDetails);
+      if (destPhone) {
+        for (const summary of orderSummaries) {
+          const notificationText = `🚨 *NUEVO PEDIDO CONFIRMADO por IA*\n\n📱 *Cliente:* +${clientNumber} (${customer.name || 'Sin Nombre'})\n📋 *Resumen:* ${summary}\n\n⚡ _Velion Agent Auto-Notification_`;
+          try {
+            await axios.post(
+              `${evoUrl}/message/sendText/${instance}`,
+              {
+                number: destPhone,
+                text: notificationText,
+              },
+              getEvoHeaders(requestApiKey)
+            );
+            console.log(`📲 [Notificación de Venta] Enviada exitosamente a +${destPhone}`);
+          } catch (notifyErr) {
+            console.error(`❌ [Notificación de Venta] Error al enviar a +${destPhone}:`, notifyErr.response?.data || notifyErr.message);
+          }
+        }
+      }
+    }
+
     if (newMemories.length > 0) {
       try {
         const currentPrefs = customer.preferences ? customer.preferences + '\n' : '';
@@ -715,64 +1127,90 @@ Usa esta información para responder preguntas sobre disponibilidad, precios y p
       }
     }
 
-    // 2. Limpiar el texto para que el cliente no vea los tags internos
     const cleanText = aiResponse
       .replace(mediaRegex, '')
       .replace(saveMemRegex, '')
+      .replace(orderRegex, '')
+      .replace(handoffRegex, '')
       .trim();
 
-    console.log(`📤 [Evolution API] Enviando respuesta limpia a +${clientNumber}: "${cleanText}"`);
-
-    // 3. Enviar mensaje de texto principal (si contiene texto)
     if (cleanText) {
-      await axios.post(
-        `${evoUrl}/message/sendText/${instance}`,
-        {
-          number: clientNumber,
-          text: cleanText,
-        },
-        getEvoHeaders()
-      );
+      // Separar el texto en múltiples mensajes independientes utilizando el delimitador [SPLIT]
+      const messageSegments = cleanText
+        .split('[SPLIT]')
+        .map(segment => segment.trim())
+        .filter(segment => segment.length > 0);
 
-      // Guardar el mensaje saliente de texto en la base de datos
-      await prisma.message.create({
-        data: {
-          content: cleanText,
-          senderRole: 'agent',
-          chatId: chat.id,
-          tenantId: tenant.id
+      const finalCleanNumber = clientNumber.replace(/[^0-9]/g, '');
+      console.log(`📤 [Evolution API] Enviando ${messageSegments.length} segmento(s) de mensaje a ${finalCleanNumber}...`);
+
+      const evoSendUrl = `${evoUrl}/message/sendText/${instance}`;
+
+      for (let i = 0; i < messageSegments.length; i++) {
+        const msgSegment = messageSegments[i];
+
+        try {
+          const sendResult = await axios.post(
+            evoSendUrl,
+            {
+              number: finalCleanNumber,
+              text: msgSegment,
+              options: {
+                delay: 0
+              }
+            },
+            getEvoHeaders(requestApiKey)
+          );
+          console.log(`✅ [Evolution API] Segmento ${i + 1}/${messageSegments.length} enviado a ${finalCleanNumber}: "${msgSegment}"`);
+          console.log(`✅ [Evolution API] Segmento enviado a ${finalCleanNumber}`);
+        } catch (sendErr) {
+          console.error(`❌ [Evolution API] Error al enviar segmento ${i + 1} a ${finalCleanNumber}:`, sendErr.response?.data || sendErr.message);
         }
-      });
 
-      // Emitir mensaje saliente de texto por WebSocket en tiempo real
-      if (req.io) {
-        req.io.emit('new_whatsapp_message', {
-          chatId: chat.id,
-          remoteJid,
-          text: cleanText,
-          type: 'outgoing',
-          timestamp: new Date()
+        // Guardar cada segmento de mensaje saliente en la base de datos
+        await prisma.message.create({
+          data: {
+            content: msgSegment,
+            senderRole: 'agent',
+            chatId: chat.id,
+            tenantId: tenant.id
+          }
         });
+
+        // Emitir cada segmento saliente vía WebSocket en tiempo real
+        if (reqIo) {
+          reqIo.emit('new_whatsapp_message', {
+            chatId: chat.id,
+            remoteJid,
+            text: msgSegment,
+            type: 'outgoing',
+            timestamp: new Date()
+          });
+        }
+
+        // Simular tiroteo humano de mensajes: Pausa de 2.5 segundos entre cada segmento
+        if (i < messageSegments.length - 1) {
+          await new Promise(resolve => setTimeout(resolve, 2500));
+        }
       }
     }
 
-    // 4. Enviar los archivos multimedia extraídos de forma secuencial y asíncrona
+    const finalCleanNumber = clientNumber.replace(/[^0-9]/g, '');
     for (const url of mediaUrls) {
       if (url && url !== 'Sin imagen') {
         try {
-          console.log(`📤 [Evolution API] Enviando multimedia a +${clientNumber}: "${url}"`);
           await axios.post(
             `${evoUrl}/message/sendMedia/${instance}`,
             {
-              number: clientNumber,
+              number: finalCleanNumber,
               mediatype: "image",
               media: url,
               caption: "Imagen de producto"
             },
-            getEvoHeaders()
+            getEvoHeaders(requestApiKey)
           );
+          console.log(`✅ [Evolution API] Multimedia enviado a ${finalCleanNumber}`);
 
-          // Guardar el mensaje saliente de imagen en la base de datos
           await prisma.message.create({
             data: {
               content: `[Imagen]: ${url}`,
@@ -782,9 +1220,8 @@ Usa esta información para responder preguntas sobre disponibilidad, precios y p
             }
           });
 
-          // Emitir mensaje saliente de imagen por WebSocket en tiempo real
-          if (req.io) {
-            req.io.emit('new_whatsapp_message', {
+          if (reqIo) {
+            reqIo.emit('new_whatsapp_message', {
               chatId: chat.id,
               remoteJid,
               text: url,
@@ -798,10 +1235,7 @@ Usa esta información para responder preguntas sobre disponibilidad, precios y p
         }
       }
     }
-
-    return res.status(200).json({ success: true, response: aiResponse });
   } catch (error) {
-    console.error('❌ Error en webhook de recepción e IA:', error.response?.data || error.message);
-    return res.sendStatus(200); // Siempre responder 200 a Evolution para evitar reintentos infinitos por error del webhook
+    console.error('❌ Error en el procesamiento del buffer de mensajes:', error.message);
   }
 }

@@ -22,7 +22,7 @@ services:
     environment:
       - SERVER_URL=http://localhost:8080
       - AUTHENTICATION_TYPE=apikey
-      - AUTHENTICATION_API_KEY=bot_clave_maestra_2026
+      - AUTHENTICATION_API_KEY=A59F9002-9FFF-41CF-8EA6-58AEEB06ED7B
       - DATABASE_PROVIDER=postgresql
       - DATABASE_CONNECTION_URI=postgresql://postgres:postgres@postgres_db:5432/bot_saas_db?schema=evolution_api
       - REDIS_ENABLED=false

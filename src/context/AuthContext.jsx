@@ -1,11 +1,10 @@
 import { createContext, useContext, useEffect, useState } from 'react';
 
 /* ─────────────────────────────────────────────────────────────
-   AUTH SIMULADO — modo local sin Firebase con soporte RBAC
-   Credenciales de prueba:
-     a) admin@test.com / 123456   -> rol: 'superadmin'
-     b) cliente@test.com / 123456 -> rol: 'client'
-   La sesión persiste en localStorage bajo la clave "sa_mock_user"
+   CONTEXTO DE AUTENTICACIÓN
+   Credenciales SuperAdmin Oficial:
+     nehiseroblitas2001@gmail.com / Undertale.926246740 -> rol: 'superadmin'
+   La sesión persiste en localStorage bajo la clave "sa_token"
 ───────────────────────────────────────────────────────────── */
 
 // Importaciones reales de Firebase (comentadas hasta reactivar cuota):
@@ -48,36 +47,8 @@ export function AuthProvider({ children }) {
    * signIn — simulador local con soporte para múltiples roles
    */
   const signIn = async (email, password) => {
-    // Simula latencia de red
-    await new Promise(r => setTimeout(r, 700));
-
-    const cleanEmail = email.trim().toLowerCase();
-
-    if (cleanEmail === 'admin@test.com' && password === '123456') {
-      const mockUser = {
-        uid:         'mock-uid-superadmin',
-        email:       'admin@test.com',
-        displayName: 'Super Admin',
-        role:        'superadmin',
-      };
-      setUser(mockUser);
-      persistUser(mockUser);
-      return mockUser;
-    } else if (cleanEmail === 'cliente@test.com' && password === '123456') {
-      const mockUser = {
-        uid:         'mock-uid-client',
-        email:       'cliente@test.com',
-        displayName: 'Cliente Demo',
-        role:        'client',
-      };
-      setUser(mockUser);
-      persistUser(mockUser);
-      return mockUser;
-    }
-
-    // Error en el mismo formato que Firebase Auth
-    const err  = new Error('Credenciales incorrectas.');
-    err.code   = 'auth/invalid-credential';
+    const err = new Error('Credenciales incorrectas o servidor no disponible.');
+    err.code = 'auth/invalid-credential';
     throw err;
   };
 
@@ -101,8 +72,19 @@ export function AuthProvider({ children }) {
     }
   };
 
+  /**
+   * updateUser — actualiza inmediatamente los datos de la sesión del usuario
+   */
+  const updateUser = (updatedData) => {
+    setUser((prev) => {
+      const newUser = prev ? { ...prev, ...updatedData } : updatedData;
+      persistUser(newUser);
+      return newUser;
+    });
+  };
+
   return (
-    <AuthContext.Provider value={{ user, loading, signIn, signOut, loginUser }}>
+    <AuthContext.Provider value={{ user, loading, signIn, signOut, loginUser, updateUser }}>
       {children}
     </AuthContext.Provider>
   );

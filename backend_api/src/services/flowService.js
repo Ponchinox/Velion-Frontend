@@ -5,13 +5,13 @@ import prisma from '../db.js';
  * Guarda el mensaje saliente del flujo en la base de datos y lo transmite por WebSockets en tiempo real
  */
 async function saveAndEmitOutgoingMessage(customer, text, instance) {
-  const clientNumber = customer.phone.split('@')[0];
+  const cleanPhone = clientNumber.replace(/\D/g, '') || clientNumber;
 
   try {
     let contact = await prisma.contact.findFirst({
       where: {
         tenantId: customer.tenantId,
-        phone: { contains: clientNumber }
+        phone: cleanPhone
       }
     });
 
@@ -54,15 +54,18 @@ async function saveAndEmitOutgoingMessage(customer, text, instance) {
  */
 async function sendFlowMessage(customer, text, instance) {
   const evoUrl = process.env.EVOLUTION_API_URL || 'http://localhost:8080';
-  const evoKey = process.env.EVOLUTION_API_KEY || 'bot_clave_maestra_2026';
-  const clientNumber = customer.phone.split('@')[0];
+  const evoKey = process.env.EVOLUTION_API_KEY || 'A59F9002-9FFF-41CF-8EA6-58AEEB06ED7B';
+  const clientNumber = customer.phone.split('@')[0].replace(/\D/g, '');
 
   try {
     await axios.post(
       `${evoUrl}/message/sendText/${instance}`,
       {
         number: clientNumber,
-        text: text
+        text: text,
+        options: {
+          delay: 0
+        }
       },
       {
         headers: {
@@ -83,8 +86,8 @@ async function sendFlowMessage(customer, text, instance) {
  */
 async function sendFlowMedia(customer, mediaUrl, caption, instance) {
   const evoUrl = process.env.EVOLUTION_API_URL || 'http://localhost:8080';
-  const evoKey = process.env.EVOLUTION_API_KEY || 'bot_clave_maestra_2026';
-  const clientNumber = customer.phone.split('@')[0];
+  const evoKey = process.env.EVOLUTION_API_KEY || 'A59F9002-9FFF-41CF-8EA6-58AEEB06ED7B';
+  const clientNumber = customer.phone.split('@')[0].replace(/\D/g, '');
 
   if (!mediaUrl) {
     console.warn(`⚠️ [Flow Service] Intento de enviar media sin URL válida.`);
@@ -116,9 +119,22 @@ async function sendFlowMedia(customer, mediaUrl, caption, instance) {
 
 /**
  * Ejecutor recursivo de nodos (Motor de Ejecución de Flujos)
- * Procesa la acción del nodo y decide si avanza automáticamente al siguiente
+ * Usa un Set de nodos visitados para detectar y abortar ciclos de forma instantánea
  */
-async function runNode(targetNode, activeFlow, customer, instance) {
+async function runNode(targetNode, activeFlow, customer, instance, visitedNodeIds = new Set()) {
+  // 🛡️ Escudo Anti-Ciclo: si este nodo ya fue procesado, es un bucle cerrado
+  if (visitedNodeIds.has(targetNode.id)) {
+    console.error(`⚠️ [Flow Engine] Ciclo detectado en nodo "${targetNode.id}" del flujo "${activeFlow.name}". Abortando para +${customer.phone}.`);
+    await prisma.customer.update({
+      where: { id: customer.id },
+      data: { currentFlowId: null, currentNodeId: null }
+    });
+    return;
+  }
+
+  // Marcar este nodo como visitado antes de procesar
+  visitedNodeIds.add(targetNode.id);
+
   const nodes = typeof activeFlow.nodes === 'string' ? JSON.parse(activeFlow.nodes) : activeFlow.nodes;
   const edges = typeof activeFlow.edges === 'string' ? JSON.parse(activeFlow.edges) : activeFlow.edges;
 
@@ -141,7 +157,7 @@ async function runNode(targetNode, activeFlow, customer, instance) {
           where: { id: customer.id },
           data: { tags: updatedTags }
         });
-        customer.tags = updatedTags; // Actualizar referencia local
+        customer.tags = updatedTags;
         console.log(`🏷️ [Flow Engine] Etiqueta "${tag}" añadida con éxito a +${customer.phone}`);
       }
     }
@@ -156,38 +172,23 @@ async function runNode(targetNode, activeFlow, customer, instance) {
     console.log(`👥 [Flow Engine] Pausando bot e iniciando transferencia humana para +${customer.phone}`);
     await prisma.customer.update({
       where: { id: customer.id },
-      data: {
-        isBotPaused: true,
-        currentFlowId: null,
-        currentNodeId: null
-      }
+      data: { isBotPaused: true, currentFlowId: null, currentNodeId: null }
     });
     await sendFlowMessage(customer, 'Transfiriendo conversación a un agente humano. Por favor, espera un momento...', instance);
-    return; // Detener flujo por completo aquí
+    return;
   }
   else if (targetNode.type === 'apiNode') {
     const url = targetNode.data?.apiUrl || '';
     const method = (targetNode.data?.apiMethod || 'GET').toUpperCase();
     const bodyStr = targetNode.data?.apiBody || '';
-
     if (url) {
       console.log(`🔌 [Flow Engine] Ejecutando petición Webhook: ${method} ${url}`);
       try {
         let parsedBody = null;
         if (bodyStr) {
-          try {
-            parsedBody = JSON.parse(bodyStr);
-          } catch {
-            parsedBody = bodyStr;
-          }
+          try { parsedBody = JSON.parse(bodyStr); } catch { parsedBody = bodyStr; }
         }
-
-        await axios({
-          url,
-          method,
-          data: method === 'POST' ? parsedBody : undefined,
-          timeout: 5000
-        });
+        await axios({ url, method, data: method === 'POST' ? parsedBody : undefined, timeout: 5000 });
         console.log(`🔌 [Flow Engine] Webhook ejecutado con éxito.`);
       } catch (apiError) {
         console.error(`❌ [Flow Engine] Error ejecutando Webhook:`, apiError.message);
@@ -199,44 +200,34 @@ async function runNode(targetNode, activeFlow, customer, instance) {
   const outgoingEdges = edges.filter(e => e.source === targetNode.id);
 
   if (outgoingEdges.length === 0) {
-    // El flujo finalizó aquí
     await prisma.customer.update({
       where: { id: customer.id },
-      data: {
-        currentFlowId: null,
-        currentNodeId: null
-      }
+      data: { currentFlowId: null, currentNodeId: null }
     });
     console.log(`🎉 [Flow Engine] Flujo finalizado en nodo final "${targetNode.id}"`);
     return;
   }
 
-  // Si es un nodo de condición o posee bifurcaciones manuales (múltiples salidas), frenar y esperar input
+  // Si es un nodo de condición o posee bifurcaciones (múltiples salidas), frenar y esperar input
   if (targetNode.type === 'conditionNode' || outgoingEdges.length > 1) {
     await prisma.customer.update({
       where: { id: customer.id },
-      data: {
-        currentFlowId: activeFlow.id,
-        currentNodeId: targetNode.id
-      }
+      data: { currentFlowId: activeFlow.id, currentNodeId: targetNode.id }
     });
     console.log(`⏳ [Flow Engine] Posicionado en nodo de decisión "${targetNode.id}". Esperando respuesta.`);
     return;
   }
 
-  // Nodos secuenciales de avance automático (siempre que tengan una única salida)
+  // Nodos secuenciales de avance automático (una única salida)
   if (outgoingEdges.length === 1) {
     const nextNode = nodes.find(n => n.id === outgoingEdges[0].target);
     if (nextNode) {
-      // Registrar la posición actual y ejecutar recursión
       await prisma.customer.update({
         where: { id: customer.id },
-        data: {
-          currentFlowId: activeFlow.id,
-          currentNodeId: nextNode.id
-        }
+        data: { currentFlowId: activeFlow.id, currentNodeId: nextNode.id }
       });
-      await runNode(nextNode, activeFlow, customer, instance);
+      // Propagar el Set de visitados para detectar ciclos en toda la cadena
+      await runNode(nextNode, activeFlow, customer, instance, visitedNodeIds);
     }
   }
 }
@@ -280,8 +271,15 @@ export async function executeFlowContext(customer, incomingText, instance) {
         }
       });
 
-      // Ejecutar recursivamente a partir del nodo inicial
-      await runNode(startNode, matchingFlow, customer, instance);
+      // Ejecutar recursivamente a partir del nodo inicial con Set de visitados fresco
+      await runNode(startNode, matchingFlow, customer, instance, new Set());
+
+      // Re-leer el estado del cliente para verificar si el flujo sigue activo o fue abortado
+      const updatedCustomer = await prisma.customer.findUnique({ where: { id: customer.id } });
+      if (!updatedCustomer?.currentFlowId) {
+        // El flujo terminó o fue abortado (ciclo/fin de rama) → ceder el control a la IA
+        return false;
+      }
       return true;
     }
   }
@@ -338,8 +336,8 @@ export async function executeFlowContext(customer, incomingText, instance) {
       const targetNode = nodes.find(n => n.id === matchingEdge.target);
 
       if (targetNode) {
-        // Ejecutar recursión a partir del nodo destino
-        await runNode(targetNode, activeFlow, customer, instance);
+        // Ejecutar recursión a partir del nodo destino con Set de visitados fresco
+        await runNode(targetNode, activeFlow, customer, instance, new Set());
         return true;
       }
     } else {

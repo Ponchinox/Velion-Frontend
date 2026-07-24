@@ -67,7 +67,7 @@ export async function launchCampaign(req, res) {
     }
 
     // 3. Obtener nombre de la instancia Evolution
-    const instance = 'velion_instance_' + tenantId.slice(0, 8);
+    const instance = 'bot_prod_' + tenantId.slice(0, 8);
 
     // 4. Disparar worker en segundo plano (No bloqueante, sin await)
     processCampaign(campaign.id, targetContacts, instance).catch((err) => {

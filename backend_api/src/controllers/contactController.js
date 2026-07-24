@@ -58,7 +58,7 @@ export async function createContact(req, res) {
 }
 
 /**
- * Elimina un contacto tras comprobar la propiedad del Tenant
+ * Elimina un contacto tras comprobar la propiedad del Tenant y borra relaciones de forma segura.
  */
 export async function deleteContact(req, res) {
   try {
@@ -69,21 +69,96 @@ export async function deleteContact(req, res) {
       return res.status(400).json({ error: 'El usuario no está asociado a ningún Tenant.' });
     }
 
-    // Comprobar pertenencia y eliminar
-    const result = await prisma.contact.deleteMany({
+    // Verificar si el contacto pertenece al tenant
+    const contact = await prisma.contact.findFirst({
       where: {
         id,
         tenantId,
       },
     });
 
-    if (result.count === 0) {
+    if (!contact) {
       return res.status(404).json({ error: 'Contacto no encontrado o no pertenece a su cuenta.' });
     }
+
+    // Borrado seguro en cascada usando transacción para no romper la base de datos
+    await prisma.$transaction(async (tx) => {
+      // 1. Obtener chats asociados
+      const chats = await tx.chat.findMany({
+        where: { contactId: id },
+        select: { id: true },
+      });
+      const chatIds = chats.map(c => c.id);
+
+      // 2. Eliminar mensajes de los chats
+      if (chatIds.length > 0) {
+        await tx.message.deleteMany({
+          where: { chatId: { in: chatIds } },
+        });
+
+        // 3. Eliminar chats
+        await tx.chat.deleteMany({
+          where: { contactId: id },
+        });
+      }
+
+      // 4. Eliminar el contacto
+      await tx.contact.delete({
+        where: { id },
+      });
+    });
 
     return res.json({ message: 'Contacto eliminado con éxito.' });
   } catch (error) {
     console.error('Error en deleteContact:', error);
     return res.status(500).json({ error: 'Error al eliminar el contacto.' });
+  }
+}
+
+/**
+ * Alterna/Reactiva el estado botPaused de un contacto (y sus chats/customer)
+ */
+export async function toggleBotPause(req, res) {
+  try {
+    const tenantId = req.user.tenantId;
+    const { id } = req.params;
+    const { botPaused } = req.body;
+
+    if (!tenantId) {
+      return res.status(400).json({ error: 'El usuario no está asociado a ningún Tenant.' });
+    }
+
+    const contact = await prisma.contact.findFirst({
+      where: { id, tenantId },
+    });
+
+    if (!contact) {
+      return res.status(404).json({ error: 'Contacto no encontrado.' });
+    }
+
+    const newBotPausedState = botPaused !== undefined ? Boolean(botPaused) : !contact.botPaused;
+
+    const updatedContact = await prisma.contact.update({
+      where: { id },
+      data: { botPaused: newBotPausedState },
+    });
+
+    await prisma.chat.updateMany({
+      where: { contactId: id },
+      data: { botPaused: newBotPausedState },
+    });
+
+    const cleanPhone = contact.phone.replace(/[^0-9]/g, '');
+    if (cleanPhone) {
+      await prisma.customer.updateMany({
+        where: { tenantId, phone: { contains: cleanPhone } },
+        data: { isBotPaused: newBotPausedState },
+      });
+    }
+
+    return res.json(updatedContact);
+  } catch (error) {
+    console.error('Error en toggleBotPause:', error);
+    return res.status(500).json({ error: 'Error al actualizar el estado del bot para este contacto.' });
   }
 }

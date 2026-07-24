@@ -38,3 +38,13 @@ export async function createTenant(tenantData) {
     body: tenantData,
   });
 }
+
+/**
+ * Restablece la contraseña del usuario administrador principal de un tenant
+ */
+export async function updateTenantPassword(tenantId, password) {
+  return apiClient(`/admin/tenants/${tenantId}/password`, {
+    method: 'PUT',
+    body: { password },
+  });
+}

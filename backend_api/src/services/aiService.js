@@ -5,8 +5,38 @@ import fs from 'fs';
 import path from 'path';
 import ffmpeg from 'fluent-ffmpeg';
 import ffmpegPath from 'ffmpeg-static';
+import prisma from '../db.js';
 
 ffmpeg.setFfmpegPath(ffmpegPath);
+
+/**
+ * Registra una alerta de caída global si se detecta un error HTTP 429 (Límite Excedido)
+ */
+async function handleAiError(error, providerName = 'GitHub/Groq') {
+  const status = error?.status || error?.response?.status;
+  const message = error?.message || String(error);
+  const is429 = status === 429 || message.includes('429') || message.toLowerCase().includes('quota') || message.toLowerCase().includes('rate limit');
+
+  if (is429) {
+    console.error(`🚨 [ALERTA GLOBAL IA] Error 429 Límite de Cuota Excedido en ${providerName}:`, message);
+    try {
+      await prisma.systemConfig.upsert({
+        where: { key: 'aiStatus' },
+        update: { value: 'DOWN_429' },
+        create: { key: 'aiStatus', value: 'DOWN_429' }
+      });
+      await prisma.alert.create({
+        data: {
+          type: 'QUOTA_EXCEEDED',
+          severity: 'CRITICAL',
+          message: `¡ALERTA GLOBAL! Límite de cuota alcanzado en ${providerName}. Los bots no están respondiendo.`
+        }
+      });
+    } catch (dbErr) {
+      console.error('Error registrando alerta de caída de IA en DB:', dbErr);
+    }
+  }
+}
 
 let openaiClient = null;
 
@@ -50,6 +80,11 @@ export async function generateAIResponse(prompt, context = [], imageBase64 = nul
     const client = getOpenAIClient();
 
     const visionRules = `
+PERSONALIDAD Y REGLA MULTI-MENSAJE:
+Eres un vendedor estrella carismático, persuasivo, amigable y al grano. Usa emojis de forma natural.
+REGLA CRÍTICA DE FORMATO: Debes separar tus ideas en distintos mensajes usando el separador exacto '[SPLIT]' entre cada idea.
+Ejemplo: "¡Hola! Claro que sí 😃 [SPLIT] ¿Qué producto buscas hoy? [SPLIT] Hacemos envíos a todo el Perú 🚚."
+
 REGLA DE VISIÓN Y CULTURA GENERAL: Si el usuario envía una imagen, usa tu amplio conocimiento general para identificar al personaje, objeto o estilo que aparece en ella ANTES de revisar el inventario.
 Muestra empatía y reconoce lo que el usuario envió (Ejemplo: '¡Genial, es Light Yagami de Death Note!').
 Después de identificarlo, revisa el inventario. Si tenemos ese producto exacto o algo muy relacionado (ej. otra figura de anime), ofrécelo. Si no tenemos nada relacionado, dile amablemente que por ahora no contamos con ese artículo, pero invítalo a ver los otros productos que sí tenemos.
@@ -170,6 +205,7 @@ Si el cliente revela información personal útil para futuras ventas (ej. su nom
     return aiText;
   } catch (error) {
     console.error('Error en generateAIResponse:', error);
+    await handleAiError(error, 'GitHub Models');
     throw new Error('Fallo al procesar la respuesta de la IA.');
   }
 }
@@ -207,6 +243,7 @@ export async function transcribeAudio(base64Audio) {
     return transcription.text || '';
   } catch (error) {
     console.error('❌ Error en transcribeAudio (Whisper Groq):', error);
+    await handleAiError(error, 'Groq Cloud');
     throw new Error('Fallo al transcribir el audio con la API de Groq.');
   } finally {
     // 6. Eliminar el archivo temporal del disco

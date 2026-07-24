@@ -1,14 +1,11 @@
+import { useState, useEffect } from 'react';
 import { NavLink } from 'react-router-dom';
 import {
   SquaresFour,
   Buildings,
   Gear,
   SignOut,
-  ShieldCheck,
-  UserCircle,
-  ChartBar,
   Megaphone,
-  Brain,
   DeviceMobile,
   AddressBook,
   ChatTeardrop,
@@ -17,117 +14,212 @@ import {
   Package,
   Bell,
   Database,
+  User as UserIcon,
 } from '@phosphor-icons/react';
 import { useAuth } from '../../context/AuthContext';
+import * as settingsService from '../../services/settingsService';
 
-const SUPERADMIN_NAV = [
-  { label: 'Dashboard Global',      to: '/dashboard',      Icon: SquaresFour },
-  { label: 'Empresas (Admin)',       to: '/admin-empresas', Icon: Buildings   },
-  { label: 'Planes',                to: '/admin-planes',   Icon: Cardholder  },
-  { label: 'Alertas Sistema',       to: '/admin-alertas',  Icon: Bell        },
-  { label: 'Copias Seguridad',      to: '/admin-backups',  Icon: Database    },
-  { label: 'Configuración Servidor', to: '/admin-config',   Icon: Gear        },
+// Estructura exacta de 3 categorías para Clientes (con Facturación y Ajustes en GESTIÓN Y DATOS)
+const CLIENT_NAV_GROUPS = [
+  {
+    category: 'GENERAL',
+    items: [
+      { label: 'Dashboard', to: '/dashboard', Icon: SquaresFour },
+    ],
+  },
+  {
+    category: 'IA & COMUNICACIÓN',
+    items: [
+      { label: 'Mensajes',        to: '/mensajes',       Icon: ChatTeardrop },
+      { label: 'Campañas',        to: '/campanas',       Icon: Megaphone },
+      { label: 'Automatizaciones', to: '/automatizacion', Icon: TreeStructure },
+    ],
+  },
+  {
+    category: 'GESTIÓN Y DATOS',
+    items: [
+      { label: 'Contactos',   to: '/contactos',  Icon: AddressBook },
+      { label: 'Inventario',  to: '/productos',  Icon: Package },
+      { label: 'Conexiones',  to: '/conexiones', Icon: DeviceMobile },
+      { label: 'Facturación', to: '/billing',    Icon: Cardholder },
+      { label: 'Ajustes',     to: '/settings',   Icon: Gear },
+    ],
+  },
 ];
 
-const CLIENT_NAV = [
-  { label: 'Métricas',       to: '/dashboard',      Icon: ChartBar       },
-  { label: 'Contactos',      to: '/contactos',      Icon: AddressBook    },
-  { label: 'Mensajes',       to: '/mensajes',       Icon: ChatTeardrop   },
-  { label: 'Campañas',       to: '/campanas',       Icon: Megaphone      },
-  { label: 'Automatización', to: '/automatizacion', Icon: TreeStructure  },
-  { label: 'Cerebro IA',     to: '/cerebro-ia',     Icon: Brain          },
-  { label: 'Conexiones',     to: '/conexiones',     Icon: DeviceMobile   },
-  { label: 'Inventario',     to: '/inventario',     Icon: Package        },
-  { label: 'Ajustes',        to: '/settings',       Icon: Gear           },
+// Estructura para SuperAdmin
+const SUPERADMIN_NAV_GROUPS = [
+  {
+    category: 'GENERAL',
+    items: [
+      { label: 'Dashboard',        to: '/dashboard',      Icon: SquaresFour },
+      { label: 'Empresas (Admin)', to: '/admin-empresas', Icon: Buildings },
+      { label: 'Planes',          to: '/admin-planes',   Icon: Cardholder },
+    ],
+  },
+  {
+    category: 'SISTEMA & CONFIGURACIÓN',
+    items: [
+      { label: 'Alertas Sistema',      to: '/admin-alertas',  Icon: Bell },
+      { label: 'Copias Seguridad',     to: '/admin-backups',  Icon: Database },
+      { label: 'Configuración Servidor', to: '/admin-config', Icon: Gear },
+    ],
+  },
 ];
 
 export default function Sidebar() {
   const { user, signOut } = useAuth();
+  const [tenantData, setTenantData] = useState(null);
+
+  useEffect(() => {
+    let isMounted = true;
+    const fetchTenant = () => {
+      settingsService
+        .getSettings()
+        .then((data) => {
+          if (isMounted && data) {
+            setTenantData(data);
+          }
+        })
+        .catch(() => {});
+    };
+
+    fetchTenant();
+
+    const handleSettingsUpdate = (e) => {
+      if (e.detail) setTenantData(e.detail);
+      else fetchTenant();
+    };
+
+    window.addEventListener('tenantSettingsUpdated', handleSettingsUpdate);
+    return () => {
+      isMounted = false;
+      window.removeEventListener('tenantSettingsUpdated', handleSettingsUpdate);
+    };
+  }, []);
+
   const role = user?.role ?? 'superadmin';
-
-  const displayName = user?.displayName ?? user?.email?.split('@')[0] ?? 'Usuario';
-  const email       = user?.email ?? '';
-
   const isImpersonating = !!localStorage.getItem('impersonatedTenantId');
-  const activeNav = (role === 'superadmin' && !isImpersonating) ? SUPERADMIN_NAV : CLIENT_NAV;
-  const roleLabel = role === 'superadmin'
-    ? (isImpersonating ? 'Soporte Activo' : 'Super Admin')
-    : 'Cliente';
+
+  // Lógica de Nombre y Saludo
+  const rawName = (user?.name || user?.displayName || '').trim();
+
+  // Lógica dinámica del Avatar (1. Logo corporativo, 2. Inicial, 3. Ícono genérico)
+  const logoUrl = tenantData?.logoUrl || user?.tenantLogo || user?.logoUrl;
+
+  let avatarMode = 'logo';
+  if (!logoUrl) {
+    if (rawName) {
+      avatarMode = 'initial';
+    } else {
+      avatarMode = 'generic';
+    }
+  }
+
+  const greetingText = rawName ? `Bienvenido, ${rawName}` : 'Bienvenido usuario';
+
+  // Selección de grupos según rol
+  const navGroups =
+    role === 'superadmin' && !isImpersonating
+      ? SUPERADMIN_NAV_GROUPS
+      : CLIENT_NAV_GROUPS;
 
   return (
     <aside
-      className="hidden md:flex fixed inset-y-0 left-0 z-30 flex-col bg-panel border-r border-line shadow-card"
+      className="hidden md:flex fixed inset-y-0 left-0 top-0 h-screen z-30 flex-col bg-white border-r border-slate-200 shadow-xs rounded-none select-none overflow-hidden"
       style={{ width: 'var(--sidebar-w)' }}
       aria-label="Navegación principal"
     >
-      {/* ── Brand ── */}
-      <div className="flex items-center gap-3 px-6 py-5 border-b border-line">
-        <div className="flex items-center justify-center w-9 h-9 rounded-lg bg-brand flex-shrink-0">
-          <ShieldCheck size={20} weight="bold" className="text-white" aria-hidden="true" />
-        </div>
-        <div>
-          <p className="text-base font-bold text-hi leading-tight">SuperAdmin</p>
-          <p className="text-xs text-lo">{roleLabel}</p>
+      {/* ── 1. Cabecera de Perfil (Edge-to-Edge con Lógica de Fallback de Avatar) ── */}
+      <div className="p-4 border-b border-slate-100 flex items-center gap-3">
+        {/* Caso a: Logo corporativo */}
+        {avatarMode === 'logo' && (
+          <img
+            src={logoUrl}
+            alt={rawName || 'Logo Corporativo'}
+            className="w-10 h-10 rounded-full object-cover border border-slate-200 flex-shrink-0"
+          />
+        )}
+
+        {/* Caso b: Inicial del nombre */}
+        {avatarMode === 'initial' && (
+          <div className="w-10 h-10 rounded-full bg-blue-600 text-white font-bold flex items-center justify-center text-sm shadow-xs flex-shrink-0">
+            {rawName.charAt(0).toUpperCase()}
+          </div>
+        )}
+
+        {/* Caso c: Ícono genérico de usuario */}
+        {avatarMode === 'generic' && (
+          <div className="w-10 h-10 rounded-full bg-slate-100 text-slate-400 border border-slate-200 flex items-center justify-center flex-shrink-0">
+            <UserIcon size={20} weight="bold" />
+          </div>
+        )}
+
+        {/* Saludo dinámico en dos niveles */}
+        <div className="flex flex-col min-w-0">
+          <span className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider leading-none">
+            Bienvenido
+          </span>
+          <span className="text-sm font-bold text-slate-900 leading-tight truncate mt-1">
+            {rawName || 'Usuario'}
+          </span>
         </div>
       </div>
 
-      {/* ── Nav ── */}
-      <nav className="flex-1 px-4 py-5 overflow-y-auto space-y-1" role="navigation">
-        <p className="text-xs font-semibold text-muted uppercase tracking-widest px-2 mb-3">
-          Menú principal
-        </p>
-
-        {activeNav.map(({ label, to, Icon }) => (
-          <NavLink
-            key={to}
-            to={to}
-            className={({ isActive }) =>
-              `flex items-center gap-3.5 px-4 py-3 rounded-md font-medium
-               transition-all duration-[120ms] cursor-pointer
-               ${isActive
-                 ? 'bg-brand text-white shadow-card'
-                 : 'text-mid hover:bg-app hover:text-hi'
-               }`
-            }
-          >
-            {({ isActive }) => (
-              <>
-                <Icon
-                  size={20}
-                  weight={isActive ? 'bold' : 'regular'}
-                  aria-hidden="true"
-                  className="flex-shrink-0"
-                />
-                <span className="text-base">{label}</span>
-              </>
-            )}
-          </NavLink>
+      {/* ── 2. Lista de Navegación Agrupada por Categorías ── */}
+      <nav
+        className="flex-1 overflow-y-auto space-y-6 p-4 custom-scrollbar"
+        role="navigation"
+      >
+        {navGroups.map((group) => (
+          <div key={group.category} className="space-y-1">
+            <p className="text-[10px] font-extrabold uppercase tracking-wider text-slate-400 px-3 mb-2 select-none">
+              {group.category}
+            </p>
+            {group.items.map(({ label, to, Icon }) => (
+              <NavLink
+                key={to}
+                to={to}
+                className={({ isActive }) =>
+                  `flex items-center gap-3 px-3.5 py-2.5 rounded-xl font-medium text-[14px] transition-all duration-150 cursor-pointer ${
+                    isActive
+                      ? 'bg-blue-600 text-white shadow-sm font-semibold'
+                      : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100/70'
+                  }`
+                }
+              >
+                {({ isActive }) => (
+                  <>
+                    <Icon
+                      size={19}
+                      weight={isActive ? 'bold' : 'regular'}
+                      className={
+                        isActive
+                          ? 'text-white flex-shrink-0'
+                          : 'text-slate-400 group-hover:text-slate-600 flex-shrink-0 transition-colors'
+                      }
+                    />
+                    <span className="truncate flex-1">{label}</span>
+                  </>
+                )}
+              </NavLink>
+            ))}
+          </div>
         ))}
       </nav>
 
-      {/* ── User footer ── */}
-      <div className="border-t border-line px-4 py-4 space-y-2">
-        {/* User info */}
-        <div className="flex items-center gap-3 px-2 py-2">
-          <UserCircle size={32} weight="light" className="text-lo flex-shrink-0" aria-hidden="true" />
-          <div className="flex-1 min-w-0">
-            <p className="text-sm font-semibold text-hi truncate capitalize">{displayName}</p>
-            <p className="text-xs text-lo truncate">{email}</p>
-          </div>
-        </div>
-
-        {/* Logout */}
+      {/* ── 3. Sección Inferior: Cerrar Sesión ── */}
+      <div className="p-4 border-t border-slate-100 mt-auto">
         <button
           onClick={signOut}
-          className="
-            w-full flex items-center gap-3 px-4 py-3 rounded-md
-            text-base font-medium text-lo
-            hover:bg-red-50 hover:text-danger
-            transition-all duration-[120ms] cursor-pointer
-          "
+          className="w-full flex items-center gap-3 px-3.5 py-2.5 rounded-xl text-slate-600 hover:text-red-600 hover:bg-red-50/80 transition-all duration-150 cursor-pointer font-medium text-[14px]"
           aria-label="Cerrar sesión"
         >
-          <SignOut size={20} weight="regular" aria-hidden="true" />
+          <SignOut
+            size={19}
+            weight="bold"
+            className="text-slate-400 hover:text-red-500 transition-colors flex-shrink-0"
+          />
           <span>Cerrar sesión</span>
         </button>
       </div>

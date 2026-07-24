@@ -13,6 +13,8 @@ import {
   CheckCircle,
 } from '@phosphor-icons/react';
 
+const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:3000';
+
 const SERVICES = [
   { label: 'API Gateway',        status: 'Operacional', pct: 99.9, ok: true  },
   { label: 'Base de Datos',      status: 'Operacional', pct: 100,  ok: true  },
@@ -50,8 +52,8 @@ export default function DashboardPage() {
 
     try {
       const [statsRes, activityRes] = await Promise.all([
-        fetch('http://localhost:3000/api/admin/stats',    { headers: authHeaders }),
-        fetch('http://localhost:3000/api/admin/activity', { headers: authHeaders }),
+        fetch(`${API_BASE_URL}/api/admin/stats`,    { headers: authHeaders }),
+        fetch(`${API_BASE_URL}/api/admin/activity`, { headers: authHeaders }),
       ]);
 
       if (!statsRes.ok) throw new Error('No se pudieron obtener las métricas reales del servidor.');
@@ -115,6 +117,20 @@ export default function DashboardPage() {
     },
   ] : [];
 
+  const handleResetAiStatus = async () => {
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/admin/ai-status/reset`, {
+        method: 'POST',
+        headers: authHeaders,
+      });
+      if (res.ok) {
+        setStats((prev) => prev ? { ...prev, aiStatus: 'OPERATIVE' } : prev);
+      }
+    } catch (err) {
+      console.error(err);
+    }
+  };
+
   return (
     <section aria-labelledby="dashboard-heading" className="space-y-6">
       <div>
@@ -124,6 +140,35 @@ export default function DashboardPage() {
         <p className="text-sm text-lo mt-0.5">
           Resumen operativo general — estadísticas en tiempo real desde PostgreSQL.
         </p>
+      </div>
+
+      {/* Widget de Estado de los Servidores de IA */}
+      <div className={`p-4 rounded-xl border flex items-center justify-between transition-all shadow-sm ${
+        stats?.aiStatus === 'DOWN_429'
+          ? 'bg-red-500/10 border-red-500/30 text-red-600 dark:text-red-400'
+          : 'bg-emerald-500/10 border-emerald-500/30 text-emerald-600 dark:text-emerald-400'
+      }`}>
+        <div className="flex items-center gap-3">
+          <div className={`w-3.5 h-3.5 rounded-full flex-shrink-0 ${
+            stats?.aiStatus === 'DOWN_429' ? 'bg-red-500 animate-pulse' : 'bg-emerald-500'
+          }`} />
+          <div>
+            <h3 className="font-bold text-xs uppercase tracking-wider">Estado de los Servidores de IA</h3>
+            <p className="text-sm font-semibold mt-0.5">
+              {stats?.aiStatus === 'DOWN_429'
+                ? '¡ALERTA GLOBAL! Límite de cuota alcanzado en GitHub/Groq. Los bots no están respondiendo.'
+                : 'Operativo'}
+            </p>
+          </div>
+        </div>
+        {stats?.aiStatus === 'DOWN_429' && (
+          <button
+            onClick={handleResetAiStatus}
+            className="px-3.5 py-1.5 bg-red-600 hover:bg-red-700 text-white text-xs font-bold rounded-lg shadow transition-colors cursor-pointer"
+          >
+            Restablecer Estado
+          </button>
+        )}
       </div>
 
       {loading ? (
@@ -173,17 +218,10 @@ export default function DashboardPage() {
 
         {/* Activity */}
         <div className="bg-card border border-line rounded-lg shadow-card p-6" role="region" aria-labelledby="activity-heading">
-          <div className="flex items-center justify-between mb-5">
+          <div className="mb-5">
             <h2 id="activity-heading" className="text-sm font-bold text-hi uppercase tracking-wide">
               Actividad Reciente
             </h2>
-            <button
-              onClick={() => navigate('/admin-alertas')}
-              className="flex items-center gap-1 text-xs font-semibold text-brand hover:text-brand-hover transition-colors cursor-pointer"
-              aria-label="Ver todas las alertas del sistema"
-            >
-              Ver todo <ArrowUpRight size={13} weight="bold" aria-hidden="true" />
-            </button>
           </div>
 
           {activity.length === 0 ? (

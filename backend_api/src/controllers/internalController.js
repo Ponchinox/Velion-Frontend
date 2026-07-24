@@ -6,13 +6,6 @@ import prisma from '../db.js';
 export async function getBotInventory(req, res) {
   try {
     const { tenantId } = req.params;
-    const clientSecret = req.headers['x-bot-secret'];
-    const botSecret = process.env.BOT_SECRET || 'super_bot_secret_2026';
-
-    // Validación simple por header
-    if (!clientSecret || clientSecret !== botSecret) {
-      return res.status(401).json({ error: 'No autorizado. Se requiere un x-bot-secret válido.' });
-    }
 
     if (!tenantId) {
       return res.status(400).json({ error: 'El parámetro tenantId es requerido.' });

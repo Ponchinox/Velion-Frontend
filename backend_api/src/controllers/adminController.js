@@ -8,6 +8,7 @@ const CONFIG_KEYS = [
   'evoUrl', 'evoApiKey', 'wahaUrl', 'wahaApiKey', 'wahaIsPrimary',
   'geminiKey', 'groqKey', 'systemPrompt', 'smtpHost', 'smtpPort',
   'smtpUser', 'smtpPassword', 'errorWebhook',
+  'backupFrequency', 'backupCloudEnabled', 'backupCloudProvider',
 ];
 
 // Valores por defecto que se usan SOLO si la clave aún no existe en la BD
@@ -25,6 +26,9 @@ const CONFIG_DEFAULTS = {
   smtpUser:     '',
   smtpPassword: '',
   errorWebhook: '',
+  backupFrequency: 'off',
+  backupCloudEnabled: 'false',
+  backupCloudProvider: 'cloudinary',
 };
 
 // ==========================================
@@ -97,27 +101,66 @@ export async function updateTenantStatus(req, res) {
 export async function updateTenantLimits(req, res) {
   try {
     const { id } = req.params;
-    const { connLimit, msgLimit } = req.body;
+    const { name, password, plan } = req.body;
 
-    if (connLimit === undefined || msgLimit === undefined) {
-      return res.status(400).json({ error: 'Faltan parámetros de límites.' });
+    const updateData = {};
+
+    if (name) {
+      updateData.name = name;
     }
 
-    const tenant = await prisma.tenant.update({
-      where: { id },
-      data: {
-        connLimit: Number(connLimit),
-        msgLimit: Number(msgLimit),
-      },
+    if (plan) {
+      // Buscar el plan en la base de datos para obtener sus límites
+      const planDb = await prisma.plan.findUnique({
+        where: { name: plan }
+      });
+      if (planDb) {
+        updateData.plan = planDb.name;
+        updateData.connLimit = planDb.connLimit;
+        updateData.msgLimit = planDb.msgLimit;
+      } else {
+        // Failsafe: Si es un plan legacy no encontrado en BD, solo actualizar el nombre
+        updateData.plan = plan;
+      }
+    }
+
+    // Transacción para asegurar consistencia
+    const result = await prisma.$transaction(async (tx) => {
+      // 1. Actualizar el Tenant
+      let tenant = null;
+      if (Object.keys(updateData).length > 0) {
+        tenant = await tx.tenant.update({
+          where: { id },
+          data: updateData
+        });
+      } else {
+        tenant = await tx.tenant.findUnique({ where: { id } });
+      }
+
+      // 2. Si viene contraseña, actualizar el usuario administrador del Tenant
+      if (password && password.trim().length >= 4) {
+        const adminUser = await tx.user.findFirst({
+          where: { tenantId: id, role: 'client' }
+        });
+        if (adminUser) {
+          const hashedPassword = await bcrypt.hash(password, 10);
+          await tx.user.update({
+            where: { id: adminUser.id },
+            data: { password: hashedPassword }
+          });
+        }
+      }
+
+      return tenant;
     });
 
     return res.json({
-      message: 'Límites de tenant actualizados con éxito.',
-      tenant,
+      message: 'Empresa actualizada con éxito.',
+      tenant: result,
     });
   } catch (error) {
     console.error('Error en updateTenantLimits:', error);
-    return res.status(500).json({ error: 'Error al actualizar límites de cuotas.' });
+    return res.status(500).json({ error: 'Error al actualizar los datos de la empresa.' });
   }
 }
 
@@ -205,6 +248,40 @@ export async function createTenant(req, res) {
   }
 }
 
+export async function updateTenantPassword(req, res) {
+  try {
+    const { id } = req.params;
+    const { password } = req.body;
+
+    if (!password || password.length < 4) {
+      return res.status(400).json({ error: 'La contraseña debe tener al menos 4 caracteres.' });
+    }
+
+    // 1. Encontrar el usuario principal del Tenant (rol client)
+    const user = await prisma.user.findFirst({
+      where: { tenantId: id, role: 'client' },
+    });
+
+    if (!user) {
+      return res.status(404).json({ error: 'No se encontró el usuario administrador de esta empresa.' });
+    }
+
+    // 2. Encriptar la contraseña
+    const hashedPassword = await bcrypt.hash(password, 10);
+
+    // 3. Actualizar la contraseña en la base de datos
+    await prisma.user.update({
+      where: { id: user.id },
+      data: { password: hashedPassword },
+    });
+
+    return res.json({ message: 'Contraseña del cliente actualizada con éxito.' });
+  } catch (error) {
+    console.error('Error en updateTenantPassword:', error);
+    return res.status(500).json({ error: 'Error al actualizar la contraseña del inquilino.' });
+  }
+}
+
 // ==========================================
 // 2. GESTIÓN DE PLANES (PostgreSQL via Prisma)
 // ==========================================
@@ -228,11 +305,15 @@ export async function createPlan(req, res) {
     if (!planData.name || planData.price === undefined) {
       return res.status(400).json({ error: 'Nombre y precio son requeridos.' });
     }
+    if (!planData.stripePriceId) {
+      return res.status(400).json({ error: 'El stripePriceId es estrictamente obligatorio.' });
+    }
 
     const newPlan = await prisma.plan.create({
       data: {
         name:        planData.name,
         price:       Number(planData.price),
+        stripePriceId: planData.stripePriceId,
         connLimit:   Number(planData.connLimit  || 1),
         msgLimit:    Number(planData.msgLimit   || 1000),
         flowBuilder: Boolean(planData.flowBuilder),
@@ -257,11 +338,16 @@ export async function updatePlan(req, res) {
     const { id } = req.params;
     const planData = req.body;
 
+    if (!planData.stripePriceId) {
+      return res.status(400).json({ error: 'El stripePriceId es estrictamente obligatorio.' });
+    }
+
     const updated = await prisma.plan.update({
       where: { id },
       data: {
         name:        planData.name,
         price:       Number(planData.price),
+        stripePriceId: planData.stripePriceId,
         connLimit:   Number(planData.connLimit),
         msgLimit:    Number(planData.msgLimit),
         flowBuilder: Boolean(planData.flowBuilder),
@@ -274,6 +360,9 @@ export async function updatePlan(req, res) {
     return res.json(updated);
   } catch (error) {
     console.error('Error en updatePlan:', error);
+    if (error.code === 'P2002') {
+      return res.status(409).json({ error: 'Ya existe un plan con ese nombre.' });
+    }
     if (error.code === 'P2025') {
       return res.status(404).json({ error: 'Plan no encontrado.' });
     }
@@ -310,13 +399,38 @@ export async function deletePlan(req, res) {
 export async function getGlobalConfig(req, res) {
   try {
     const rows = await prisma.systemConfig.findMany();
-    const configMap = { ...CONFIG_DEFAULTS };
+    
+    // Generar defaults dinámicos leyendo de las variables de entorno (.env)
+    const dynamicDefaults = {
+      evoUrl:       process.env.EVOLUTION_API_URL || '',
+      evoApiKey:    process.env.EVOLUTION_API_KEY || '',
+      wahaUrl:      process.env.WAHA_API_URL || '',
+      wahaApiKey:   process.env.WAHA_API_KEY || '',
+      wahaIsPrimary: process.env.WAHA_IS_PRIMARY || 'false',
+      geminiKey:    process.env.GITHUB_TOKEN || '',
+      groqKey:      process.env.GROQ_API_KEY || '',
+      systemPrompt: process.env.SYSTEM_PROMPT || 'Eres un asistente de atención al cliente educado, eficiente y servicial.',
+      smtpHost:     process.env.SMTP_HOST || '',
+      smtpPort:     process.env.SMTP_PORT || '587',
+      smtpUser:     process.env.SMTP_USER || '',
+      smtpPassword: process.env.SMTP_PASSWORD || process.env.SMTP_PASS || '',
+      errorWebhook: process.env.ERROR_WEBHOOK || '',
+      backupFrequency: process.env.BACKUP_FREQUENCY || 'off',
+      backupCloudEnabled: process.env.BACKUP_CLOUD_ENABLED || 'false',
+      backupCloudProvider: process.env.BACKUP_CLOUD_PROVIDER || 'cloudinary',
+    };
+
+    const configMap = { ...dynamicDefaults };
     for (const row of rows) {
-      configMap[row.key] = row.value;
+      if (row.value !== undefined && row.value !== null) {
+        configMap[row.key] = row.value;
+      }
     }
-    // Deserializar wahaIsPrimary y smtpPort a sus tipos nativos para el frontend
-    configMap.wahaIsPrimary = configMap.wahaIsPrimary === 'true';
-    configMap.smtpPort      = Number(configMap.smtpPort) || 587;
+
+    // Deserializar wahaIsPrimary, smtpPort y backupCloudEnabled a sus tipos nativos para el frontend
+    configMap.wahaIsPrimary      = String(configMap.wahaIsPrimary) === 'true';
+    configMap.backupCloudEnabled = String(configMap.backupCloudEnabled) === 'true';
+    configMap.smtpPort           = Number(configMap.smtpPort) || 587;
     return res.json(configMap);
   } catch (error) {
     console.error('Error en getGlobalConfig:', error);
@@ -366,6 +480,11 @@ export async function getGlobalStats(req, res) {
     const totalChats = await prisma.chat.count();
     const totalMessages = await prisma.message.count();
 
+    const aiStatusConfig = await prisma.systemConfig.findUnique({
+      where: { key: 'aiStatus' }
+    });
+    const aiStatus = aiStatusConfig?.value || 'OPERATIVE';
+
     return res.json({
       tenants: {
         total: totalTenants,
@@ -383,11 +502,29 @@ export async function getGlobalStats(req, res) {
       },
       messages: {
         total: totalMessages,
-      }
+      },
+      aiStatus,
     });
   } catch (error) {
     console.error('Error en getGlobalStats:', error);
     return res.status(500).json({ error: 'Error al calcular las estadísticas globales del sistema.' });
+  }
+}
+
+/**
+ * Restablece el estado global de los servidores de IA a 'OPERATIVE'
+ */
+export async function resetAiStatus(req, res) {
+  try {
+    await prisma.systemConfig.upsert({
+      where: { key: 'aiStatus' },
+      update: { value: 'OPERATIVE' },
+      create: { key: 'aiStatus', value: 'OPERATIVE' }
+    });
+    return res.json({ message: 'El estado de los servidores de IA ha sido restablecido a Operativo.' });
+  } catch (error) {
+    console.error('Error en resetAiStatus:', error);
+    return res.status(500).json({ error: 'Error al restablecer el estado de los servidores de IA.' });
   }
 }
 
@@ -573,8 +710,14 @@ export async function generateBackup(req, res) {
     const contacts = await prisma.contact.findMany();
     const chats = await prisma.chat.findMany();
     const messages = await prisma.message.findMany();
-    const flows = await prisma.automationFlow.findMany();
+    const flows = await prisma.flow.findMany(); // Respaldar tabla de flujos reales
+    const automationFlows = await prisma.automationFlow.findMany(); // Respaldar de respaldo heredada
     const alerts = await prisma.alert.findMany();
+    const campaigns = await prisma.campaign.findMany();
+    const campaignLogs = await prisma.campaignLog.findMany();
+    const customers = await prisma.customer.findMany();
+    const plans = await prisma.plan.findMany();
+    const systemConfigs = await prisma.systemConfig.findMany();
 
     const backupPayload = {
       metadata: {
@@ -590,7 +733,13 @@ export async function generateBackup(req, res) {
         chats,
         messages,
         flows,
+        automationFlows,
         alerts,
+        campaigns,
+        campaignLogs,
+        customers,
+        plans,
+        systemConfigs,
       },
     };
 

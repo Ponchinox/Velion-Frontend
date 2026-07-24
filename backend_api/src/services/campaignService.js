@@ -39,7 +39,11 @@ export async function processCampaign(campaignId, targetContacts, instance) {
 
     const client = getOpenAIClient();
     const evoUrl = process.env.EVOLUTION_API_URL || 'http://localhost:8080';
-    const evoKey = process.env.EVOLUTION_API_KEY || 'bot_clave_maestra_2026';
+    const evoKey = process.env.EVOLUTION_API_KEY || 'A59F9002-9FFF-41CF-8EA6-58AEEB06ED7B';
+
+    const tenant = await prisma.tenant.findUnique({
+      where: { id: campaign.tenantId }
+    });
 
     for (const contact of targetContacts) {
       // Re-verificar si la campaña ha sido cancelada o si el status cambió
@@ -49,6 +53,67 @@ export async function processCampaign(campaignId, targetContacts, instance) {
       if (!currentCampaign || currentCampaign.status === 'failed') {
         console.log(`⏹️ [Campaign Service] Campaña abortada o fallida.`);
         return;
+      }
+
+      // --- ESCUDO DE SEGURIDAD DE GRUPOS EN CAMPAÑAS MASIVAS ---
+      const isGroupContact = contact.phone.includes('@g.us') || contact.phone.endsWith('@g.us');
+      if (isGroupContact && !tenant?.respondInGroups) {
+        console.warn(`🛡️ [Campaign Service] Envío a grupo omitido para ${contact.phone} por seguridad (respondInGroups: false).`);
+        await prisma.campaignLog.create({
+          data: {
+            campaignId: campaign.id,
+            customerPhone: contact.phone,
+            status: 'failed',
+            sentMessage: campaign.baseMessage,
+            errorMessage: 'Envío a grupos deshabilitado por seguridad'
+          }
+        });
+        continue;
+      }
+
+      // --- ESCUDO ANTI-BANEOS: Validar que el número esté registrado en WhatsApp ---
+      const cleanPhone = contact.phone.replace(/\D/g, '');
+      let numberExists = false;
+      
+      try {
+        console.log(`📡 [Escudo Anti-Baneos] Validando si +${cleanPhone} tiene WhatsApp...`);
+        const checkRes = await axios.post(
+          `${evoUrl}/instance/onWhatsApp/${instance}`,
+          {
+            numbers: [cleanPhone]
+          },
+          {
+            headers: {
+              apikey: evoKey,
+              'Content-Type': 'application/json'
+            }
+          }
+        );
+
+        const result = checkRes.data?.[0];
+        if (result && result.exists === true) {
+          numberExists = true;
+        } else {
+          console.warn(`🛡️ [Escudo Anti-Baneos] El número +${cleanPhone} no está registrado en WhatsApp. Omitiendo envío.`);
+        }
+      } catch (checkErr) {
+        console.error(`⚠️ [Escudo Anti-Baneos] Error al consultar onWhatsApp para +${cleanPhone}:`, checkErr.message);
+        // Fallback de contingencia: si la API falla o da timeout, permitimos continuar
+        numberExists = true; 
+      }
+
+      if (!numberExists) {
+        // Registrar log de campaña como fallido directamente y saltar
+        await prisma.campaignLog.create({
+          data: {
+            campaignId: campaign.id,
+            customerPhone: contact.phone,
+            status: 'failed',
+            sentMessage: campaign.baseMessage,
+            errorMessage: 'Número no registrado en WhatsApp (Verificación onWhatsApp fallida).'
+          }
+        });
+        continue;
       }
 
       let personalizedMessage = campaign.baseMessage;
@@ -100,11 +165,15 @@ export async function processCampaign(campaignId, targetContacts, instance) {
             }
           );
         } else {
+          const cleanPhone = contact.phone.replace(/\D/g, '');
           await axios.post(
             `${evoUrl}/message/sendText/${instance}`,
             {
-              number: contact.phone,
-              text: personalizedMessage
+              number: cleanPhone,
+              text: personalizedMessage,
+              options: {
+                delay: 0
+              }
             },
             {
               headers: {

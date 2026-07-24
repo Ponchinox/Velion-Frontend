@@ -97,3 +97,10 @@ a:hover { color: var(--c-brand-hover); }
     transition-duration: 0.01ms !important;
   }
 }
+
+/* ─── Ocultar íconos nativos del navegador en inputs de contraseña ─── */
+input[type="password"]::-ms-reveal,
+input[type="password"]::-ms-clear,
+input[type="password"]::-webkit-credentials-auto-fill-button {
+  display: none !important;
+}

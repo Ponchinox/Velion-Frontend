@@ -36,6 +36,7 @@ export default function LoginPage() {
   const [showPw, setShowPw] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  const [forgotMsg, setForgotMsg] = useState('');
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -43,29 +44,26 @@ export default function LoginPage() {
       setError('Por favor, completa todos los campos.');
       return;
     }
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(email)) {
+      setError('Por favor, introduce un correo electrónico válido.');
+      return;
+    }
+    if (password.length < 6) {
+      setError('La contraseña debe tener al menos 6 caracteres.');
+      return;
+    }
 
     setLoading(true);
     setError('');
 
     try {
-      // Llamada real a la capa de servicios
+      // Llamada a la API real de autenticación de producción
       const res = await loginAccount(email, password);
-      // Guardar sesión en el contexto de autenticación
       loginUser(res.user, res.token);
       navigate(from, { replace: true });
     } catch (err) {
-      // Fallback a autenticación simulada local (para desarrollo de maqueta)
-      const cleanEmail = email.trim().toLowerCase();
-      if ((cleanEmail === 'admin@test.com' || cleanEmail === 'cliente@test.com') && password === '123456') {
-        try {
-          await signIn(email, password);
-          navigate(from, { replace: true });
-          return;
-        } catch (simErr) {
-          setError(simErr.message);
-        }
-      }
-      setError(err.message || 'Error de conexión con el servidor');
+      setError(err.message || 'Credenciales inválidas o error de conexión con el servidor.');
       setLoading(false);
     }
   };
@@ -73,27 +71,42 @@ export default function LoginPage() {
   return (
     <div className="min-h-dvh flex bg-card overflow-hidden">
       {/* ── LADO IZQUIERDO: Branding (Desktop) ── */}
-      <div className="hidden lg:flex lg:w-1/2 bg-brand relative items-center justify-center p-12 text-white overflow-hidden">
-        {/* Elementos decorativos de fondo */}
-        <div className="absolute inset-0 bg-gradient-to-tr from-brand-hover via-brand to-blue-500 opacity-90" />
-        <div className="absolute -top-40 -left-40 w-96 h-96 rounded-full bg-white/10 blur-3xl" />
-        <div className="absolute -bottom-40 -right-40 w-96 h-96 rounded-full bg-white/10 blur-3xl" />
+      <div
+        className="hidden lg:flex lg:w-1/2 bg-gradient-to-tr from-blue-600 via-[#4f46e5] to-[#4338ca] relative items-end justify-start p-14 overflow-hidden"
+      >
+        {/* Destellos de luz vibrantes para el fondo */}
+        <div className="absolute -top-10 -left-10 w-96 h-96 rounded-full bg-cyan-400/20 blur-3xl opacity-70 pointer-events-none" />
+        <div className="absolute -bottom-10 -right-10 w-96 h-96 rounded-full bg-white/10 blur-3xl opacity-60 pointer-events-none" />
+        <div className="absolute top-1/3 left-1/4 w-72 h-72 rounded-full bg-indigo-400/20 blur-3xl opacity-50 pointer-events-none" />
 
-        <div className="relative max-w-lg space-y-6 z-10">
-          <div className="inline-flex items-center justify-center w-14 h-14 rounded-xl bg-white/15 backdrop-blur-md">
-            <ShieldCheck size={32} weight="bold" className="text-white" />
+        <div className="relative z-10 max-w-lg space-y-5 pb-4">
+          <div className="inline-flex items-center justify-center w-14 h-14 rounded-xl bg-white/15 backdrop-blur-md border border-white/20">
+            <ShieldCheck size={30} weight="bold" className="text-white" />
           </div>
-          <div className="space-y-2">
-            <h2 className="text-4xl font-extrabold tracking-tight leading-tight">
-              La plataforma de automatización de WhatsApp definitiva.
+
+          <div className="space-y-4">
+            <h2 className="text-4xl font-extrabold tracking-tight leading-tight text-white">
+              Automatiza tus ventas y atención al cliente 24/7
             </h2>
-            <p className="text-white/80 text-lg leading-relaxed">
-              Gestiona campañas masivas, automatiza con Cerebro IA (Gemini/Groq) y atiende a tus clientes en tiempo real.
+            <p className="text-white/75 text-lg leading-relaxed">
+              Gestiona campañas masivas, inventario y respuestas automáticas con Inteligencia Artificial. Todo desde un solo lugar.
             </p>
           </div>
-          <div className="flex items-center gap-2 pt-4 text-xs text-white/70 font-semibold tracking-wider uppercase">
-            <Sparkle size={14} weight="bold" className="text-white animate-pulse" />
-            Integración de evolution API & WAHA
+
+          {/* Beneficios clave */}
+          <div className="flex flex-col gap-3 pt-2">
+            {[
+              'Respuestas automáticas e inteligentes a clientes',
+              'Envío de campañas a toda tu base de contactos',
+              'Control total de tu inventario y pedidos',
+            ].map((benefit) => (
+              <div key={benefit} className="flex items-center gap-3">
+                <div className="w-5 h-5 rounded-full bg-brand/90 flex items-center justify-center flex-shrink-0">
+                  <Sparkle size={11} weight="bold" className="text-white" />
+                </div>
+                <span className="text-sm text-white/85 font-medium">{benefit}</span>
+              </div>
+            ))}
           </div>
         </div>
       </div>
@@ -151,12 +164,15 @@ export default function LoginPage() {
                 </label>
                 <button
                   type="button"
-                  onClick={() => showToast('Funcionalidad de recuperación simulada.', 'info')}
+                  onClick={() => setForgotMsg('Para recuperar tu contraseña, contacta al administrador del sistema.')}
                   className="text-xs font-semibold text-brand hover:text-brand-hover transition-colors cursor-pointer"
                 >
                   ¿Olvidaste tu contraseña?
                 </button>
               </div>
+              {forgotMsg && (
+                <p className="text-xs text-brand font-medium mt-1.5 px-1">{forgotMsg}</p>
+              )}
               <div className="relative">
                 <LockSimple
                   size={18}
@@ -170,6 +186,7 @@ export default function LoginPage() {
                   onChange={(e) => { setPassword(e.target.value); if (error) setError(''); }}
                   placeholder="••••••••"
                   autoComplete="current-password"
+                  minLength={6}
                   required
                   className="
                     w-full pl-10 pr-10 py-3 text-sm
@@ -235,13 +252,14 @@ export default function LoginPage() {
             </button>
           </form>
 
-          {/* Registro link */}
-          <p className="text-center text-sm text-lo pt-2">
+          <p className="text-center text-sm text-lo pt-4">
             ¿No tienes una cuenta?{' '}
             <Link to="/register" className="font-semibold text-brand hover:text-brand-hover transition-colors">
               Regístrate aquí
             </Link>
           </p>
+
+
         </div>
       </div>
     </div>

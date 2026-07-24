@@ -25,6 +25,13 @@ export async function getSettings(req, res) {
         bankAccounts: true,
         businessHours: true,
         termsAndPolicies: true,
+        customPrompt: true,
+        botRole: true,
+        multiMessageMode: true,
+        respondInGroups: true,
+        notificationPhone: true,
+        notifySalesWhatsApp: true,
+        marketingModeEnabled: true,
       }
     });
 
@@ -59,7 +66,14 @@ export async function updateSettings(req, res) {
       businessSector,
       bankAccounts,
       businessHours,
-      termsAndPolicies
+      termsAndPolicies,
+      customPrompt,
+      botRole,
+      multiMessageMode,
+      respondInGroups,
+      notificationPhone,
+      notifySalesWhatsApp,
+      marketingModeEnabled
     } = req.body;
 
     const updated = await prisma.tenant.update({
@@ -74,7 +88,14 @@ export async function updateSettings(req, res) {
         businessSector,
         bankAccounts,
         businessHours,
-        termsAndPolicies
+        termsAndPolicies,
+        customPrompt: botRole !== undefined ? botRole : customPrompt,
+        botRole,
+        notificationPhone,
+        ...(notifySalesWhatsApp !== undefined && { notifySalesWhatsApp: Boolean(notifySalesWhatsApp) }),
+        ...(marketingModeEnabled !== undefined && { marketingModeEnabled: Boolean(marketingModeEnabled) }),
+        ...(multiMessageMode !== undefined && { multiMessageMode: Boolean(multiMessageMode) }),
+        ...(respondInGroups !== undefined && { respondInGroups: Boolean(respondInGroups) })
       }
     });
 

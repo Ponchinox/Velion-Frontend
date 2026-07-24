@@ -17,47 +17,22 @@ async function main() {
   });
 
   // 2. Hashear la contraseña del administrador
-  const hashedPassword = await bcrypt.hash('admin123', 10);
+  const hashedPassword = await bcrypt.hash('Undertale.926246740', 10);
 
   // 3. Crear el usuario SuperAdmin asociado a ese Tenant
   const user = await prisma.user.create({
     data: {
-      email: 'admin@velion.com',
+      email: 'nehiseroblitas2001@gmail.com',
       password: hashedPassword,
       role: 'superadmin',
       tenantId: tenant.id,
     },
   });
 
-  // 4. Inyectar Alertas de Prueba
-  await prisma.alert.createMany({
-    data: [
-      {
-        type: 'QUOTA_EXCEEDED',
-        severity: 'HIGH',
-        message: 'La empresa superó el límite de mensajes del plan básico.',
-        tenantId: tenant.id,
-        resolved: false,
-      },
-      {
-        type: 'SESSION_FAILED',
-        severity: 'CRITICAL',
-        message: 'La conexión de WhatsApp en la instancia central falló debido a credenciales inválidas.',
-        tenantId: tenant.id,
-        resolved: false,
-      },
-      {
-        type: 'SYSTEM_ERROR',
-        severity: 'MEDIUM',
-        message: 'Fallo temporal en el servidor de correos al enviar facturación.',
-        tenantId: null,
-        resolved: false,
-      }
-    ],
-  });
+
 
   console.log('🚀 Base de datos sembrada con éxito.');
-  console.log(`👤 SuperAdmin creado: email: ${user.email} | password: admin123`);
+  console.log(`👤 SuperAdmin creado: email: ${user.email} | password: Undertale.926246740`);
 }
 
 main()

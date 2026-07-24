@@ -13,7 +13,11 @@ export default function authMiddleware(req, res, next) {
   const token = authHeader.split(' ')[1];
 
   try {
-    const decoded = jwt.verify(token, process.env.JWT_SECRET || 'supersecreto123');
+    if (!process.env.JWT_SECRET) {
+      throw new Error('JWT_SECRET no está configurada en el entorno de Producción.');
+    }
+
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
     req.user = decoded; // Inyecta { userId, email, role, tenantId }
 
     // Permitir que un SuperAdmin impersone a otro Tenant enviando la cabecera X-Tenant-Id

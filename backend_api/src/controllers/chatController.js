@@ -12,36 +12,7 @@ export async function getChats(req, res) {
       return res.status(400).json({ error: 'El usuario no está asociado a ningún Tenant.' });
     }
 
-    // Inicializar datos de prueba si es un tenant nuevo sin contactos
-    const contactsCount = await prisma.contact.count({ where: { tenantId } });
-    if (contactsCount === 0) {
-      // 1. Crear contacto demo
-      const testContact = await prisma.contact.create({
-        data: {
-          name: 'Juan Pérez (Demo)',
-          phone: '+51 987 654 321',
-          category: 'Nuevos Leads',
-          tenantId,
-        },
-      });
-
-      // 2. Crear conversación
-      const testChat = await prisma.chat.create({
-        data: {
-          contactId: testContact.id,
-          tenantId,
-        },
-      });
-
-      // 3. Inyectar mensajes iniciales
-      await prisma.message.createMany({
-        data: [
-          { content: 'Hola, buenas tardes.', senderRole: 'contact', chatId: testChat.id, tenantId },
-          { content: '¡Hola! ¿Cómo estás? Te saluda el equipo de soporte.', senderRole: 'agent', chatId: testChat.id, tenantId },
-          { content: 'Hola, me gustaría saber los precios de los planes.', senderRole: 'contact', chatId: testChat.id, tenantId },
-        ],
-      });
-    }
+    // Se obtienen únicamente los chats reales pertenecientes al Tenant
 
     // Consultar todos los chats con sus contactos y el último mensaje
     const chats = await prisma.chat.findMany({
@@ -152,15 +123,19 @@ export async function sendMessage(req, res) {
     // Enviar mensaje real a Evolution API
     const remoteJid = chat.contact.phone;
     const evoUrl = process.env.EVOLUTION_API_URL || 'http://localhost:8080';
-    const evoKey = process.env.EVOLUTION_API_KEY || 'bot_clave_maestra_2026';
-    const instance = 'velion_instance_' + tenantId.slice(0, 8);
+    const evoKey = process.env.EVOLUTION_API_KEY || 'A59F9002-9FFF-41CF-8EA6-58AEEB06ED7B';
+    const instance = 'bot_prod_' + tenantId.slice(0, 8);
 
     try {
+      const cleanNumber = remoteJid.replace(/\D/g, '');
       await axios.post(
         `${evoUrl}/message/sendText/${instance}`,
         {
-          number: remoteJid,
+          number: cleanNumber,
           text: text,
+          options: {
+            delay: 0
+          }
         },
         {
           headers: {
@@ -231,18 +206,19 @@ export async function sendDirectMessage(req, res) {
 
     const number = remoteJid || chat.contact.phone;
     const evoUrl = process.env.EVOLUTION_API_URL || 'http://localhost:8080';
-    const evoKey = process.env.EVOLUTION_API_KEY || 'bot_clave_maestra_2026';
-    const instance = 'velion_instance_' + tenantId.slice(0, 8);
+    const evoKey = process.env.EVOLUTION_API_KEY || 'A59F9002-9FFF-41CF-8EA6-58AEEB06ED7B';
+    const instance = 'bot_prod_' + tenantId.slice(0, 8);
 
     let messageContent = text;
 
     if (media && media.base64) {
       // 1. Enviar multimedia a Evolution API
       try {
+        const cleanNumber = (number || '').replace(/\D/g, '');
         await axios.post(
           `${evoUrl}/message/sendMedia/${instance}`,
           {
-            number: number,
+            number: cleanNumber,
             mediatype: media.type === 'image' ? 'image' : 'document',
             media: media.base64,
             fileName: media.name,
@@ -264,11 +240,15 @@ export async function sendDirectMessage(req, res) {
     } else {
       // 2. Enviar mensaje de texto normal a Evolution API
       try {
+        const cleanNumber = number.replace(/\D/g, '');
         await axios.post(
           `${evoUrl}/message/sendText/${instance}`,
           {
-            number: number,
+            number: cleanNumber,
             text: text,
+            options: {
+              delay: 0
+            }
           },
           {
             headers: {

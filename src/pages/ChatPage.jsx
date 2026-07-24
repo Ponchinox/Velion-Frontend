@@ -17,6 +17,8 @@ import { io } from 'socket.io-client';
 import { Play } from 'lucide-react';
 
 /* ─── Configuración de avatares ─── */
+const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:3000';
+
 const AVATAR_COLORS = [
   'bg-blue-100 text-blue-700',
   'bg-violet-100 text-violet-700',
@@ -473,7 +475,7 @@ export default function ChatPage() {
     loadChats();
 
     // Establecer conexión Socket.IO con el backend en tiempo real
-    const socket = io('http://localhost:3000');
+    const socket = io(API_BASE_URL);
 
     socket.on('connect', () => {
       console.log('🔌 [Socket.IO] Conectado al servidor de WebSocket en tiempo real.');

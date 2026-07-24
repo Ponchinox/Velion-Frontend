@@ -11,6 +11,7 @@ import {
   Image
 } from 'lucide-react';
 import * as campaignService from '../services/campaignService';
+import { useUnsavedChanges } from '../context/UnsavedChangesContext';
 
 const STATUS_STYLES = {
   pending: 'bg-yellow-50 text-yellow-700 ring-1 ring-yellow-200',
@@ -24,6 +25,9 @@ export default function CampaignsPage() {
   const [isLoading, setIsLoading] = useState(true);
   const [errorMsg, setErrorMsg] = useState('');
   const [toast, setToast] = useState(null);
+
+  const { setIsDirty } = useUnsavedChanges();
+  const setIsFormDirty = setIsDirty;
 
   // Form states
   const [name, setName] = useState('');
@@ -81,6 +85,7 @@ export default function CampaignsPage() {
         base64: reader.result,
         name: file.name
       });
+      setIsFormDirty(true);
     };
     reader.readAsDataURL(file);
   };
@@ -119,6 +124,7 @@ export default function CampaignsPage() {
       setDelayMin(10);
       setDelayMax(30);
       setMediaFile(null);
+      setIsFormDirty(false);
       loadCampaigns();
     } catch {
       showToast('Error al lanzar la campaña masiva en el servidor.', 'error');
@@ -143,7 +149,7 @@ export default function CampaignsPage() {
         {/* SECCIÓN A: Formulario de Nueva Campaña */}
         <div className="bg-card border border-line rounded-lg shadow-sm p-6 flex flex-col gap-5 h-fit">
           <h2 className="text-base font-bold text-hi">Nueva Campaña</h2>
-          <form onSubmit={handleSubmit} className="space-y-4">
+          <form onSubmit={handleSubmit} onChange={() => setIsFormDirty(true)} className="space-y-4">
             <div>
               <label className="block text-xs font-semibold text-mid mb-1">Nombre de la Campaña</label>
               <input

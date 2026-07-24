@@ -1,7 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import {
   User,
-  CreditCard,
   Building,
   Save,
   Upload,
@@ -10,14 +9,18 @@ import {
   AlertCircle,
   HelpCircle,
   Key,
-  Lock,
-  Calendar
+  ShieldCheck,
+  ArrowLeft
 } from 'lucide-react';
 import * as settingsService from '../services/settingsService';
+import * as userService from '../services/userService';
+import { useUnsavedChanges } from '../context/UnsavedChangesContext';
+import { useAuth } from '../context/AuthContext';
 
 export default function SettingsPage() {
-  const [activeTab, setActiveTab] = useState('admin'); // 'admin' | 'bot' | 'security' | 'billing'
-  const [activeSubTab, setActiveSubTab] = useState('general'); // 'general' | 'billing' | 'operations'
+  const { user, updateUser } = useAuth();
+  const [activeSection, setActiveSection] = useState(null); // null (grid) | 'admin' | 'bot' | 'security' | 'notifications' | 'locale' | 'appearance'
+  const [activeSubTab, setActiveSubTab] = useState('general'); // 'general' | 'operations'
   const [isLoading, setIsLoading] = useState(true);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [toast, setToast] = useState(null);
@@ -33,16 +36,24 @@ export default function SettingsPage() {
     businessSector: '',
     bankAccounts: '',
     businessHours: '',
-    termsAndPolicies: ''
+    termsAndPolicies: '',
+    customPrompt: '',
+    botRole: '',
+    multiMessageMode: true,
+    notificationPhone: '',
+    notifySalesWhatsApp: false,
   });
 
   // Estados Maqueta de Cuenta
   const [adminConfig, setAdminConfig] = useState({
     name: 'Administrador General',
-    email: 'soporte@velion.co',
+    email: 'soporte@velionagent.com',
     phone: '+51 987 654 321',
     role: 'Socio Fundador'
   });
+
+  const { setIsDirty } = useUnsavedChanges();
+  const setIsFormDirty = setIsDirty;
 
   const [securityConfig, setSecurityConfig] = useState({
     currentPassword: '',
@@ -55,54 +66,88 @@ export default function SettingsPage() {
     setTimeout(() => setToast(null), 4000);
   };
 
-  // Cargar configuraciones del Tenant al montar
-  useEffect(() => {
-    async function loadSettings() {
-      try {
-        const data = await settingsService.getSettings();
-        if (data) {
-          setBotConfig({
-            logoUrl: data.logoUrl || '',
-            companyName: data.companyName || '',
-            taxId: data.taxId || '',
-            address: data.address || '',
-            phone: data.phone || '',
-            email: data.email || '',
-            businessSector: data.businessSector || '',
-            bankAccounts: data.bankAccounts || '',
-            businessHours: data.businessHours || '',
-            termsAndPolicies: data.termsAndPolicies || ''
-          });
+    // Cargar configuraciones del Tenant y Administrador al montar
+    useEffect(() => {
+      async function loadSettings() {
+        try {
+          let tenantData = null;
+          let userData = null;
+  
+          try {
+            tenantData = await settingsService.getSettings();
+          } catch (e) {
+            console.error('Error cargando ajustes del tenant', e);
+          }
+  
+          try {
+            userData = await userService.getProfile();
+          } catch (e) {
+            console.error('Error cargando perfil del usuario', e);
+          }
+  
+          if (tenantData) {
+            setBotConfig({
+              logoUrl: tenantData.logoUrl || '',
+              companyName: tenantData.companyName || '',
+              taxId: tenantData.taxId || '',
+              address: tenantData.address || '',
+              phone: tenantData.phone || '',
+              email: tenantData.email || '',
+              businessSector: tenantData.businessSector || '',
+              bankAccounts: tenantData.bankAccounts || '',
+              businessHours: tenantData.businessHours || '',
+              termsAndPolicies: tenantData.termsAndPolicies || '',
+              customPrompt: tenantData.customPrompt || '',
+              botRole: tenantData.botRole || '',
+              multiMessageMode: tenantData.multiMessageMode !== false,
+              notificationPhone: tenantData.notificationPhone || '',
+              notifySalesWhatsApp: tenantData.notifySalesWhatsApp === true,
+              marketingModeEnabled: tenantData.marketingModeEnabled === true,
+            });
+          }
 
-          // Rellenar de forma automática datos del administrador
-          setAdminConfig((prev) => ({
-            ...prev,
-            email: data.email || prev.email,
-            name: data.companyName ? `${data.companyName} Admin` : prev.name
-          }));
+          if (userData && userData.user) {
+            const u = userData.user;
+            setAdminConfig({
+              name: u.name || '',
+              email: u.email || '',
+              phone: u.phone || '',
+              role: u.role === 'superadmin' ? 'Super Admin' : u.role === 'client' ? 'Cliente Administrador' : 'Miembro de Equipo'
+            });
+          }
+        } catch (error) {
+          showToast(error.message || 'Error al recuperar los ajustes.', 'error');
+        } finally {
+          setIsLoading(false);
         }
-      } catch (error) {
-        showToast(error.message || 'Error al recuperar los ajustes de la empresa.', 'error');
-      } finally {
-        setIsLoading(false);
       }
-    }
-    loadSettings();
-  }, []);
+      loadSettings();
+    }, []);
 
   const handleBotChange = (e) => {
     const { name, value } = e.target;
     setBotConfig((prev) => ({ ...prev, [name]: value }));
+    setIsFormDirty(true);
+  };
+
+  const handleGeneratePromptExample = () => {
+    setBotConfig((prev) => ({
+      ...prev,
+      customPrompt: "Eres un vendedor estrella. Saluda siempre con entusiasmo, usa 1 o 2 emojis estratégicos, responde dudas sobre el inventario sin rodeos, y pregunta siempre si desean separar el producto hoy. Trata al cliente de 'tú'."
+    }));
+    setIsFormDirty(true);
   };
 
   const handleAdminChange = (e) => {
     const { name, value } = e.target;
     setAdminConfig((prev) => ({ ...prev, [name]: value }));
+    setIsFormDirty(true);
   };
 
   const handleSecurityChange = (e) => {
     const { name, value } = e.target;
     setSecurityConfig((prev) => ({ ...prev, [name]: value }));
+    setIsFormDirty(true);
   };
 
   const handleLogoUpload = (e) => {
@@ -116,6 +161,7 @@ export default function SettingsPage() {
       reader.onloadend = () => {
         setBotConfig((prev) => ({ ...prev, logoUrl: reader.result }));
         showToast('Logo cargado correctamente. Presione Guardar para aplicar cambios.');
+        setIsFormDirty(true);
       };
       reader.readAsDataURL(file);
     }
@@ -127,7 +173,9 @@ export default function SettingsPage() {
     setIsSubmitting(true);
     try {
       await settingsService.updateSettings(botConfig);
+      window.dispatchEvent(new CustomEvent('tenantSettingsUpdated', { detail: botConfig }));
       showToast('Ajustes del Cerebro de IA actualizados correctamente.');
+      setIsFormDirty(false);
     } catch (error) {
       showToast(error.message || 'Error al actualizar los ajustes de la empresa.', 'error');
     } finally {
@@ -135,143 +183,216 @@ export default function SettingsPage() {
     }
   };
 
-  // Guardado Maqueta para otros paneles
-  const handleMockSave = (e, sectionName) => {
+  const handleSaveAdminConfig = async (e) => {
     e.preventDefault();
     setIsSubmitting(true);
-    setTimeout(() => {
+    try {
+      const response = await userService.updateProfile({
+        name: adminConfig.name,
+        email: adminConfig.email,
+        phone: adminConfig.phone
+      });
+      const updatedUser = response?.user || {
+        ...user,
+        name: adminConfig.name,
+        email: adminConfig.email,
+        phone: adminConfig.phone
+      };
+      setAdminConfig({
+        name: updatedUser.name || '',
+        email: updatedUser.email || '',
+        phone: updatedUser.phone || '',
+        role: updatedUser.role === 'superadmin' ? 'Super Admin' : updatedUser.role === 'client' ? 'Cliente Administrador' : 'Miembro de Equipo'
+      });
+      updateUser(updatedUser);
+      showToast('Perfil de administrador actualizado con éxito.');
+      setIsFormDirty(false);
+    } catch (error) {
+      showToast(error.message || 'Error al actualizar el perfil de administrador.', 'error');
+    } finally {
       setIsSubmitting(false);
-      showToast(`Cambios de ${sectionName} guardados con éxito (Simulación).`);
-    }, 800);
+    }
   };
+
+  const handleSaveSecurityConfig = async (e) => {
+    e.preventDefault();
+    if (securityConfig.newPassword !== securityConfig.confirmPassword) {
+      showToast('La nueva contraseña y la confirmación no coinciden.', 'error');
+      return;
+    }
+    setIsSubmitting(true);
+    try {
+      await userService.updatePassword({
+        currentPassword: securityConfig.currentPassword,
+        newPassword: securityConfig.newPassword
+      });
+      showToast('Contraseña actualizada con éxito.');
+      setSecurityConfig({
+        currentPassword: '',
+        newPassword: '',
+        confirmPassword: ''
+      });
+      setIsFormDirty(false);
+    } catch (error) {
+      showToast(error.message || 'Error al actualizar la contraseña.', 'error');
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+
 
   if (isLoading) {
     return (
       <div className="flex flex-col items-center justify-center h-[calc(100vh-120px)] text-lo">
         <Loader2 size={36} className="animate-spin text-brand mb-2" />
-        <p className="text-xs font-semibold">Cargando configuraciones corporativas...</p>
+        <p className="text-xs font-semibold">Cargando ajustes globales...</p>
       </div>
     );
   }
 
-  return (
-    <div className="flex flex-col md:flex-row gap-6 p-6 bg-gray-50 min-h-screen w-full animate-in fade-in duration-300">
-      {/* Columna Izquierda: Menú Lateral de Ajustes */}
-      <div className="w-full md:w-64 flex-shrink-0 space-y-4">
-        <div className="px-1">
-          <h1 className="text-base font-bold text-gray-900">Configuración</h1>
-          <p className="text-3xs text-gray-500 mt-1 leading-snug">Gestiona tus preferencias de cuenta e IA corporativa.</p>
-        </div>
-        
-        <div className="bg-white border border-gray-200 rounded-xl p-3 flex flex-col gap-1 shadow-sm">
-          <button
-            type="button"
-            onClick={() => setActiveTab('admin')}
-            className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-xs font-bold transition-all text-left cursor-pointer
-              ${activeTab === 'admin'
-                ? 'bg-blue-50 text-blue-700'
-                : 'text-gray-600 hover:bg-gray-50 hover:text-gray-900'
-              }
-            `}
-          >
-            <User size={15} />
-            <span>Perfil de Administrador</span>
-          </button>
-          
-          <button
-            type="button"
-            onClick={() => setActiveTab('bot')}
-            className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-xs font-bold transition-all text-left cursor-pointer
-              ${activeTab === 'bot'
-                ? 'bg-blue-50 text-blue-700'
-                : 'text-gray-600 hover:bg-gray-50 hover:text-gray-900'
-              }
-            `}
-          >
-            <Building size={15} />
-            <span>Cerebro del Bot (Empresa)</span>
-          </button>
+  // --- VISTA A: GRILLA DE TARJETAS (Bento Grid original) ---
+  if (activeSection === null) {
+    const GRID_ITEMS = [
+      {
+        id: 'admin',
+        Icon: User,
+        label: 'Perfil de Administrador',
+        desc: 'Nombre, correo y datos de cuenta',
+        bgClass: 'bg-blue-50',
+        iconClass: 'text-blue-600'
+      },
+      {
+        id: 'bot',
+        Icon: Building,
+        label: 'Cerebro del Bot (Empresa)',
+        desc: 'Contexto institucional de la empresa para la IA',
+        bgClass: 'bg-indigo-50',
+        iconClass: 'text-indigo-600'
+      },
+      {
+        id: 'security',
+        Icon: ShieldCheck,
+        label: 'Seguridad',
+        desc: 'Contraseña, 2FA y accesos',
+        bgClass: 'bg-red-50',
+        iconClass: 'text-red-600'
+      }
+    ];
 
-          <button
-            type="button"
-            onClick={() => setActiveTab('security')}
-            className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-xs font-bold transition-all text-left cursor-pointer
-              ${activeTab === 'security'
-                ? 'bg-blue-50 text-blue-700'
-                : 'text-gray-600 hover:bg-gray-50 hover:text-gray-900'
-              }
-            `}
-          >
-            <Lock size={15} />
-            <span>Seguridad</span>
-          </button>
-
-          <button
-            type="button"
-            onClick={() => setActiveTab('billing')}
-            className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-xs font-bold transition-all text-left cursor-pointer
-              ${activeTab === 'billing'
-                ? 'bg-blue-50 text-blue-700'
-                : 'text-gray-600 hover:bg-gray-50 hover:text-gray-900'
-              }
-            `}
-          >
-            <CreditCard size={15} />
-            <span>Facturación</span>
-          </button>
+    return (
+      <div className="w-full h-full flex flex-col flex-1">
+        {/* Header */}
+        <div className="mb-8">
+          <h1 className="text-xl font-bold text-gray-900">Ajustes</h1>
+          <p className="text-sm text-gray-500 mt-2">
+            Administra las preferencias globales del panel.
+          </p>
         </div>
+
+        {/* Bento Grid Layout */}
+        <div className="w-full grid gap-6 grid-cols-[repeat(auto-fit,minmax(320px,1fr))]">
+          {GRID_ITEMS.map(({ id, Icon, label, desc, bgClass, iconClass }) => (
+            <button
+              key={id}
+              onClick={() => setActiveSection(id)}
+              className="w-full h-full flex flex-col items-start p-6 text-left bg-white border border-gray-200 rounded-xl shadow-2xs hover:border-blue-500 hover:shadow-md cursor-pointer group"
+            >
+              {/* Icon wrapper identical to mockup */}
+              <div className={`flex items-center justify-center w-12 h-12 rounded-xl ${bgClass} ${iconClass}`}>
+                <Icon size={22} />
+              </div>
+
+              {/* Title */}
+              <h3 className="text-sm font-bold text-gray-900 mt-4 tracking-tight">
+                {label}
+              </h3>
+
+              {/* Description */}
+              <p className="text-sm text-gray-500 mt-1 leading-snug">
+                {desc}
+              </p>
+            </button>
+          ))}
+        </div>
+
+        {/* Toasts */}
+        {toast && (
+          <div className="fixed bottom-6 right-6 z-50 flex items-center gap-3 px-4 py-3 rounded-lg border shadow-card bg-white border-gray-200">
+            {toast.type === 'success' ? (
+              <CheckCircle2 size={16} className="text-emerald-600 flex-shrink-0" />
+            ) : (
+              <AlertCircle size={16} className="text-rose-600 flex-shrink-0" />
+            )}
+            <span className="text-xs text-gray-700 font-medium">{toast.msg}</span>
+          </div>
+        )}
       </div>
+    );
+  }
 
-      {/* Columna Derecha: Contenido principal del Formulario */}
-      <div className="flex-1 bg-white p-6 md:p-8 rounded-xl shadow-sm border border-gray-200">
+  // --- VISTA B: DETALLE DE CONFIGURACIÓN SELECCIONADA ---
+  return (
+    <div className="w-full h-full flex flex-col flex-1">
+      {/* Botón de Retorno */}
+      <button
+        onClick={() => setActiveSection(null)}
+        className="inline-flex items-center gap-2 text-sm font-bold text-blue-600 hover:text-blue-700 transition-colors cursor-pointer mb-6"
+      >
+        <ArrowLeft size={14} />
+        <span>Volver a Ajustes</span>
+      </button>
+
+      {/* Contenedor del Formulario */}
+      <div className="bg-white border border-gray-200 rounded-xl p-6 md:p-8 shadow-sm">
         
-        {/* TAB 1: Perfil de Administrador (Mock) */}
-        {activeTab === 'admin' && (
-          <form onSubmit={(e) => handleMockSave(e, 'Perfil de Administrador')} className="space-y-5 animate-in fade-in duration-200">
+        {/* FORM 1: Perfil de Administrador */}
+        {activeSection === 'admin' && (
+          <form onSubmit={handleSaveAdminConfig} className="space-y-6">
             <div className="pb-3 border-b border-gray-100">
-              <h2 className="text-sm font-bold text-gray-900">Perfil de Administrador</h2>
-              <p className="text-3xs text-gray-500 mt-0.5">Datos de contacto personales y tu rol activo en el sistema.</p>
+              <h2 className="text-lg font-bold text-gray-900">Perfil de Administrador</h2>
+              <p className="text-sm text-gray-500 mt-0.5">Administra tus datos de contacto y rol de sistema.</p>
             </div>
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
               <div>
-                <label className="block text-[10px] font-semibold text-gray-700 mb-1">Nombre Completo</label>
+                <label className="block text-sm font-semibold text-gray-700 mb-1">Nombre Completo</label>
                 <input
                   type="text"
                   name="name"
                   value={adminConfig.name}
                   onChange={handleAdminChange}
-                  className="w-full px-3 py-2 rounded-md border border-gray-200 bg-gray-50 text-xs text-gray-900 focus:outline-none focus:border-blue-500 focus:bg-white transition-all"
+                  className="w-full px-4 py-3 rounded-md border border-gray-200 bg-gray-50 text-sm text-gray-900 focus:outline-none focus:border-blue-500 focus:bg-white transition-all"
                 />
               </div>
               <div>
-                <label className="block text-[10px] font-semibold text-gray-700 mb-1">Rol Administrativo</label>
+                <label className="block text-sm font-semibold text-gray-700 mb-1">Rol de Cuenta</label>
                 <input
                   type="text"
                   name="role"
                   disabled
                   value={adminConfig.role}
-                  className="w-full px-3 py-2 rounded-md border border-gray-200 bg-gray-100/70 text-xs text-gray-500 focus:outline-none cursor-not-allowed"
+                  className="w-full px-4 py-3 rounded-md border border-gray-200 bg-gray-100/70 text-sm text-gray-500 cursor-not-allowed"
                 />
               </div>
               <div>
-                <label className="block text-[10px] font-semibold text-gray-700 mb-1">Correo Electrónico</label>
+                <label className="block text-sm font-semibold text-gray-700 mb-1">Correo Electrónico</label>
                 <input
                   type="email"
                   name="email"
                   value={adminConfig.email}
                   onChange={handleAdminChange}
-                  className="w-full px-3 py-2 rounded-md border border-gray-200 bg-gray-50 text-xs text-gray-900 focus:outline-none focus:border-blue-500 focus:bg-white transition-all"
+                  className="w-full px-4 py-3 rounded-md border border-gray-200 bg-gray-50 text-sm text-gray-900 focus:outline-none focus:border-blue-500 focus:bg-white transition-all"
                 />
               </div>
               <div>
-                <label className="block text-[10px] font-semibold text-gray-700 mb-1">Teléfono Directo</label>
+                <label className="block text-sm font-semibold text-gray-700 mb-1">Teléfono Móvil</label>
                 <input
                   type="text"
                   name="phone"
                   value={adminConfig.phone}
                   onChange={handleAdminChange}
-                  className="w-full px-3 py-2 rounded-md border border-gray-200 bg-gray-50 text-xs text-gray-900 focus:outline-none focus:border-blue-500 focus:bg-white transition-all font-mono"
+                  className="w-full px-4 py-3 rounded-md border border-gray-200 bg-gray-50 text-sm text-gray-900 focus:outline-none focus:border-blue-500 focus:bg-white transition-all font-mono"
                 />
               </div>
             </div>
@@ -280,7 +401,7 @@ export default function SettingsPage() {
               <button
                 type="submit"
                 disabled={isSubmitting}
-                className="flex items-center gap-2 px-5 py-2 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold shadow transition-all cursor-pointer disabled:opacity-40"
+                className="flex items-center gap-2 px-5 py-2.5 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-sm font-semibold shadow transition-all cursor-pointer disabled:opacity-40"
               >
                 {isSubmitting ? <Loader2 size={13} className="animate-spin" /> : <Save size={13} />}
                 <span>Guardar Cambios</span>
@@ -289,59 +410,39 @@ export default function SettingsPage() {
           </form>
         )}
 
-        {/* TAB 2: Cerebro del Bot (Empresa) - Persistido Real */}
-        {activeTab === 'bot' && (
-          <div className="space-y-6 animate-in fade-in duration-200">
+        {/* FORM 2: Cerebro del Bot (Empresa) */}
+        {activeSection === 'bot' && (
+          <div className="space-y-6">
             <div className="pb-3 border-b border-gray-100">
-              <h2 className="text-sm font-bold text-gray-900">Cerebro del Bot (Contexto IA)</h2>
-              <p className="text-3xs text-gray-500 mt-0.5">Especifica el contexto institucional de tu negocio para la IA del chatbot.</p>
+              <h2 className="text-lg font-bold text-gray-900">Cerebro del Bot (Contexto IA)</h2>
+              <p className="text-sm text-gray-500 mt-0.5">Instrucciones y contexto empresarial que leerá la Inteligencia Artificial.</p>
             </div>
 
-            {/* Sub-Pestañas Superiores de Empresa con diseño de bordes inferiores */}
             <div className="flex border-b border-gray-200 mb-6">
               <button
                 type="button"
                 onClick={() => setActiveSubTab('general')}
-                className={`pb-2 border-b-2 text-xs font-bold transition-all cursor-pointer mr-6
-                  ${activeSubTab === 'general'
-                    ? 'text-blue-600 border-blue-600'
-                    : 'text-gray-500 border-transparent hover:text-gray-700'
-                  }
+                className={`pb-2 border-b-2 text-sm font-bold transition-all cursor-pointer mr-6
+                  ${activeSubTab === 'general' ? 'text-blue-600 border-blue-600' : 'text-gray-500 border-transparent hover:text-gray-700'}
                 `}
               >
                 Información General
               </button>
               <button
                 type="button"
-                onClick={() => setActiveSubTab('billing')}
-                className={`pb-2 border-b-2 text-xs font-bold transition-all cursor-pointer mr-6
-                  ${activeSubTab === 'billing'
-                    ? 'text-blue-600 border-blue-600'
-                    : 'text-gray-500 border-transparent hover:text-gray-700'
-                  }
-                `}
-              >
-                Facturación y Pagos
-              </button>
-              <button
-                type="button"
                 onClick={() => setActiveSubTab('operations')}
-                className={`pb-2 border-b-2 text-xs font-bold transition-all cursor-pointer mr-6
-                  ${activeSubTab === 'operations'
-                    ? 'text-blue-600 border-blue-600'
-                    : 'text-gray-500 border-transparent hover:text-gray-700'
-                  }
+                className={`pb-2 border-b-2 text-sm font-bold transition-all cursor-pointer mr-6
+                  ${activeSubTab === 'operations' ? 'text-blue-600 border-blue-600' : 'text-gray-500 border-transparent hover:text-gray-700'}
                 `}
               >
                 Operaciones
               </button>
             </div>
 
-            {/* Contenedor del Formulario */}
             <form onSubmit={handleSaveBotConfig} className="space-y-6">
               {activeSubTab === 'general' && (
                 <div className="space-y-6">
-                  {/* Carga del Logo Comercial */}
+                  {/* Logotipo */}
                   <div className="flex items-center gap-5 pb-5 border-b border-gray-100 col-span-full">
                     <div className="w-16 h-16 rounded-xl border border-gray-200 bg-gray-50 flex items-center justify-center overflow-hidden flex-shrink-0">
                       {botConfig.logoUrl ? (
@@ -351,7 +452,7 @@ export default function SettingsPage() {
                       )}
                     </div>
                     <div className="space-y-2">
-                      <p className="text-xs font-bold text-gray-900">Logo de Empresa</p>
+                      <p className="text-xs font-bold text-gray-900">Logo Corporativo</p>
                       <div className="flex gap-2">
                         <input
                           type="file"
@@ -382,84 +483,238 @@ export default function SettingsPage() {
 
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                     <div>
-                      <label className="block text-[10px] font-semibold text-gray-700 mb-1">Nombre Comercial</label>
+                      <label className="block text-sm font-semibold text-gray-700 mb-1">Nombre Comercial de la Empresa</label>
                       <input
                         type="text"
                         name="companyName"
                         value={botConfig.companyName}
                         onChange={handleBotChange}
-                        className="w-full px-3 py-2 rounded-md border border-gray-200 bg-gray-50 text-xs text-gray-900 focus:outline-none focus:border-blue-500 focus:bg-white transition-all"
+                        className="w-full px-4 py-3 rounded-md border border-gray-200 bg-gray-50 text-sm text-gray-900 focus:outline-none focus:border-blue-500 focus:bg-white transition-all"
                         placeholder="Nombre comercial"
                       />
                     </div>
                     <div>
-                      <label className="block text-[10px] font-semibold text-gray-700 mb-1">RUC / Identificación Fiscal</label>
+                      <label className="block text-sm font-semibold text-gray-700 mb-1">RUC / Identificación Fiscal</label>
                       <input
                         type="text"
                         name="taxId"
                         value={botConfig.taxId}
                         onChange={handleBotChange}
-                        className="w-full px-3 py-2 rounded-md border border-gray-200 bg-gray-50 text-xs text-gray-900 focus:outline-none focus:border-blue-500 focus:bg-white transition-all font-mono"
+                        className="w-full px-4 py-3 rounded-md border border-gray-200 bg-gray-50 text-sm text-gray-900 focus:outline-none focus:border-blue-500 focus:bg-white transition-all font-mono"
                         placeholder="RUC"
                       />
                     </div>
                     <div>
-                      <label className="block text-[10px] font-semibold text-gray-700 mb-1">Dirección Física</label>
+                      <label className="block text-sm font-semibold text-gray-700 mb-1">Dirección de Oficina</label>
                       <input
                         type="text"
                         name="address"
                         value={botConfig.address}
                         onChange={handleBotChange}
-                        className="w-full px-3 py-2 rounded-md border border-gray-200 bg-gray-50 text-xs text-gray-900 focus:outline-none focus:border-blue-500 focus:bg-white transition-all"
+                        className="w-full px-4 py-3 rounded-md border border-gray-200 bg-gray-50 text-sm text-gray-900 focus:outline-none focus:border-blue-500 focus:bg-white transition-all"
                         placeholder="Dirección corporativa"
                       />
                     </div>
                     <div>
-                      <label className="block text-[10px] font-semibold text-gray-700 mb-1">Actividad / Giro de Negocio</label>
+                      <label className="block text-sm font-semibold text-gray-700 mb-1">Actividad / Giro Comercial</label>
                       <input
                         type="text"
                         name="businessSector"
                         value={botConfig.businessSector}
                         onChange={handleBotChange}
-                        className="w-full px-3 py-2 rounded-md border border-gray-200 bg-gray-50 text-xs text-gray-900 focus:outline-none focus:border-blue-500 focus:bg-white transition-all"
+                        className="w-full px-4 py-3 rounded-md border border-gray-200 bg-gray-50 text-sm text-gray-900 focus:outline-none focus:border-blue-500 focus:bg-white transition-all"
                         placeholder="ej. Tienda de ropa de anime"
                       />
                     </div>
                     <div>
-                      <label className="block text-[10px] font-semibold text-gray-700 mb-1">Teléfono de Soporte</label>
+                      <label className="block text-sm font-semibold text-gray-700 mb-1">Teléfono Corporativo</label>
                       <input
                         type="text"
                         name="phone"
                         value={botConfig.phone}
                         onChange={handleBotChange}
-                        className="w-full px-3 py-2 rounded-md border border-gray-200 bg-gray-50 text-xs text-gray-900 focus:outline-none focus:border-blue-500 focus:bg-white transition-all font-mono"
+                        className="w-full px-4 py-3 rounded-md border border-gray-200 bg-gray-50 text-sm text-gray-900 focus:outline-none focus:border-blue-500 focus:bg-white transition-all font-mono"
                         placeholder="Teléfono corporativo"
                       />
                     </div>
                     <div>
-                      <label className="block text-[10px] font-semibold text-gray-700 mb-1">Correo de Soporte</label>
+                      <label className="block text-sm font-semibold text-gray-700 mb-1">Correo Electrónico de Soporte</label>
                       <input
                         type="email"
                         name="email"
                         value={botConfig.email}
                         onChange={handleBotChange}
-                        className="w-full px-3 py-2 rounded-md border border-gray-200 bg-gray-50 text-xs text-gray-900 focus:outline-none focus:border-blue-500 focus:bg-white transition-all"
+                        className="w-full px-4 py-3 rounded-md border border-gray-200 bg-gray-50 text-sm text-gray-900 focus:outline-none focus:border-blue-500 focus:bg-white transition-all"
                         placeholder="soporte@empresa.com"
                       />
+                    </div>
+                    <div>
+                      <div className="flex items-center gap-1.5 mb-1">
+                        <label className="block text-sm font-semibold text-gray-700">
+                          Teléfono para recibir Alertas (Opcional)
+                        </label>
+                        <div className="group relative cursor-pointer text-gray-400 hover:text-gray-600 flex items-center">
+                          <HelpCircle size={15} />
+                          <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 hidden group-hover:block w-72 p-2.5 rounded-lg bg-gray-900 text-white shadow-xl text-xs leading-relaxed text-center z-30 pointer-events-none animate-in fade-in duration-150">
+                            El bot enviará alertas de ventas o peticiones de ayuda a este número. Si lo dejas vacío, las alertas llegarán al teléfono de tu Perfil de Administrador.
+                            <div className="absolute top-full left-1/2 -translate-x-1/2 -mt-1 border-4 border-transparent border-t-gray-900" />
+                          </div>
+                        </div>
+                      </div>
+                      <input
+                        type="text"
+                        name="notificationPhone"
+                        value={botConfig.notificationPhone || ''}
+                        onChange={handleBotChange}
+                        className="w-full px-4 py-3 rounded-md border border-gray-200 bg-gray-50 text-sm text-gray-900 focus:outline-none focus:border-blue-500 focus:bg-white transition-all font-mono"
+                        placeholder="ej: +51 987654321"
+                      />
+                    </div>
+
+                    <div className="col-span-full">
+                      <div className="flex items-center justify-between mb-1.5">
+                        <label className="block text-sm font-semibold text-gray-700">Identidad e Instrucciones Principales</label>
+                        <button
+                          type="button"
+                          onClick={handleGeneratePromptExample}
+                          className="px-2.5 py-1.5 text-xs font-bold text-blue-600 hover:text-blue-700 bg-blue-50 hover:bg-blue-100 rounded transition-all cursor-pointer"
+                        >
+                          Generar Ejemplo
+                        </button>
+                      </div>
+                      <textarea
+                        name="botRole"
+                        value={botConfig.botRole || botConfig.customPrompt || ''}
+                        onChange={(e) => {
+                          setBotConfig(prev => ({
+                            ...prev,
+                            botRole: e.target.value,
+                            customPrompt: e.target.value
+                          }));
+                          setIsFormDirty(true);
+                        }}
+                        rows={5}
+                        className="w-full px-4 py-3 rounded-md border border-gray-200 bg-gray-50 text-sm text-gray-900 focus:outline-none focus:border-blue-500 focus:bg-white transition-all resize-none leading-relaxed font-mono"
+                        placeholder="Ej: Eres un asistente de ventas de una ferretería. Sé amable, responde corto y nunca ofrezcas descuentos no autorizados."
+                      />
+                    </div>
+
+                    {/* Checkbox Compacto: Modo Conversación Humana */}
+                    <div className="col-span-full flex items-center gap-2 pt-2">
+                      <label className="flex items-center gap-2.5 cursor-pointer select-none">
+                        <input
+                          type="checkbox"
+                          name="multiMessageMode"
+                          checked={botConfig.multiMessageMode !== false}
+                          onChange={(e) => {
+                            setBotConfig(prev => ({ ...prev, multiMessageMode: e.target.checked }));
+                            setIsFormDirty(true);
+                          }}
+                          className="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500 cursor-pointer"
+                        />
+                        <span className="text-sm font-semibold text-gray-800">
+                          Modo conversación humana
+                        </span>
+                      </label>
+                      <div className="group relative cursor-pointer text-gray-400 hover:text-gray-600 flex items-center">
+                        <HelpCircle size={15} />
+                        <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 hidden group-hover:block w-64 p-2.5 rounded-lg bg-gray-900 text-white shadow-xl text-xs leading-relaxed text-center z-30 pointer-events-none animate-in fade-in duration-150">
+                          La IA dividirá sus respuestas en 2 o 3 mensajes cortos para simular el comportamiento humano.
+                          <div className="absolute top-full left-1/2 -translate-x-1/2 -mt-1 border-4 border-transparent border-t-gray-900" />
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Checkbox: Notificar pedidos cerrados por WhatsApp */}
+                    <div className="col-span-full flex items-center gap-2 pt-1">
+                      <label className="flex items-center gap-2.5 cursor-pointer select-none">
+                        <input
+                          type="checkbox"
+                          name="notifySalesWhatsApp"
+                          checked={botConfig.notifySalesWhatsApp === true}
+                          onChange={(e) => {
+                            setBotConfig(prev => ({ ...prev, notifySalesWhatsApp: e.target.checked }));
+                            setIsFormDirty(true);
+                          }}
+                          className="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500 cursor-pointer"
+                        />
+                        <span className="text-sm font-semibold text-gray-800">
+                          Notificar pedidos cerrados por WhatsApp
+                        </span>
+                      </label>
+                      <div className="group relative cursor-pointer text-gray-400 hover:text-gray-600 flex items-center">
+                        <HelpCircle size={15} />
+                        <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 hidden group-hover:block w-64 p-2.5 rounded-lg bg-gray-900 text-white shadow-xl text-xs leading-relaxed text-center z-30 pointer-events-none animate-in fade-in duration-150">
+                          A este número de WhatsApp la IA enviará un resumen automático con los datos del cliente (dirección, pedido, monto) cada vez que se concrete una venta o envío.
+                          <div className="absolute top-full left-1/2 -translate-x-1/2 -mt-1 border-4 border-transparent border-t-gray-900" />
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Checkbox: Modo Vendedor Persuasivo (Estrategias de Marketing) */}
+                    <div className="col-span-full flex items-center gap-2 pt-1">
+                      <label className="flex items-center gap-2.5 cursor-pointer select-none">
+                        <input
+                          type="checkbox"
+                          name="marketingModeEnabled"
+                          checked={botConfig.marketingModeEnabled === true}
+                          onChange={(e) => {
+                            setBotConfig(prev => ({ ...prev, marketingModeEnabled: e.target.checked }));
+                            setIsFormDirty(true);
+                          }}
+                          className="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500 cursor-pointer"
+                        />
+                        <span className="text-sm font-semibold text-gray-800">
+                          Modo Vendedor Persuasivo (Estrategias de Marketing)
+                        </span>
+                      </label>
+                      <div className="group relative cursor-pointer text-gray-400 hover:text-gray-600 flex items-center">
+                        <HelpCircle size={15} />
+                        <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 hidden group-hover:block w-72 p-2.5 rounded-lg bg-gray-900 text-white shadow-xl text-xs leading-relaxed text-center z-30 pointer-events-none animate-in fade-in duration-150">
+                          Activa estrategias avanzadas de cierre de ventas. El bot aplicará tácticas de persuasión, venta basada en valor y seguimiento inteligente para maximizar tus conversiones.
+                          <div className="absolute top-full left-1/2 -translate-x-1/2 -mt-1 border-4 border-transparent border-t-gray-900" />
+                        </div>
+                      </div>
                     </div>
                   </div>
                 </div>
               )}
 
-              {activeSubTab === 'billing' && (
+
+
+              {activeSubTab === 'operations' && (
                 <div className="grid grid-cols-1 gap-6">
                   <div className="col-span-full">
+                    <label className="block text-sm font-semibold text-gray-700 mb-1.5">Horarios de Atención</label>
+                    <textarea
+                      name="businessHours"
+                      value={botConfig.businessHours}
+                      onChange={handleBotChange}
+                      rows={3}
+                      className="w-full px-4 py-3 rounded-md border border-gray-200 bg-gray-50 text-sm text-gray-900 focus:outline-none focus:border-blue-500 focus:bg-white transition-all resize-none leading-relaxed col-span-full"
+                      placeholder="Lunes a Viernes de 9:00 AM a 6:00 PM."
+                    />
+                  </div>
+
+                  <div className="col-span-full">
+                    <label className="block text-sm font-semibold text-gray-700 mb-1.5">Políticas de Envío y Devoluciones</label>
+                    <textarea
+                      name="termsAndPolicies"
+                      value={botConfig.termsAndPolicies}
+                      onChange={handleBotChange}
+                      rows={5}
+                      className="w-full px-4 py-3 rounded-md border border-gray-200 bg-gray-50 text-sm text-gray-900 focus:outline-none focus:border-blue-500 focus:bg-white transition-all resize-none leading-relaxed col-span-full"
+                      placeholder="Plazo de devolución de 7 días naturales en empaque original sin abrir. Envíos a todo el país en 24 a 48 horas."
+                    />
+                  </div>
+
+                  <div className="col-span-full">
                     <div className="flex items-center gap-2 mb-1.5">
-                      <label className="block text-[10px] font-semibold text-gray-700">Cuentas Bancarias e Instrucciones de Pago</label>
+                      <label className="block text-sm font-semibold text-gray-700">Cuentas Bancarias e Instrucciones de Pago (Clientes)</label>
                       <div className="group relative cursor-pointer text-gray-400 hover:text-gray-600">
                         <HelpCircle size={13} />
                         <span className="absolute bottom-full left-1/2 -translate-x-1/2 mb-1.5 hidden group-hover:block w-52 p-2 rounded bg-white border border-gray-200 shadow-lg text-[9px] leading-relaxed text-gray-700 z-10">
-                          Escribe el número de tus cuentas, alias de cobro y los pasos que debe seguir el usuario.
+                          Escribe las cuentas bancarias donde tus clientes te transferirán el dinero de sus compras.
                         </span>
                       </div>
                     </div>
@@ -467,38 +722,13 @@ export default function SettingsPage() {
                       name="bankAccounts"
                       value={botConfig.bankAccounts}
                       onChange={handleBotChange}
-                      rows={8}
-                      className="w-full px-3 py-2.5 rounded-md border border-gray-200 bg-gray-50 text-xs text-gray-900 focus:outline-none focus:border-blue-500 focus:bg-white transition-all font-mono resize-none leading-relaxed col-span-full"
-                      placeholder="BCP Soles: 191-xxxxxx-x. Captura por este chat."
+                      rows={4}
+                      className="w-full px-4 py-3 rounded-md border border-gray-200 bg-gray-50 text-sm text-gray-900 focus:outline-none focus:border-blue-500 focus:bg-white transition-all font-mono resize-none leading-relaxed col-span-full"
+                      placeholder="Ej: Yape/Plin: 999888777 (Juan Pérez). BCP: 191-00000000-0-00"
                     />
-                  </div>
-                </div>
-              )}
-
-              {activeSubTab === 'operations' && (
-                <div className="grid grid-cols-1 gap-6">
-                  <div className="col-span-full">
-                    <label className="block text-[10px] font-semibold text-gray-700 mb-1.5">Horarios de Atención</label>
-                    <textarea
-                      name="businessHours"
-                      value={botConfig.businessHours}
-                      onChange={handleBotChange}
-                      rows={3}
-                      className="w-full px-3 py-2.5 rounded-md border border-gray-200 bg-gray-50 text-xs text-gray-900 focus:outline-none focus:border-blue-500 focus:bg-white transition-all resize-none leading-relaxed col-span-full"
-                      placeholder="Lunes a Viernes de 9:00 AM a 6:00 PM."
-                    />
-                  </div>
-
-                  <div className="col-span-full">
-                    <label className="block text-[10px] font-semibold text-gray-700 mb-1.5">Políticas de Devolución, Envíos y Términos</label>
-                    <textarea
-                      name="termsAndPolicies"
-                      value={botConfig.termsAndPolicies}
-                      onChange={handleBotChange}
-                      rows={5}
-                      className="w-full px-3 py-2.5 rounded-md border border-gray-200 bg-gray-50 text-xs text-gray-900 focus:outline-none focus:border-blue-500 focus:bg-white transition-all resize-none leading-relaxed col-span-full"
-                      placeholder="Plazo de devolución de 7 días naturales en empaque original sin abrir."
-                    />
+                    <p className="text-xs text-gray-500 mt-1.5 leading-relaxed">
+                      Escribe tus cuentas y métodos de pago exactamente como quieres que el cliente los lea. Nuestro bot los enviará tal cual sin modificarlos.
+                    </p>
                   </div>
                 </div>
               )}
@@ -507,7 +737,7 @@ export default function SettingsPage() {
                 <button
                   type="submit"
                   disabled={isSubmitting}
-                  className="flex items-center gap-2 px-5 py-2 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold shadow transition-all cursor-pointer disabled:opacity-40"
+                  className="flex items-center gap-2 px-5 py-2.5 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-sm font-semibold shadow transition-all cursor-pointer disabled:opacity-40"
                 >
                   {isSubmitting ? <Loader2 size={13} className="animate-spin" /> : <Save size={13} />}
                   <span>Guardar Cambios</span>
@@ -517,45 +747,45 @@ export default function SettingsPage() {
           </div>
         )}
 
-        {/* TAB 3: Seguridad (Mock) */}
-        {activeTab === 'security' && (
-          <form onSubmit={(e) => handleMockSave(e, 'Seguridad')} className="space-y-5 animate-in fade-in duration-200">
+        {/* FORM 3: Seguridad */}
+        {activeSection === 'security' && (
+          <form onSubmit={handleSaveSecurityConfig} className="space-y-6">
             <div className="pb-3 border-b border-gray-100">
-              <h2 className="text-sm font-bold text-gray-900">Seguridad y Acceso</h2>
-              <p className="text-3xs text-gray-500 mt-0.5">Actualiza tu contraseña de acceso para mantener tu cuenta protegida.</p>
+              <h2 className="text-lg font-bold text-gray-900">Seguridad y Acceso</h2>
+              <p className="text-sm text-gray-500 mt-0.5">Actualiza tu contraseña de acceso para proteger tu sesión.</p>
             </div>
 
-            <div className="space-y-5 max-w-md">
+            <div className="space-y-5 w-full">
               <div>
-                <label className="block text-[10px] font-semibold text-gray-700 mb-1">Contraseña Actual</label>
+                <label className="block text-sm font-semibold text-gray-700 mb-1">Contraseña Actual</label>
                 <input
                   type="password"
                   name="currentPassword"
                   value={securityConfig.currentPassword}
                   onChange={handleSecurityChange}
-                  className="w-full px-3 py-2 rounded-md border border-gray-200 bg-gray-50 text-xs text-gray-900 focus:outline-none focus:border-blue-500 focus:bg-white transition-all"
+                  className="w-full px-4 py-3 rounded-md border border-gray-200 bg-gray-50 text-sm text-gray-900 focus:outline-none focus:border-blue-500 focus:bg-white transition-all"
                   placeholder="••••••••"
                 />
               </div>
               <div>
-                <label className="block text-[10px] font-semibold text-gray-700 mb-1">Nueva Contraseña</label>
+                <label className="block text-sm font-semibold text-gray-700 mb-1">Nueva Contraseña</label>
                 <input
                   type="password"
                   name="newPassword"
                   value={securityConfig.newPassword}
                   onChange={handleSecurityChange}
-                  className="w-full px-3 py-2 rounded-md border border-gray-200 bg-gray-50 text-xs text-gray-900 focus:outline-none focus:border-blue-500 focus:bg-white transition-all"
+                  className="w-full px-4 py-3 rounded-md border border-gray-200 bg-gray-50 text-sm text-gray-900 focus:outline-none focus:border-blue-500 focus:bg-white transition-all"
                   placeholder="Mínimo 8 caracteres"
                 />
               </div>
               <div>
-                <label className="block text-[10px] font-semibold text-gray-700 mb-1">Confirmar Nueva Contraseña</label>
+                <label className="block text-sm font-semibold text-gray-700 mb-1">Confirmar Nueva Contraseña</label>
                 <input
                   type="password"
                   name="confirmPassword"
                   value={securityConfig.confirmPassword}
                   onChange={handleSecurityChange}
-                  className="w-full px-3 py-2 rounded-md border border-gray-200 bg-gray-50 text-xs text-gray-900 focus:outline-none focus:border-blue-500 focus:bg-white transition-all"
+                  className="w-full px-4 py-3 rounded-md border border-gray-200 bg-gray-50 text-sm text-gray-900 focus:outline-none focus:border-blue-500 focus:bg-white transition-all"
                   placeholder="Confirme nueva contraseña"
                 />
               </div>
@@ -565,7 +795,7 @@ export default function SettingsPage() {
               <button
                 type="submit"
                 disabled={isSubmitting || !securityConfig.newPassword}
-                className="flex items-center gap-2 px-5 py-2 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold shadow transition-all cursor-pointer disabled:opacity-40"
+                className="flex items-center gap-2 px-5 py-2.5 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-sm font-semibold shadow transition-all cursor-pointer disabled:opacity-40"
               >
                 {isSubmitting ? <Loader2 size={13} className="animate-spin" /> : <Key size={13} />}
                 <span>Cambiar Contraseña</span>
@@ -574,121 +804,21 @@ export default function SettingsPage() {
           </form>
         )}
 
-        {/* TAB 4: Facturación (Mock) */}
-        {activeTab === 'billing' && (
-          <div className="space-y-6 animate-in fade-in duration-200">
-            <div className="pb-3 border-b border-gray-100">
-              <h2 className="text-sm font-bold text-gray-900">Detalle de Suscripción</h2>
-              <p className="text-3xs text-gray-500 mt-0.5">Controla tu plan comercial activo, consumo de límites y facturas del SaaS.</p>
-            </div>
 
-            {/* Card de Plan Comercial */}
-            <div className="border border-gray-200 rounded-xl bg-gray-50/50 p-5 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 shadow-2xs">
-              <div className="space-y-1">
-                <div className="flex items-center gap-2">
-                  <span className="text-xs font-bold text-gray-900">Plan Pro Anual</span>
-                  <span className="px-2 py-0.5 rounded-full text-[9px] font-bold bg-emerald-50 text-emerald-700 border border-emerald-200">
-                    Activo
-                  </span>
-                </div>
-                <p className="text-3xs text-gray-500">Acceso completo a Inteligencia Artificial, campañas masivas y constructores de flujo.</p>
-              </div>
-              <div className="text-left sm:text-right flex-shrink-0">
-                <p className="text-base font-bold text-gray-900">$49.00 / mes</p>
-                <p className="text-[10px] text-gray-500 flex items-center gap-1 sm:justify-end mt-1">
-                  <Calendar size={12} />
-                  Próximo pago: 01 Ago, 2026
-                </p>
-              </div>
-            </div>
 
-            {/* Límites de Uso */}
-            <div className="space-y-4">
-              <h3 className="text-xs font-bold text-gray-900">Límites y Consumos</h3>
-              
-              <div className="space-y-2">
-                <div className="flex justify-between text-2xs font-semibold">
-                  <span className="text-gray-600">Dispositivos Vinculados</span>
-                  <span className="text-gray-900">1 / 3 instancias</span>
-                </div>
-                <div className="w-full bg-gray-100 rounded-full h-1.5 overflow-hidden">
-                  <div className="bg-blue-600 h-full rounded-full" style={{ width: '33%' }} />
-                </div>
-              </div>
 
-              <div className="space-y-2">
-                <div className="flex justify-between text-2xs font-semibold">
-                  <span className="text-gray-600">Mensajes Despachados (Mensual)</span>
-                  <span className="text-gray-900">8,429 / 10,000</span>
-                </div>
-                <div className="w-full bg-gray-100 rounded-full h-1.5 overflow-hidden">
-                  <div className="bg-blue-600 h-full rounded-full" style={{ width: '84.2%' }} />
-                </div>
-              </div>
-            </div>
-
-            {/* Historial de Facturas */}
-            <div className="space-y-3">
-              <h3 className="text-xs font-bold text-gray-900">Historial de Pagos</h3>
-              <div className="border border-gray-200 rounded-xl overflow-hidden shadow-2xs">
-                <table className="w-full text-left border-collapse text-2xs">
-                  <thead>
-                    <tr className="bg-gray-50 border-b border-gray-200 text-gray-600 font-semibold">
-                      <th className="p-3">Factura</th>
-                      <th className="p-3">Fecha</th>
-                      <th className="p-3">Monto</th>
-                      <th className="p-3">Estado</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-gray-100 text-gray-900">
-                    <tr className="hover:bg-gray-50/50">
-                      <td className="p-3 font-semibold text-blue-600">INV-2026-003</td>
-                      <td className="p-3 text-gray-500">01 Jul, 2026</td>
-                      <td className="p-3 font-medium">$49.00</td>
-                      <td className="p-3 text-emerald-600 font-bold">Pagada</td>
-                    </tr>
-                    <tr className="hover:bg-gray-50/50">
-                      <td className="p-3 font-semibold text-blue-600">INV-2026-002</td>
-                      <td className="p-3 text-gray-500">01 Jun, 2026</td>
-                      <td className="p-3 font-medium">$49.00</td>
-                      <td className="p-3 text-emerald-600 font-bold">Pagada</td>
-                    </tr>
-                    <tr className="hover:bg-gray-50/50">
-                      <td className="p-3 font-semibold text-blue-600">INV-2026-001</td>
-                      <td className="p-3 text-gray-500">01 May, 2026</td>
-                      <td className="p-3 font-medium">$49.00</td>
-                      <td className="p-3 text-emerald-600 font-bold">Pagada</td>
-                    </tr>
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          </div>
-        )}
 
       </div>
 
       {/* Toasts */}
       {toast && (
-        <div
-          className={`fixed bottom-6 right-6 z-50 flex items-center gap-3 px-4 py-3 rounded-lg border shadow-card-md text-sm font-medium bg-card
-            ${toast.type === 'success'
-              ? 'border-emerald-200 text-emerald-700'
-              : 'border-red-200 text-danger'
-            }
-          `}
-          role="status"
-          aria-live="polite"
-        >
+        <div className="fixed bottom-6 right-6 z-50 flex items-center gap-3 px-4 py-3 rounded-lg border shadow-card bg-white border-gray-200">
           {toast.type === 'success' ? (
-            <CheckCircle2 size={18} className="text-success flex-shrink-0" />
+            <CheckCircle2 size={16} className="text-emerald-600 flex-shrink-0" />
           ) : (
-            <AlertCircle size={18} className="text-danger flex-shrink-0" />
+            <AlertCircle size={16} className="text-rose-600 flex-shrink-0" />
           )}
-          <span>{toast.msg}</span>
-          <button onClick={() => setToast(null)} className="ml-1 text-muted hover:text-hi cursor-pointer">
-            &times;
-          </button>
+          <span className="text-xs text-gray-700 font-medium">{toast.msg}</span>
         </div>
       )}
     </div>

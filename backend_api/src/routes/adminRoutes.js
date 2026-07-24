@@ -4,6 +4,7 @@ import {
   createTenant,
   updateTenantStatus,
   updateTenantLimits,
+  updateTenantPassword,
   getPlans,
   createPlan,
   updatePlan,
@@ -12,6 +13,7 @@ import {
   saveGlobalConfig,
   getGlobalStats,
   getRecentActivity,
+  resetAiStatus,
   checkGatewayHealth,
   getAlerts,
   resolveAlert,
@@ -31,6 +33,7 @@ router.use(adminMiddleware);
 // Stats
 router.get('/stats', getGlobalStats);
 router.get('/activity', getRecentActivity);
+router.post('/ai-status/reset', resetAiStatus);
 router.get('/health/gateway/:gateway', checkGatewayHealth);
 
 // Alerts
@@ -47,6 +50,7 @@ router.get('/tenants', getTenants);
 router.post('/tenants', createTenant);
 router.patch('/tenants/:id/status', updateTenantStatus);
 router.patch('/tenants/:id/limits', updateTenantLimits);
+router.put('/tenants/:id/password', updateTenantPassword);
 
 // Plans
 router.get('/plans', getPlans);

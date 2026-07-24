@@ -3,12 +3,18 @@ import Sidebar from './Sidebar';
 import TopBar from './TopBar';
 import MobileNav from './MobileNav';
 import { AlertTriangle } from 'lucide-react';
+import { useUnsavedChanges } from '../../context/UnsavedChangesContext';
+import { useUnsavedChangesWarning } from '../../hooks/useUnsavedChangesWarning';
+import UnsavedChangesModal from '../ui/UnsavedChangesModal';
 
 export default function MainLayout() {
   const impersonatedTenantId = localStorage.getItem('impersonatedTenantId');
   const impersonatedTenantName = localStorage.getItem('impersonatedTenantName');
   const location = useLocation();
-  const isChatRoute = location.pathname.includes('/mensajes');
+  const isChatRoute = location.pathname.includes('/mensajes') || location.pathname.includes('/automatizacion');
+
+  const { isDirty } = useUnsavedChanges();
+  const blocker = useUnsavedChangesWarning(isDirty);
 
   const handleExitImpersonation = () => {
     localStorage.removeItem('impersonatedTenantId');
@@ -67,6 +73,8 @@ export default function MainLayout() {
           </div>
         </main>
       </div>
+
+      <UnsavedChangesModal blocker={blocker} />
     </div>
   );
 }

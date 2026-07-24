@@ -1,0 +1,808 @@
+📐 DOCUMENTO MAESTRO DE ARQUITECTURA Y FUNCIONALIDAD
+Sistema: Astra Campaign — SaaS de Marketing por WhatsApp
+Versión del análisis: Julio 2026 | Generado por: Antigravity AI
+PROPÓSITO DE ESTE DOCUMENTO Este es el plano definitivo y exhaustivo del sistema Astra Campaign. Contiene toda la información técnica y funcional necesaria para reconstruir el sistema desde cero, comprender su lógica de negocio y mantenerlo de forma segura.
+
+SECCIÓN 1 — CATÁLOGO FUNCIONAL Y LÓGICA DE NEGOCIO
+¿Qué es Astra Campaign y para quién es?
+Astra Campaign es una plataforma SaaS multi-tenant de marketing y automatización por WhatsApp. Está diseñada para empresas (tenants/clientes) que necesitan enviar mensajes masivos, gestionar contactos y construir flujos de chatbot automatizados sobre WhatsApp. La plataforma es administrada por un SuperAdmin que gestiona las empresas clientes y sus cuotas.
+
+Usuarios del sistema:
+
+SuperAdmin: Rol global. Crea y administra empresas (tenants), gestiona configuraciones globales del sistema (proveedores WhatsApp, branding), y puede impersonar cualquier tenant mediante el header X-Tenant-Id.
+ADMIN (Tenant Admin): Administrador de una empresa específica. Gestiona usuarios, configuraciones de integración, y todas las funcionalidades de su tenant.
+USER: Usuario regular de un tenant. Accede a contactos, campañas y flujos según los permisos que le asigne su Admin.
+Módulos Funcionales — Lo que el usuario ve y puede hacer
+🔌 Módulo 1: Gestión de WhatsApp (/whatsapp)
+Archivo UI: 
+WhatsAppConnectionsPage.tsx
+
+Este es el panel de control central de las conexiones WhatsApp. El usuario puede:
+
+Crear nuevas sesiones/conexiones de WhatsApp en tres proveedores distintos:
+WAHA (WhatsApp HTTP API): Sesiones basadas en QR code. El sistema genera un nombre técnico único (ej: empresa_abc123) con un displayName amigable (ej: ventas).
+Evolution API: Conexión vía QR en la instancia propia del Evolution container.
+QuePasa: Conexión mediante token de autenticación único por sesión (quepasaToken generado con crypto.randomBytes(32)).
+Escanear QR codes para vincular el número de WhatsApp.
+Ver el estado en tiempo real de cada sesión: WORKING, SCAN_QR_CODE, STOPPED, FAILED.
+Eliminar sesiones tanto del sistema como del proveedor externo.
+Sincronizar estado — el backend consulta automáticamente la API de WAHA/Evolution/QuePasa cada vez que se carga la página para actualizar los estados.
+Habilitar Campañas Interactivas para una sesión específica (toggle interactiveCampaignEnabled).
+Configurar Webhook — cada sesión tiene un webhookSecret único generado con crypto.randomBytes(32). La URL de webhook es POST /api/webhooks/incoming/:sessionId/:webhookSecret.
+Regla de Multi-Proveedor: El sistema soporta múltiples proveedores simultáneamente. Una campaña puede tener múltiples sesiones de distintos proveedores y el scheduler las distribuye en round-robin sequencial.
+
+👥 Módulo 2: Gestión de Contactos (/contatos)
+Archivo UI: 
+ContactsPage.tsx
+
+El CRM nativo del sistema. El usuario puede:
+
+Crear, editar y eliminar contactos con campos: nombre, teléfono, email, categoría, tags (etiquetas), observaciones y perfexLeadId (para contactos sincronizados desde Perfex CRM).
+Importar CSV masivo — mediante el componente 
+CSVImportModal.tsx
+, el usuario sube un CSV y mapea columnas.
+Importar desde Chatwoot — el componente 
+ChatwootSyncModal.tsx
+ conecta con el Chatwoot del tenant (configurado en Settings > Integraciones) y trae contactos filtrando por labels/tags de Chatwoot.
+Importar desde Perfex CRM — el componente 
+PerfexImportModal.tsx
+ busca leads en Perfex CRM y los importa como contactos.
+Filtrar y buscar por nombre, teléfono, categoría o tags.
+Edición masiva (BulkEdit) — 
+BulkEditModal.tsx
+ permite aplicar cambios de categoría o tags a múltiples contactos seleccionados.
+Gestionar categorías — crear, editar y eliminar categorías de contactos con nombre y color.
+Sistema de variables dinámicas en mensajes: Los campos del contacto son accesibles como variables en los mensajes de campaña usando la notación {{nombre}}, {{telefone}}, {{email}}, {{observacoes}}. El sistema los resuelve en el scheduler antes de enviar.
+
+📢 Módulo 3: Campañas Masivas (/campanhas)
+Archivos UI: 
+CampaignsPage.tsx
+, 
+CampaignCreateModal.tsx
+
+El motor de envío masivo. El usuario puede configurar:
+
+Configuración de la campaña:
+
+Nombre y objetivo de la campaña.
+Target por tags: El usuario selecciona uno o más tags; el scheduler filtra los contactos que tengan esos tags.
+Tipo de mensaje (messageType):
+TEXT: Texto plano.
+IMAGE: Imagen con caption opcional.
+DOCUMENT: Archivo adjunto (PDF, etc.).
+VIDEO: Video con caption.
+AUDIO: Audio/nota de voz.
+Variaciones de mensaje (Anti-Ban): Para texto, el usuario puede definir múltiples variaciones del mismo mensaje. Para media, puede subir múltiples versiones del archivo. El scheduler selecciona una variación aleatoria por cada contacto, humanizando el envío.
+Variables dinámicas: {{nome}}, {{telefone}}, {{email}} se insertan en el texto o caption.
+IA para personalización: El usuario puede usar Google Gemini o Groq para generar variaciones del texto de manera automática con un prompt.
+Sesiones múltiples (Multi-número): Selección de una o varias sesiones de WhatsApp. El scheduler las usa en round-robin.
+Delay randomizado (Anti-Ban): El usuario define un máximo de segundos de espera aleatoria entre mensajes (ej: 10 = entre 0 y 10 segundos random entre cada envío).
+Programación: Inicio inmediato o a una fecha/hora específica.
+Estados del ciclo de vida de una campaña: PENDING → RUNNING → COMPLETED o PAUSED (si no hay sesiones activas) o FAILED
+
+Reportes de campaña (
+CampaignReportModal.tsx
+):
+
+Contadores: totalContacts, sentCount, failedCount.
+Estado de cada mensaje individual: PENDING, PROCESSING, SENT, FAILED.
+Registro de qué sesión envió cada mensaje y qué variación fue seleccionada.
+🤖 Módulo 4: Campañas Interactivas / Flow Builder (/campanhas/interativa)
+Archivos UI: 
+InteractiveCampaignPage.tsx
+, 
+FlowBuilderPage.tsx
+
+El módulo más avanzado: un constructor visual de flujos de conversación tipo chatbot. El usuario puede:
+
+Gestión de campañas interactivas:
+
+Crear/editar/eliminar campañas interactivas.
+Seleccionar conexión (Connection) de WhatsApp para el flujo.
+Programar la fecha de inicio o iniciar manualmente.
+Ver estado: DRAFT, SCHEDULED, STARTED, PAUSED, COMPLETED.
+Flow Builder — Nodos disponibles (construido con React Flow / reactflow@11):
+
+Nodo	Archivo	Función
+Trigger	
+TriggerNode.tsx
+Punto de entrada. Puede filtrar por keywords o conexiones específicas
+Text	
+TextNode.tsx
+Envía un mensaje de texto
+Image	
+ImageNode.tsx
+Envía una imagen con caption
+Video	
+VideoNode.tsx
+Envía un video
+Audio	
+AudioNode.tsx
+Envía un audio
+Document	
+DocumentNode.tsx
+Envía un documento
+Condition	
+ConditionNode.tsx
+Bifurca el flujo según la respuesta del usuario. Soporta modo if/else y switch/case con operadores: equals, contains, startsWith, endsWith, notEquals, regex
+Delay	
+DelayNode.tsx
+Pausa el flujo N segundos/minutos
+AI	
+AINode.tsx
+Responde con IA (Gemini/Groq). En modo AI, el nodo puede "quedarse" en sí mismo para conversación continua
+Action	
+ActionNode.tsx
+Acciones del sistema (actualizar contacto, etc.)
+HTTP REST	
+HttpRestNode.tsx
+Llama a un endpoint HTTP externo (webhook outgoing)
+Chatwoot	
+IntegrationChatwootNode.tsx
+Crea una conversación en Chatwoot
+Perfex	
+IntegrationPerfexNode.tsx
+Crea un lead en Perfex CRM
+Stop	
+StopNode.tsx
+Termina el flujo para el contacto
+El grafo completo se serializa como JSON y se almacena en InteractiveCampaign.graph. El sidebar de configuración de nodos se gestiona en 
+NodeConfigSidebar.tsx
+ (115KB, el componente más grande del frontend).
+
+Sistema de sesiones por contacto (InteractiveCampaignSession): Cada contacto tiene su propia sesión dentro de un flujo, rastreando:
+
+currentNodeId: Nodo actual en el flujo.
+variables: JSON con todas las respuestas y datos recopilados durante la conversación.
+visitedNodes: Array de nodos visitados con timestamps.
+lastResponse: Última respuesta recibida del contacto.
+🤖 Módulo 5: Integración IA
+Servicios: 
+geminiService.ts
+, 
+groqService.ts
+, 
+openaiService.ts
+
+Tres proveedores de IA configurables por tenant (las claves API se guardan en TenantSettings):
+
+Google Gemini (gemini-1.5-flash por defecto): Se inicializa con la geminiApiKey del tenant. Soporta systemInstruction (prompt de sistema) + userPrompt. Los errores son mapeados a mensajes amigables: API_KEY_INVALID, RESOURCE_EXHAUSTED, SAFETY, AbortError.
+Groq (groq-1.5-flash por defecto): API key por tenant en groqApiKey.
+OpenAI (en el servicio pero no en la UI de settings visible actualmente).
+Uso de IA en campañas masivas: El usuario escribe un prompt en el modal de creación de campaña y la IA genera variaciones del mensaje personalizadas por contacto, sustituyendo variables como {{nome}}, {{email}}, etc.
+
+Uso de IA en flujos interactivos: El nodo AI en el Flow Builder responde en tiempo real a las respuestas del contacto usando el proveedor configurado del tenant.
+
+⚙️ Módulo 6: Configuraciones y Branding (/configuracoes)
+Archivo UI: 
+SettingsPage.tsx
+
+Panel de configuraciones dividido en secciones:
+
+General: Título de la página, logo, favicon, color primario (whitelabeling).
+WhatsApp Providers: URLs y API Keys de WAHA, Evolution y QuePasa (almacenadas en GlobalSettings).
+Integraciones por Tenant (guardadas en TenantSettings):
+Chatwoot: URL, Account ID, API Token.
+Perfex CRM: URL, Token de API.
+Google Gemini: API Key.
+Groq: API Key.
+Backup: Configuración de backups automáticos (programados con cron diario a las 2:00 AM por defecto).
+👤 Módulo 7: Gestión de Usuarios (/usuarios)
+Archivo UI: 
+UsersPage.tsx
+
+Solo visible para ADMIN del tenant. Permite:
+
+Crear, editar y desactivar usuarios.
+Asignar roles: USER, ADMIN.
+Ver último login de cada usuario.
+🏢 Módulo 8: Panel SuperAdmin (/super-admin)
+Archivo UI: 
+SuperAdminManagerPage.tsx
+
+Exclusivo del rol SUPERADMIN. Permite:
+
+Crear/editar/eliminar Tenants (empresas clientes).
+Definir cuotas por tenant: maxUsers, maxContacts, maxCampaigns, maxConnections.
+Seleccionar proveedores permitidos por tenant: WAHA, EVOLUTION, QUEPASA.
+Gestionar usuarios de cualquier tenant.
+Ver alertas globales del sistema (alertas de cuota, sesiones caídas, errores de campaña).
+Gestionar backups del sistema.
+Monitorear estadísticas del sistema completo.
+SECCIÓN 2 — STACK TECNOLÓGICO E INFRAESTRUCTURA
+Frontend
+Componente	Tecnología	Versión
+Framework	React	18.2.0
+Lenguaje	TypeScript	5.x
+Build Tool	Vite	5.0.8
+Routing	React Router DOM	7.9.1
+Formularios	React Hook Form + @hookform/resolvers	7.48.2
+Validación	Zod	3.22.4
+UI / Styling	TailwindCSS	3.3.6
+Notificaciones	react-hot-toast	2.4.1
+Flow Builder	reactflow	11.10.4
+Emoji Picker	emoji-picker-react	4.14.2
+Phone Utils	libphonenumber-js	1.10.51
+Excel Export	xlsx	0.18.5
+Servidor Dev	Vite dev server	—
+Servidor Prod	Nginx	(Dockerfile)
+Backend
+Componente	Tecnología	Versión
+Runtime	Node.js	20.x
+Framework	Express.js	4.18.2
+Lenguaje	TypeScript	5.x
+ORM	Prisma	5.7.1
+Auth	JWT (jsonwebtoken)	9.0.2
+Password Hash	bcryptjs	2.4.3
+WebSockets	Socket.IO	4.7.5
+Colas	BullMQ	5.76.9
+Redis Client	ioredis	5.10.1
+Cron Jobs	node-cron	4.2.1
+HTTP Client	axios + node-fetch	—
+Validación	express-validator + Zod	—
+File Upload	multer	1.4.5
+CSV Parse	csv-parser	3.2.0
+Excel	xlsx	0.18.5
+Crypto	Node.js built-in crypto	—
+Phone Utils	libphonenumber-js	1.10.51
+AI - Gemini	@google/generative-ai	0.24.1
+Testing	Jest + supertest	—
+Base de Datos y Almacenamiento
+Componente	Tecnología	Detalles
+Base de Datos Principal	PostgreSQL 16 con extensión pgvector	Imagen Docker: pgvector/pgvector:pg16
+ORM/Schema	Prisma (schema único, multi-schema)	El schema public es del backend, evolution es de Evolution API
+Caché / Colas	Redis 7 Alpine	maxmemory 256mb, política allkeys-lru, appendonly yes
+Almacenamiento Archivos	Volumen Docker local /app/uploads	Servido estáticamente en /api/uploads
+Backups	Sistema de backup propio en /app/backups	Ejecutado con pg_dump vía child_process.exec
+Servicios de Cola (BullMQ)
+Dos queues en Redis:
+
+Cola	Nombre	Workers	Concurrencia	Rate Limit
+Mensajes Individuales	message-queue	messageWorker	5 simultáneos	10 msg/seg
+Despacho de Campañas	campaign-dispatch-queue	campaignDispatchWorker	2 simultáneos	—
+Configuración de Contenedores Docker
+Archivo: 
+docker-compose.yml
+
+Servicio	Puerto Externo → Interno	Imagen/Build	Depends On
+postgres	5432:5432	pgvector/pgvector:pg16	—
+redis	(sin puerto expuesto)	redis:7-alpine	—
+evolution-api	8086:8080	evoapicloud/evolution-api:latest	postgres, redis
+backend	3001:3001	Build ./backend	postgres (healthy), redis (healthy)
+frontend	3000:80, 5173:5173	Build ./frontend	backend (healthy)
+chatwoot-web	3005:3000	chatwoot/chatwoot:latest	postgres, redis
+chatwoot-worker	— (sin puerto)	chatwoot/chatwoot:latest (Sidekiq)	postgres, redis
+Variables de entorno críticas del Backend:
+
+
+DATABASE_URL=postgresql://postgres:postgres@postgres:5432/contacts?schema=public
+REDIS_URL=redis://redis:6379
+JWT_SECRET=esta_clave_es_super_secreta_para_desarrollo_local_12345
+JWT_EXPIRES_IN=24h
+ALLOWED_ORIGINS=http://localhost,http://localhost:3000,http://localhost:5173
+Notas de infraestructura:
+
+Evolution API usa el mismo PostgreSQL pero en el schema evolution (DATABASE_CONNECTION_URI=...?schema=evolution).
+Chatwoot usa su propia base de datos chatwoot en el mismo PostgreSQL.
+Chatwoot-worker corre Sidekiq para procesar jobs en background (emails, transporters, slack, integrations).
+El backend tiene healthcheck: wget -qO- http://localhost:3001/api/health con 12 reintentos y start_period de 60s.
+Red Docker: Todos los servicios comparten la red bridge network_public.
+
+SECCIÓN 3 — ARQUITECTURA DE BASE DE DATOS Y MULTI-TENANCY
+Modelos Principales de Prisma
+El schema está en 
+backend/prisma/schema.prisma
+ (683 líneas). Los modelos se agrupan en capas:
+
+Capa 1: Multi-Tenancy Core
+
+Tenant (tenants)
+├── id: UUID PK
+├── slug: String UNIQUE (identificador URL-friendly)
+├── name: String
+├── active: Boolean
+├── allowedProviders: String[] (ej: ["WAHA","EVOLUTION"])
+└── Relations → [User, Contact, Category, Campaign, WhatsAppSession,
+                  TenantQuota, TenantSettings, Alert, MessageTemplate,
+                  AutomationFlow, Integration, AuditLog, Connection,
+                  InteractiveCampaign, InteractiveCampaignSession]
+TenantQuota (tenant_quotas) — 1:1 con Tenant
+├── maxUsers: Int (default 10)
+├── maxContacts: Int (default 1000)
+├── maxCampaigns: Int (default 50)
+└── maxConnections: Int (default 5)
+TenantSettings (tenant_settings) — 1:1 con Tenant
+├── geminiApiKey: String?
+├── groqApiKey: String?
+├── customBranding: Json?
+├── chatwootUrl/AccountId/ApiToken: String?
+└── perfexUrl/Token: String?
+GlobalSettings (global_settings) — singleton (1 registro)
+├── wahaHost/ApiKey: String
+├── evolutionHost/ApiKey: String
+├── quepasaUrl/Login/Password: String
+└── logoUrl, faviconUrl, companyName, pageTitle, primaryColor: String?
+UserTenant (user_tenants) — M:N entre User y Tenant
+├── userId: String FK
+├── tenantId: String FK
+└── role: String ("USER" | "ADMIN")
+Capa 2: Usuarios
+
+User (users)
+├── id, nome, email, senha (bcrypt)
+├── role: "USER" | "ADMIN" | "SUPERADMIN"
+├── ativo: Boolean
+├── tenantId: String? (NULL para SUPERADMIN)
+└── ultimoLogin: DateTime?
+Capa 3: Contactos y Segmentación
+
+Contact (contacts)
+├── id, nome, telefone, email
+├── tags: String[]
+├── observacoes: String?
+├── tenantId: String? (FK → Tenant)
+├── categoriaId: String? (FK → Category)
+└── perfexLeadId: String? (sincronización CRM)
+Category (categories)
+├── id, nome, cor, descricao
+└── tenantId: String?
+Capa 4: WhatsApp y Sesiones
+
+WhatsAppSession (whatsapp_sessions)
+├── name: String UNIQUE (nombre técnico en el proveedor)
+├── displayName: String? (nombre amigable para UI)
+├── status: String (WORKING | SCAN_QR_CODE | STOPPED | etc.)
+├── provider: String ("WAHA" | "EVOLUTION" | "QUEPASA")
+├── quepasaToken: String? (token único por sesión QuePasa)
+├── interactiveCampaignEnabled: Boolean
+├── webhookSecret: String? (token para validar webhooks)
+├── tenantId: String?
+└── meId/mePushName/meJid/meLid: String? (datos del número conectado)
+Capa 5: Campañas Masivas
+
+Campaign (campaigns)
+├── nome, targetTags, messageType, messageContent (JSON serializado)
+├── randomDelay: Int (segundos máximos de delay)
+├── startImmediately: Boolean
+├── scheduledFor: DateTime?
+├── status: "PENDING"|"RUNNING"|"COMPLETED"|"PAUSED"|"FAILED"
+├── totalContacts/sentCount/failedCount: Int
+├── sessionName: String? (sesión principal, FK → WhatsAppSession)
+├── sessionNames: String? (JSON array de nombres de sesiones múltiples)
+├── tenantId: String?
+└── createdBy/createdByName: String?
+CampaignMessage (campaign_messages) — 1:N con Campaign
+├── campaignId, contactId, contactPhone, contactName
+├── status: "PENDING"|"PROCESSING"|"SENT"|"FAILED"
+├── sentAt, deliveredAt, readAt: DateTime?
+├── errorMessage: String?
+├── messageId: String? (ID retornado por el proveedor)
+├── selectedVariation: String? (qué variación fue usada)
+└── sessionName: String? (qué sesión envió este mensaje)
+Capa 6: Campañas Interactivas (Flow Builder)
+
+Connection (connections)
+├── provider: String
+├── instanceName, phoneNumber, status
+├── callbackUrl, webhookSecret
+└── tenantId: String?
+InteractiveCampaign (interactive_campaigns)
+├── connectionId: String? (FK → Connection)
+├── name, status (DRAFT|SCHEDULED|STARTED|PAUSED|COMPLETED)
+├── scheduledDate: DateTime?
+├── graph: Json (serialización completa de nodos y edges de React Flow)
+└── tenantId: String?
+InteractiveCampaignSession (interactive_campaign_sessions)
+├── campaignId, contactId, contactPhone
+├── currentNodeId: String (nodo actual en el grafo)
+├── status: "ACTIVE"|"COMPLETED"|"FAILED"|"EXPIRED"
+├── variables: Json (respuestas y datos recopilados)
+├── visitedNodes: Json (historial de navegación)
+├── lastMessageAt: DateTime?, lastResponse: String?
+└── UNIQUE(campaignId, contactId)
+Capa 7: Sistema de Alertas, Notificaciones y Auditoría
+
+Alert (alerts)
+├── type: AlertType (QUOTA_WARNING|QUOTA_EXCEEDED|SYSTEM_ERROR|
+│                    TENANT_INACTIVE|SESSION_FAILED|CAMPAIGN_FAILED|
+│                    DATABASE_ERROR|API_ERROR|BACKUP_FAILED|SECURITY_ALERT)
+├── severity: AlertSeverity (LOW|MEDIUM|HIGH|CRITICAL)
+├── tenantId: String? (NULL = alerta global del sistema)
+├── resolved: Boolean
+└── metadata: Json?
+UserNotification (user_notifications)
+├── type: UserNotificationType (INFO|SUCCESS|WARNING|ERROR|CAMPAIGN|BACKUP|SYSTEM)
+└── read: Boolean
+AuditLog (audit_logs)
+├── action, severity, tenantId, userId
+├── entityType, entityId
+├── details: Json
+└── ipAddress, userAgent: String?
+Capa 8: Automatización y Templates
+
+AutomationFlow (automation_flows)
+├── trigger: Json (tipo + config)
+├── conditions: Json?
+└── actions: Json
+AutomationExecution (automation_executions)
+├── flowId, status, executedAt
+└── context: Json?, error: String?, duration: Int?
+MessageTemplate (message_templates)
+├── messageType: MessageType (TEXT|IMAGE|DOCUMENT|VIDEO|AUDIO)
+├── content: Text, variables: String[]
+└── mediaUrl, tags: String[]
+Arquitectura Multi-Tenancy — Aislamiento de Datos
+El aislamiento se implementa en tres niveles:
+
+Nivel 1: JWT Token
+Cuando un usuario hace login, el backend genera un JWT que contiene { userId, email, role, tenantId }. El tenantId queda codificado en el token — el usuario no puede cambiarlo.
+
+Nivel 2: Auth Middleware (backend/src/middleware/auth.ts)
+En cada request autenticado:
+
+Extrae y verifica el JWT (jwt.verify con JWT_SECRET).
+Busca el usuario en BD y verifica que esté activo (ativo: true).
+Excepción SuperAdmin: Si el rol es SUPERADMIN, puede sobreescribir el tenantId enviando el header X-Tenant-Id. Esto permite a SuperAdmin "impersonar" cualquier tenant para gestión.
+Si el usuario tiene tenantId, busca el tenant en BD y verifica que esté activo (active: true). Si el tenant está inactivo, devuelve 401.
+Adjunta req.user, req.tenantId y req.tenant a la request para uso en controllers.
+Nivel 3: Filtrado en cada Query de BD
+Todos los controllers y servicios filtran por tenantId en cada consulta Prisma. Por ejemplo:
+
+typescript
+
+// contactController.ts
+const contacts = await prisma.contact.findMany({
+  where: { tenantId: req.tenantId } // ← Siempre filtrado
+});
+Esta no es una Row-Level Security a nivel de BD, sino una convención de código — cada controller recibe el tenantId del middleware y lo aplica explícitamente en cada query.
+
+Nivel 4: Quota Middleware (backend/src/middleware/quotaMiddleware.ts)
+Antes de crear nuevas conexiones, el middleware checkConnectionQuota verifica que el tenant no haya superado su maxConnections. Si se supera la cuota, se genera una alerta automática.
+
+SECCIÓN 4 — DIRECTORIO TÉCNICO Y RUTAS CRÍTICAS
+Archivos Críticos del Sistema
+Backend — Núcleo y Punto de Entrada
+Archivo	Ruta	Descripción
+server.ts	backend/src/server.ts	Punto de entrada. Inicializa Express, CORS, rutas, WebSocket, scheduler, alertas, backup y BullMQ
+schema.prisma	backend/prisma/schema.prisma	Esquema completo de la BD (683 líneas, 18 modelos)
+Backend — Servicios Críticos de Negocio
+Archivo	Tamaño	Descripción
+campaignSchedulerService.ts
+42KB / 1092 líneas	Motor del corazón del sistema. Loop cada 30s: detecta campañas pendientes/en ejecución, procesa mensajes uno por vez, aplica delays, selecciona variaciones, distribuye sesiones en round-robin, valida existencia del contacto en WhatsApp antes de enviar
+interactiveCampaignFlowEngine.ts
+33KB / 888 líneas	Motor de flujos interactivos. Recibe mensajes entrantes, busca sesión activa del contacto, navega el grafo de nodos, evalúa condiciones (if/else, switch/case, regex), envía respuestas
+interactiveCampaignDispatchService.ts
+24KB	Despacha el mensaje inicial de campañas interactivas a todos los contactos del target al iniciarse la campaña. Usa BullMQ queue campaign-dispatch-queue
+automationService.ts
+19KB / 624 líneas	Motor de automatización. Procesa flujos de AutomationFlow (model Prisma). Soporta triggers: CONTACT_CREATED, CAMPAIGN_COMPLETED, TIME_BASED, WEBHOOK_RECEIVED, etc. Usa node-cron para flujos time-based
+backupService.ts
+33KB / 971 líneas	Backups automáticos y manuales. Ejecuta pg_dump vía child_process.exec. Schedula backup diario a las 2:00 AM (cron 0 2 * * *) por tenant. Gestiona retención de 30 días
+websocketService.ts
+12KB / 382 líneas	WebSocket con Socket.IO. Autenticación JWT en handshake. Notificaciones en tiempo real por tenant (start/finish de campaña, alertas). Singleton pattern
+alertsMonitoringService.ts
+11KB	Monitoreo de cuotas, salud de sesiones y sistemas. Genera alertas en BD y notifica vía WebSocket
+queueService.ts
+2.4KB	Inicializa BullMQ: messageQueue (concurrencia 5, rate limit 10/seg) y campaignDispatchQueue (concurrencia 2)
+Backend — Servicios de Proveedores WhatsApp
+Archivo	Descripción
+wahaApiService.ts
+Envío de mensajes vía WAHA. sendMessage() y checkContactExists()
+evolutionApiService.ts
+API Client para Evolution API. Gestión de instancias
+evolutionMessageService.ts
+sendMessageViaEvolution() y checkContactExistsEvolution()
+quepasaMessageService.ts
+sendMessageViaQuepasa(), checkContactExistsQuepasa(), configureQuepasaWebhook()
+wahaSyncService.ts
+Sincroniza el estado de sesiones WAHA desde la API al banco de datos local
+Backend — Servicios de Integración
+Archivo	Descripción
+chatwootService.ts
+Cliente HTTP para Chatwoot API. getTags() trae labels de conversaciones, importContacts() importa contactos con normalización de teléfono vía libphonenumber-js
+chatwootIntegrationService.ts
+Integración activa desde flujos interactivos (nodo IntegrationChatwoot)
+perfexService.ts
+16KB. Cliente para Perfex CRM API. Búsqueda y creación de leads
+perfexIntegrationService.ts
+Integración activa desde flujos interactivos (nodo IntegrationPerfex)
+geminiService.ts
+Singleton. generateMessage() con systemInstruction + userPrompt. Claves por tenant
+groqService.ts
+Equivalente a Gemini para Groq API
+Backend — Rutas/Webhooks Críticos
+Archivo	Descripción
+incomingWebhookRoutes.ts
+Ruta pública crítica. Recibe mensajes entrantes de los tres proveedores. Implementa la lógica anti-bucle isFromMe. Ver Sección 5
+waha.ts
+54KB / 1256 líneas. El archivo de rutas más grande. Gestiona TODAS las operaciones de sesiones WhatsApp para los tres proveedores
+httpProxyRoutes.ts
+Proxy HTTP server-side para evitar CORS. Ver Sección 5
+automation.ts
+16KB. CRUD completo de flujos de automatización con sus propias rutas internas
+Backend — Middleware
+Archivo	Descripción
+auth.ts
+JWT verification + user lookup + tenant validation + SuperAdmin override con X-Tenant-Id
+tenant.ts
+attachTenant, requireRole, superAdminOnly, tenantAdminOnly. Decoradores de roles
+quotaMiddleware.ts
+checkConnectionQuota — verifica cuotas antes de crear conexiones
+Frontend — Archivos Críticos
+Archivo	Tamaño	Descripción
+NodeConfigSidebar.tsx
+115KB	El componente más grande. Panel de configuración lateral del Flow Builder con formularios para cada tipo de nodo
+CampaignCreateModal.tsx
+83KB	Modal de creación de campañas. Incluye selector de variaciones, IA, multi-sesión, media upload
+InteractiveCampaignPage.tsx
+73KB	Página principal de campañas interactivas. Vista de lista, gestión y dispatch
+WhatsAppConnectionsPage.tsx
+39KB	Panel de conexiones WhatsApp con QR scanner integrado
+FlowBuilderPage.tsx
+27KB	Editor visual de flujos con React Flow. Incluye panel de nodos, conexiones y toolbar
+SystemBackup.tsx
+27KB	Componente de gestión de backups del sistema
+Rutas API Principales
+Base URL: http://localhost:3001/api
+
+Rutas Públicas (sin autenticación)
+
+POST  /api/auth/login
+POST  /api/auth/logout
+GET   /api/health
+GET   /api/settings/public          ← Favicon, título, branding sin token
+GET   /api/uploads/:filename        ← Archivos media estáticos
+POST  /api/webhooks/incoming/:sessionId/:webhookSecret  ← CRÍTICO: Mensajes entrantes
+Rutas Protegidas — Contactos
+
+GET    /api/contatos
+POST   /api/contatos
+PUT    /api/contatos/:id
+DELETE /api/contatos/:id
+POST   /api/contatos/bulk-edit
+POST   /api/csv/import
+Rutas Protegidas — WhatsApp / Sesiones
+
+GET    /api/waha/sessions
+POST   /api/waha/sessions
+DELETE /api/waha/sessions/:name
+GET    /api/waha/sessions/:name/qr
+POST   /api/waha/sessions/:name/start
+POST   /api/waha/sessions/:name/stop
+POST   /api/waha/sessions/evolution           ← Crear sesión Evolution
+DELETE /api/waha/sessions/evolution/:name
+POST   /api/waha/sessions/quepasa             ← Crear sesión QuePasa
+Rutas Protegidas — Campañas
+
+GET    /api/campaigns
+POST   /api/campaigns
+PUT    /api/campaigns/:id
+DELETE /api/campaigns/:id
+POST   /api/campaigns/:id/pause
+POST   /api/campaigns/:id/resume
+POST   /api/campaigns/:id/cancel
+GET    /api/campaigns/:id/messages           ← Reporte por mensaje
+Rutas Protegidas — Campañas Interactivas
+
+GET    /api/interactive-campaigns
+POST   /api/interactive-campaigns
+PUT    /api/interactive-campaigns/:id
+DELETE /api/interactive-campaigns/:id
+POST   /api/interactive-campaigns/:id/start
+POST   /api/interactive-campaigns/:id/pause
+GET    /api/interactive-campaigns/:id/sessions
+GET    /api/connections
+POST   /api/connections
+Rutas Protegidas — IA y Templates
+
+POST   /api/automation/gemini/generate
+POST   /api/automation/groq/generate
+GET    /api/templates
+POST   /api/templates
+PUT    /api/templates/:id
+DELETE /api/templates/:id
+Rutas Protegidas — Integraciones
+
+GET    /api/chatwoot/tags
+POST   /api/chatwoot/import
+GET    /api/perfex/leads
+POST   /api/perfex/import
+Rutas Protegidas — SuperAdmin
+
+GET    /api/tenants
+POST   /api/tenants
+PUT    /api/tenants/:id
+DELETE /api/tenants/:id
+GET    /api/system/stats
+GET    /api/system/health
+GET    /api/alerts
+PUT    /api/alerts/:id/resolve
+GET    /api/backup/list
+POST   /api/backup/create
+POST   /api/backup/restore/:filename
+Ruta Especial — Proxy HTTP anti-CORS
+
+POST   /api/http-proxy/test          ← El frontend envía {url, method, headers, body} y el backend hace la solicitud
+SECCIÓN 5 — REGLAS DE ORO Y PREVENCIÓN DE DESASTRES
+Regla 1: Prevención de Bucles Infinitos en Webhooks (isFromMe)
+Problema: Cuando el sistema envía un mensaje vía WhatsApp, el proveedor (Evolution/WAHA/QuePasa) puede devolver un evento webhook notificando ese mismo mensaje enviado. Si el sistema lo procesa, podría generar una respuesta, que genera otro webhook, creando un bucle infinito.
+
+Solución implementada en 
+incomingWebhookRoutes.ts
+, línea 75:
+
+typescript
+
+// Processar mensagem para campanhas interativas
+// Ignorar mensagens enviadas pelo bot (isFromMe = true)
+if (messageData.isFromMe) {
+  console.log(`⏭️ Ignorando mensagem enviada pelo bot`);
+  return res.status(200).json({
+    success: true,
+    message: 'Message from bot ignored',
+  });
+}
+Cómo se detecta isFromMe por proveedor:
+
+Proveedor	Campo en Payload	Valor
+Evolution API	payload.data.key.fromMe	true
+WAHA	payload.payload.fromMe	true
+QuePasa	payload.fromme === true OR payload.frominternal === true	true
+Punto crítico: La función extractEvolutionMessage() solo procesa payloads con event === 'messages.upsert'. Para WAHA, solo procesa event === 'message.any'. Cualquier otro evento es ignorado devolviendo null, lo que también devuelve HTTP 200 con message: 'Message ignored' — evitando reintentos del proveedor.
+
+Regla 2: Failsafe HTTP 200 — Nunca Colapsar la API Proveedora
+Problema: Si el servidor responde con HTTP 5xx a un webhook de Evolution/WAHA/QuePasa, el proveedor reintentará el webhook múltiples veces, potencialmente ejecutando el mismo mensaje varias veces o sobrecargando el servidor.
+
+Solución implementada en 
+incomingWebhookRoutes.ts
+, líneas 100-108:
+
+typescript
+
+} catch (flowError: any) {
+  console.error(`❌ Error processing flow:`, flowError);
+  // Retornar 200 mesmo com erro para não fazer o provider reenviar
+  res.status(200).json({
+    success: true,
+    message: 'Webhook received but flow processing failed',
+    error: flowError.message,
+  });
+}
+La regla es: El webhook siempre responde HTTP 200 aunque el procesamiento del flujo interno falle. Esto garantiza que el proveedor considere el webhook como "entregado exitosamente" y no lo reintente. Los errores se loguean internamente pero no se propagan como errores HTTP.
+
+Excepción deliberada: Si la sesión no se encuentra en la BD (session not found), el sistema SÍ devuelve HTTP 404 — porque ese webhook no es para esta instancia y el proveedor debería saber que fue un error de configuración.
+
+Regla 3: Prevención de Mensajes Duplicados en Campañas
+Problema: El scheduler corre cada 30 segundos y podría procesar la misma CampaignMessage dos veces en paralelo si hay race conditions.
+
+Solución triple implementada en 
+campaignSchedulerService.ts
+:
+
+Nivel 1 — Marcado atómico como PROCESSING (líneas 208-213):
+
+typescript
+
+// IMMEDIATELY mark message as PROCESSING to prevent duplicate processing
+await prisma.campaignMessage.update({
+  where: { id: message.id },
+  data: { status: 'PROCESSING' }
+});
+El scheduler solo busca mensajes en estado PENDING (no PROCESSING). Al marcarlo inmediatamente, otras instancias del scheduler no lo tomarán.
+
+Nivel 2 — Verificación de contacto ya procesado (líneas 267-291):
+
+typescript
+
+const alreadyProcessed = await prisma.campaignMessage.findFirst({
+  where: {
+    campaignId: campaign.id,
+    contactId: message.contactId,
+    status: 'SENT'
+  }
+});
+if (alreadyProcessed) {
+  // Marcar como FAILED con mensaje explicativo y saltar
+}
+Nivel 3 — take: 1 en la query de mensajes (línea 91):
+
+typescript
+
+messages: {
+  where: { status: 'PENDING' },
+  orderBy: { criadoEm: 'asc' },
+  take: 1 // Processar uma mensagem por vez
+}
+Solo se procesa 1 mensaje por campaña por ciclo del scheduler, garantizando serialización natural.
+
+Regla 4: Solución de CORS — Proxy Server-Side
+Problema: Las herramientas de testing de conectividad del frontend (verificar URL de WAHA, Evolution, Chatwoot, Perfex) hacen fetch directamente desde el browser, generando errores CORS cuando los servidores destino no tienen los headers CORS apropiados.
+
+Solución implementada en 
+httpProxyRoutes.ts
+:
+
+typescript
+
+// POST /api/http-proxy/test
+// El frontend envía: { url, method, headers, body, timeout }
+// El backend hace el fetch server-side (sin CORS) y devuelve la respuesta
+El backend actúa como proxy HTTP: el frontend envía la solicitud al backend (que sí tiene CORS configurado), y el backend hace el fetch() real al servicio externo sin restricciones CORS. Se incluye un AbortController con timeout configurable (default 30s).
+
+Regla 5: CORS Configuración Dinámica (Lista Blanca)
+Archivo: 
+server.ts
+, líneas 58-77.
+
+typescript
+
+const corsOptions = {
+  origin: function (origin, callback) {
+    const allowedOrigins = process.env.ALLOWED_ORIGINS?.split(',') || [
+      'http://localhost:3000',
+      'http://localhost:5173',
+    ];
+    // Permitir requests sin origin (mobile apps, scripts, etc.)
+    if (!origin) return callback(null, true);
+    if (allowedOrigins.indexOf(origin) !== -1) {
+      callback(null, true);
+    } else {
+      callback(new Error('Não permitido pelo CORS'), false);
+    }
+  },
+  credentials: true,
+  optionsSuccessStatus: 200
+};
+Puntos críticos:
+
+Los orígenes permitidos se leen de ALLOWED_ORIGINS en .env (separados por coma), por lo que el whitelisting es configurable sin recompilar.
+Requests sin Origin header (mobile apps, scripts internos, cURL) son siempre permitidos — esto es necesario para que los webhooks de los proveedores funcionen.
+WebSocket (Socket.IO) también tiene su propia configuración CORS replicada en websocketService.ts usando la misma variable de entorno.
+Regla 6: Rate Limiting — Estado Actual (DESHABILITADO)
+Importante: El rate limiting está actualmente deshabilitado por problemas con trust proxy. El código está comentado en server.ts (líneas 82-115) pero existe y puede re-activarse. Los límites diseñados eran:
+
+General: 1000 req / 15 min por IP.
+Auth (login): 10 intentos / 15 min por IP.
+IA: 20 req / 1 min por IP.
+Regla 7: Validación de Número WhatsApp Antes de Enviar
+Antes de cada envío en campaña masiva, el scheduler verifica que el número existe en WhatsApp mediante el método checkContactExists() del proveedor correspondiente. Si el número no existe:
+
+La CampaignMessage se marca como FAILED con errorMessage: "Número não existe no WhatsApp (PROVIDER)".
+Se incrementa failedCount en la campaña.
+No se consume quota del proveedor de mensajería.
+Regla 8: Unicidad de Sesión por Contacto en Flujos Interactivos
+El modelo InteractiveCampaignSession tiene una restricción UNIQUE([campaignId, contactId]) — un contacto no puede tener dos sesiones activas en la misma campaña. Si el mismo número escribe de nuevo, el FlowEngine reutiliza la sesión existente y continúa desde el nodo donde quedó.
+
+Regla 9: Webhook Secret para Seguridad de Webhooks
+Cada sesión de WhatsApp tiene un webhookSecret único generado con crypto.randomBytes(32).toString('hex'). La URL del webhook tiene el formato:
+
+
+POST /api/webhooks/incoming/{sessionId}/{webhookSecret}
+La validación del secret está actualmente comentada para facilitar el debug, pero la arquitectura está preparada para activarla. Cuando se activa, si el webhookSecret en la URL no coincide con el almacenado en BD, devuelve HTTP 401.
+
+Regla 10: SuperAdmin Impersonation via Header
+El SuperAdmin puede gestionar datos de cualquier tenant enviando el header X-Tenant-Id: {tenantId} en sus requests. El authMiddleware detecta el rol SUPERADMIN y reemplaza el tenantId del JWT con el del header:
+
+typescript
+
+if (user.role === 'SUPERADMIN') {
+  const headerTenantId = req.header('X-Tenant-Id');
+  if (headerTenantId) {
+    effectiveTenantId = headerTenantId;
+  }
+}
+Esto permite al SuperAdmin crear/gestionar recursos en nombre de cualquier tenant desde el panel de administración.
+
+APÉNDICE — MAPA DE INICIALIZACIÓN DEL SERVIDOR
+Al arrancar el backend (server.ts), se inicializan en este orden:
+
+Express + CORS configurado.
+Rutas públicas montadas (auth, settings, health, webhooks).
+Rutas protegidas montadas (todas requieren authMiddleware).
+server.listen(PORT) — el servidor empieza a escuchar en puerto 3001.
+websocketService.initialize(server) — Socket.IO se adjunta al server HTTP.
+initializeAlertsMonitoring() — inicia monitoreo de cuotas y salud.
+initializeBackupService() — carga y programa los backups de todos los tenants activos.
+queueService.init() — inicializa los workers de BullMQ con Redis.
+campaignSchedulerService — se importa como efecto secundario (import './services/campaignSchedulerService'), lo que ejecuta new CampaignSchedulerService().start() automáticamente con loop de 30 segundos.
+automationService — igualmente importado como efecto secundario, inicializa los flujos de automatización time-based con node-cron.
+Documento generado por análisis estático completo del repositorio. Última actualización: Julio 2026.

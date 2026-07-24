@@ -4,7 +4,6 @@ import {
   Plus,
   X,
   UploadSimple,
-  CurrencyDollar,
   WarningCircle,
   ArrowsClockwise,
   CheckCircle,
@@ -16,6 +15,11 @@ import {
   CaretRight,
 } from '@phosphor-icons/react';
 import * as XLSX from 'xlsx';
+
+const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:3000';
+import { useUnsavedChanges } from '../context/UnsavedChangesContext';
+import ConfirmModal from '../components/ui/ConfirmModal';
+import Modal from '../components/ui/Modal';
 
 /* ─── Skeleton de Carga (Data Table Compacta) ─── */
 function ProductSkeleton() {
@@ -47,6 +51,8 @@ export default function Products() {
   const [isLoading, setIsLoading] = useState(true);
   const [errorMsg, setErrorMsg] = useState('');
   const [toast, setToast] = useState(null);
+  const [productToDelete, setProductToDelete] = useState(null);
+  const [isDeleting, setIsDeleting] = useState(false);
 
   // Referencia para la carga de archivos Excel
   const fileInputRef = useRef(null);
@@ -67,6 +73,15 @@ export default function Products() {
   const [imagePreview, setImagePreview] = useState(null);
   const [saving, setSaving] = useState(false);
 
+  // Estados de Promociones Temporales
+  const [hasPromo, setHasPromo] = useState(false);
+  const [promotionalPrice, setPromotionalPrice] = useState('');
+  const [promoStartDate, setPromoStartDate] = useState('');
+  const [promoEndDate, setPromoEndDate] = useState('');
+
+  const { setIsDirty } = useUnsavedChanges();
+  const setIsFormDirty = setIsDirty;
+
   const showToast = (msg, type = 'success') => {
     setToast({ msg, type });
     setTimeout(() => setToast(null), 3000);
@@ -79,7 +94,7 @@ export default function Products() {
     const token = localStorage.getItem('sa_token');
     
     try {
-      const response = await fetch('http://localhost:3000/api/products', {
+      const response = await fetch(`${API_BASE_URL}/api/products`, {
         method: 'GET',
         headers: {
           'Authorization': `Bearer ${token}`,
@@ -129,6 +144,7 @@ export default function Products() {
     if (file) {
       setImageFile(file);
       setImagePreview(URL.createObjectURL(file));
+      setIsFormDirty(true);
     }
   };
 
@@ -142,6 +158,11 @@ export default function Products() {
     setIsAvailable(true);
     setImageFile(null);
     setImagePreview(null);
+    setHasPromo(false);
+    setPromotionalPrice('');
+    setPromoStartDate('');
+    setPromoEndDate('');
+    setIsFormDirty(false);
   };
 
   // Enviar formulario (FormData) para creación o actualización
@@ -159,11 +180,16 @@ export default function Products() {
     if (imageFile) {
       formData.append('image', imageFile);
     }
+    
+    // Inyectar campos de promoción
+    formData.append('promotionalPrice', hasPromo ? promotionalPrice : '');
+    formData.append('promoStartDate', hasPromo ? promoStartDate : '');
+    formData.append('promoEndDate', hasPromo ? promoEndDate : '');
 
     try {
       const url = editingProduct
-        ? `http://localhost:3000/api/products/${editingProduct.id}`
-        : 'http://localhost:3000/api/products';
+        ? `${API_BASE_URL}/api/products/${editingProduct.id}`
+        : `${API_BASE_URL}/api/products`;
       const method = editingProduct ? 'PUT' : 'POST';
 
       const response = await fetch(url, {
@@ -189,7 +215,12 @@ export default function Products() {
       setIsAvailable(true);
       setImageFile(null);
       setImagePreview(null);
-      
+      setHasPromo(false);
+      setPromotionalPrice('');
+      setPromoStartDate('');
+      setPromoEndDate('');
+      setIsFormDirty(false);
+
       // Recargar catálogo
       loadProducts();
     } catch (error) {
@@ -197,6 +228,15 @@ export default function Products() {
     } finally {
       setSaving(false);
     }
+  };
+
+  const formatDate = (dateStr) => {
+    if (!dateStr) return '';
+    const d = new Date(dateStr);
+    const year = d.getFullYear();
+    const month = String(d.getMonth() + 1).padStart(2, '0');
+    const day = String(d.getDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
   };
 
   // Carga los datos del producto actual en el formulario para editar
@@ -208,17 +248,24 @@ export default function Products() {
     setIsAvailable(prod.isAvailable);
     setImageFile(null);
     setImagePreview(prod.imageUrl || null);
+
+    const isPromoActive = prod.promotionalPrice !== null && prod.promotionalPrice !== undefined;
+    setHasPromo(isPromoActive);
+    setPromotionalPrice(isPromoActive ? prod.promotionalPrice : '');
+    setPromoStartDate(isPromoActive && prod.promoStartDate ? formatDate(prod.promoStartDate) : '');
+    setPromoEndDate(isPromoActive && prod.promoEndDate ? formatDate(prod.promoEndDate) : '');
+
     setShowModal(true);
   };
 
-  // Elimina un producto tras confirmar la acción
-  const handleDelete = async (id) => {
-    const confirmDelete = window.confirm('¿Estás seguro de que deseas eliminar este producto del catálogo?');
-    if (!confirmDelete) return;
+  // Elimina un producto tras confirmar la acción en el modal global
+  const handleConfirmDeleteProduct = async () => {
+    if (!productToDelete) return;
 
+    setIsDeleting(true);
     const token = localStorage.getItem('sa_token');
     try {
-      const response = await fetch(`http://localhost:3000/api/products/${id}`, {
+      const response = await fetch(`${API_BASE_URL}/api/products/${productToDelete.id}`, {
         method: 'DELETE',
         headers: {
           'Authorization': `Bearer ${token}`,
@@ -234,6 +281,9 @@ export default function Products() {
     } catch (error) {
       console.error(error);
       showToast(error.message || 'Error al eliminar el producto.', 'error');
+    } finally {
+      setIsDeleting(false);
+      setProductToDelete(null);
     }
   };
 
@@ -278,7 +328,7 @@ export default function Products() {
         });
 
         const token = localStorage.getItem('sa_token');
-        const response = await fetch('http://localhost:3000/api/products/bulk', {
+        const response = await fetch(`${API_BASE_URL}/api/products/bulk`, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
@@ -308,29 +358,29 @@ export default function Products() {
   return (
     <section aria-labelledby="inventario-heading" className="space-y-6">
       {/* Header */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 border-b border-line pb-6 mb-6">
         <div>
-          <h1 id="inventario-heading" className="text-xl font-bold text-hi flex items-center gap-2">
-            <Package size={24} className="text-brand" />
+          <h1 id="inventario-heading" className="text-2xl font-extrabold text-hi tracking-tight flex items-center gap-2.5">
+            <Package size={28} className="text-brand" weight="bold" />
             Catálogo de Productos
           </h1>
-          <p className="text-sm text-lo mt-0.5">
+          <p className="text-sm text-lo mt-1">
             Administra tus artículos de inventario, stock físico y precios en el SaaS.
           </p>
         </div>
 
-        <div className="flex items-center gap-3 self-start sm:self-auto">
+        <div className="flex items-center gap-3 self-start sm:self-auto flex-shrink-0">
           {/* Botón Excel */}
           <button
             onClick={() => fileInputRef.current?.click()}
             className="
-              flex items-center gap-2 px-4 py-2.5 rounded-md
+              flex items-center gap-2 px-4 py-2.5 rounded-xl
               border border-line text-mid hover:text-hi hover:bg-app text-sm font-semibold
-              transition-all duration-fast cursor-pointer
+              transition-all duration-fast cursor-pointer shadow-sm
             "
           >
-            <UploadSimple size={16} />
-            Importar Excel
+            <UploadSimple size={18} />
+            <span>Importar Excel</span>
           </button>
           <input
             type="file"
@@ -344,13 +394,15 @@ export default function Products() {
           <button
             onClick={() => setShowModal(true)}
             className="
-              flex items-center gap-2 px-4 py-2.5 rounded-md
-              bg-brand text-white text-sm font-semibold
-              hover:bg-brand-hover shadow shadow-card transition-all duration-fast cursor-pointer
+              inline-flex items-center justify-center gap-2
+              px-5 py-2.5 rounded-xl
+              bg-brand text-white font-bold text-sm
+              hover:bg-brand-hover active:scale-[0.98]
+              transition-all duration-fast shadow-md cursor-pointer
             "
           >
-            <Plus size={16} weight="bold" />
-            Añadir Producto
+            <Plus size={18} weight="bold" />
+            <span>Añadir Producto</span>
           </button>
         </div>
       </div>
@@ -443,8 +495,36 @@ export default function Products() {
                     </td>
 
                     {/* Columna Precio */}
-                    <td className="px-6 py-3 font-mono font-bold text-brand">
-                      ${prod.price.toFixed(2)}
+                    <td className="px-6 py-3 font-mono">
+                      {(() => {
+                        const hasPromoPrice = prod.promotionalPrice !== null && prod.promotionalPrice !== undefined;
+                        let isPromoActive = false;
+                        if (hasPromoPrice) {
+                          const hoy = new Date();
+                          hoy.setHours(0, 0, 0, 0);
+                          const start = prod.promoStartDate ? new Date(prod.promoStartDate) : null;
+                          const end = prod.promoEndDate ? new Date(prod.promoEndDate) : null;
+                          if (start) start.setHours(0, 0, 0, 0);
+                          if (end) end.setHours(0, 0, 0, 0);
+                          const despuesDeInicio = !start || hoy >= start;
+                          const antesDeFin = !end || hoy <= end;
+                          isPromoActive = despuesDeInicio && antesDeFin;
+                        }
+
+                        return isPromoActive ? (
+                          <div className="flex flex-col">
+                            <span className="text-3xs text-gray-400 line-through">S/. {prod.price.toFixed(2)}</span>
+                            <div className="flex items-center gap-1.5 mt-0.5">
+                              <span className="text-sm font-bold text-green-600">S/. {prod.promotionalPrice.toFixed(2)}</span>
+                              <span className="px-1.5 py-0.5 rounded text-[8px] font-bold bg-green-50 text-green-700 border border-green-200">
+                                PROMO
+                              </span>
+                            </div>
+                          </div>
+                        ) : (
+                          <span className="text-sm font-bold text-brand">S/. {prod.price.toFixed(2)}</span>
+                        );
+                      })()}
                     </td>
 
                     {/* Columna Disponibilidad */}
@@ -473,8 +553,8 @@ export default function Products() {
                           <PencilSimple size={16} />
                         </button>
                         <button
-                          onClick={() => handleDelete(prod.id)}
-                          className="p-1.5 rounded text-muted hover:text-danger hover:bg-red-50 transition-colors"
+                          onClick={() => setProductToDelete(prod)}
+                          className="p-1.5 rounded text-muted hover:text-danger hover:bg-red-50 transition-colors cursor-pointer"
                           title="Eliminar"
                         >
                           <Trash size={16} />
@@ -522,144 +602,190 @@ export default function Products() {
         </div>
       )}
 
-      {/* Modal Añadir Producto */}
-      {showModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4" role="dialog">
-          <div className="absolute inset-0 bg-hi/20 backdrop-blur-sm" onClick={closeModal} />
-          <div className="relative bg-card border border-line rounded-xl shadow-card-md w-full max-w-md overflow-hidden">
-            {/* Header */}
-            <div className="flex items-center justify-between px-6 py-4 border-b border-line">
-              <div className="flex items-center gap-3">
-                <div className="w-8 h-8 rounded-lg bg-brand/10 flex items-center justify-center">
-                  <Package size={16} className="text-brand" />
-                </div>
-                <div>
-                  <p className="text-sm font-bold text-hi">{editingProduct ? 'Editar Producto' : 'Añadir Producto'}</p>
-                  <p className="text-xs text-lo">{editingProduct ? 'Actualiza la información del artículo' : 'Crea un nuevo artículo en tu catálogo'}</p>
-                </div>
+      {/* Modal de Producto */}
+      <Modal
+        isOpen={showModal}
+        onClose={closeModal}
+        title={editingProduct ? 'Editar Producto' : 'Añadir Nuevo Producto'}
+        subtitle={editingProduct ? 'Actualiza la información del artículo en tu inventario.' : 'Crea un nuevo artículo en tu catálogo.'}
+        maxWidth="max-w-lg"
+      >
+        <form onSubmit={handleSubmit} className="space-y-4">
+          <div>
+            <label htmlFor="prod-name" className="block text-xs font-semibold text-hi mb-1">Nombre del Producto <span className="text-red-500">*</span></label>
+            <input
+              id="prod-name"
+              type="text"
+              required
+              value={name}
+              onChange={e => { setName(e.target.value); setIsFormDirty(true); }}
+              placeholder="ej. Zapatillas de Running Pro"
+              className="w-full px-3 py-2.5 text-sm bg-app border border-line rounded-lg text-hi placeholder:text-muted focus:outline-none focus:border-brand focus:shadow-input-focus transition-all"
+            />
+          </div>
+
+          <div>
+            <label htmlFor="prod-desc" className="block text-xs font-semibold text-hi mb-1">Descripción (Opcional)</label>
+            <textarea
+              id="prod-desc"
+              rows={2}
+              value={description}
+              onChange={e => { setDescription(e.target.value); setIsFormDirty(true); }}
+              placeholder="Detalles sobre características, colores o especificaciones"
+              className="w-full px-3 py-2.5 text-sm bg-app border border-line rounded-lg text-hi placeholder:text-muted focus:outline-none focus:border-brand focus:shadow-input-focus transition-all resize-none"
+            />
+          </div>
+
+          <div className="grid grid-cols-2 gap-4">
+            <div>
+              <label htmlFor="prod-price" className="block text-xs font-semibold text-hi mb-1">Precio (S/.) <span className="text-red-500">*</span></label>
+              <div className="relative">
+                <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted text-sm font-bold select-none">S/.</span>
+                <input
+                  id="prod-price"
+                  type="number"
+                  required
+                  step="0.01"
+                  min="0"
+                  value={price}
+                  onChange={e => { setPrice(e.target.value); setIsFormDirty(true); }}
+                  placeholder="0.00"
+                  className="w-full pl-10 pr-3 py-2.5 rounded-lg border border-line bg-app text-sm text-hi font-mono focus:outline-none focus:border-brand focus:shadow-input-focus transition-all"
+                />
               </div>
-              <button
-                onClick={closeModal}
-                className="p-1.5 rounded-md text-lo hover:text-hi hover:bg-app transition-colors cursor-pointer"
-              >
-                <X size={18} />
-              </button>
             </div>
 
-            {/* Formulario */}
-            <form onSubmit={handleSubmit} className="p-6 space-y-4">
-              <div>
-                <label htmlFor="prod-name" className="block text-xs font-semibold text-hi mb-1">Nombre del Producto</label>
+            <div className="flex flex-col justify-end pb-1">
+              <span className="block text-xs font-semibold text-hi mb-2">Estado del Producto</span>
+              <label className="flex items-center gap-2 cursor-pointer select-none">
                 <input
-                  id="prod-name"
-                  type="text"
-                  required
-                  value={name}
-                  onChange={e => setName(e.target.value)}
-                  placeholder="ej. Smartphone Pro Max"
-                  className="w-full px-3.5 py-2.5 rounded-md border border-line bg-card text-sm text-hi placeholder:text-muted focus:outline-none focus:border-brand"
+                  type="checkbox"
+                  checked={isAvailable}
+                  onChange={e => { setIsAvailable(e.target.checked); setIsFormDirty(true); }}
+                  className="rounded border-line text-brand focus:ring-brand w-4 h-4"
                 />
-              </div>
-
-              <div>
-                <label htmlFor="prod-desc" className="block text-xs font-semibold text-hi mb-1">Descripción (Opcional)</label>
-                <textarea
-                  id="prod-desc"
-                  rows={2}
-                  value={description}
-                  onChange={e => setDescription(e.target.value)}
-                  placeholder="Detalles sobre especificaciones, colores o garantías..."
-                  className="w-full px-3.5 py-2.5 rounded-md border border-line bg-card text-sm text-hi placeholder:text-muted focus:outline-none focus:border-brand resize-none"
-                />
-              </div>
-
-              <div className="grid grid-cols-2 gap-4">
-                <div>
-                  <label htmlFor="prod-price" className="block text-xs font-semibold text-hi mb-1">Precio (USD)</label>
-                  <div className="relative">
-                    <CurrencyDollar className="absolute left-3 top-1/2 -translate-y-1/2 text-muted" size={16} />
-                    <input
-                      id="prod-price"
-                      type="number"
-                      required
-                      step="0.01"
-                      min="0"
-                      value={price}
-                      onChange={e => setPrice(e.target.value)}
-                      placeholder="99.90"
-                      className="w-full pl-8 pr-3 py-2 rounded-md border border-line bg-card text-sm text-hi font-mono focus:outline-none focus:border-brand"
-                    />
-                  </div>
-                </div>
-
-                <div className="flex flex-col justify-end pb-1">
-                  <span className="block text-xs font-semibold text-hi mb-2">Estado del Producto</span>
-                  <label className="flex items-center gap-2 cursor-pointer select-none">
-                    <input
-                      type="checkbox"
-                      checked={isAvailable}
-                      onChange={e => setIsAvailable(e.target.checked)}
-                      className="rounded border-line text-brand focus:ring-brand w-4 h-4"
-                    />
-                    <span className="text-sm font-medium text-mid">Disponible para venta</span>
-                  </label>
-                </div>
-              </div>
-
-              {/* Subida de Imagen */}
-              <div>
-                <span className="block text-xs font-semibold text-hi mb-1">Imagen del Producto</span>
-                <div className="flex items-center gap-4">
-                  <label className="flex-1 flex flex-col items-center justify-center border-2 border-dashed border-line-strong hover:border-brand bg-app rounded-lg py-5 px-3 cursor-pointer text-center group transition-colors">
-                    <UploadSimple size={20} className="text-muted group-hover:text-brand mb-1.5" />
-                    <span className="text-2xs font-semibold text-hi group-hover:text-brand">Subir archivo</span>
-                    <span className="text-[10px] text-lo mt-0.5">JPG, PNG o WEBP</span>
-                    <input
-                      type="file"
-                      accept="image/*"
-                      onChange={handleImageChange}
-                      className="sr-only"
-                    />
-                  </label>
-                  
-                  {/* Previsualización */}
-                  {imagePreview && (
-                    <div className="w-20 h-20 bg-app rounded-lg border border-line overflow-hidden relative flex items-center justify-center flex-shrink-0">
-                      <img src={imagePreview} alt="Vista previa" className="w-full h-full object-cover" />
-                      <button
-                        type="button"
-                        onClick={() => { setImageFile(null); setImagePreview(null); }}
-                        className="absolute top-1 right-1 p-0.5 rounded-full bg-hi/80 text-card hover:bg-hi transition-colors cursor-pointer"
-                        title="Quitar imagen"
-                      >
-                        <X size={10} weight="bold" />
-                      </button>
-                    </div>
-                  )}
-                </div>
-              </div>
-
-              {/* Footer */}
-              <div className="flex items-center justify-between pt-4 border-t border-line bg-app -mx-6 -mb-6 px-6 py-4">
-                <button
-                  type="button"
-                  onClick={closeModal}
-                  className="px-4 py-2 text-xs font-semibold border border-line text-mid hover:bg-app rounded-md transition-colors"
-                >
-                  Cancelar
-                </button>
-                <button
-                  type="submit"
-                  disabled={saving || !name || price === ''}
-                  className="flex items-center gap-1.5 px-4 py-2 text-xs font-semibold bg-brand text-white hover:bg-brand-hover rounded-md shadow disabled:opacity-50"
-                >
-                  {saving ? 'Guardando...' : (editingProduct ? 'Actualizar Producto' : 'Guardar Producto')}
-                </button>
-              </div>
-            </form>
+                <span className="text-sm font-medium text-mid">Disponible para venta</span>
+              </label>
+            </div>
           </div>
-        </div>
-      )}
+
+          {/* Promoción Temporal */}
+          <div className="border-t border-line pt-4">
+            <label className="flex items-center gap-2 cursor-pointer select-none mb-3">
+              <input
+                type="checkbox"
+                checked={hasPromo}
+                onChange={e => { setHasPromo(e.target.checked); setIsFormDirty(true); }}
+                className="rounded border-line text-brand focus:ring-brand w-4 h-4"
+              />
+              <span className="text-sm font-semibold text-hi">Activar Promoción Temporal</span>
+            </label>
+
+            {hasPromo && (
+              <div className="grid grid-cols-3 gap-3">
+                <div>
+                  <label htmlFor="prod-promo-price" className="block text-[10px] font-semibold text-lo mb-1">Precio Oferta (S/.)</label>
+                  <input
+                    id="prod-promo-price"
+                    type="number"
+                    step="0.01"
+                    min="0"
+                    required={hasPromo}
+                    value={promotionalPrice}
+                    onChange={e => { setPromotionalPrice(e.target.value); setIsFormDirty(true); }}
+                    className="w-full px-3 py-2.5 rounded-lg border border-line bg-app text-xs text-hi font-mono focus:outline-none focus:border-brand"
+                  />
+                </div>
+                <div>
+                  <label htmlFor="prod-promo-start" className="block text-[10px] font-semibold text-lo mb-1">Fecha Inicio</label>
+                  <input
+                    id="prod-promo-start"
+                    type="date"
+                    required={hasPromo}
+                    value={promoStartDate}
+                    onChange={e => { setPromoStartDate(e.target.value); setIsFormDirty(true); }}
+                    className="w-full px-3 py-2.5 rounded-lg border border-line bg-app text-xs text-hi focus:outline-none focus:border-brand"
+                  />
+                </div>
+                <div>
+                  <label htmlFor="prod-promo-end" className="block text-[10px] font-semibold text-lo mb-1">Fecha Fin</label>
+                  <input
+                    id="prod-promo-end"
+                    type="date"
+                    required={hasPromo}
+                    value={promoEndDate}
+                    onChange={e => { setPromoEndDate(e.target.value); setIsFormDirty(true); }}
+                    className="w-full px-3 py-2.5 rounded-lg border border-line bg-app text-xs text-hi focus:outline-none focus:border-brand"
+                  />
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* Subida de Imagen */}
+          <div>
+            <span className="block text-xs font-semibold text-hi mb-1">Imagen del Producto</span>
+            <div className="flex items-center gap-4">
+              <label className="flex-1 flex flex-col items-center justify-center border-2 border-dashed border-line-strong hover:border-brand bg-app rounded-xl py-4 px-3 cursor-pointer text-center group transition-colors">
+                <UploadSimple size={20} className="text-muted group-hover:text-brand mb-1" />
+                <span className="text-2xs font-semibold text-hi group-hover:text-brand">Subir archivo</span>
+                <span className="text-[10px] text-lo mt-0.5">JPG, PNG o WEBP</span>
+                <input
+                  type="file"
+                  accept="image/*"
+                  onChange={handleImageChange}
+                  className="sr-only"
+                />
+              </label>
+              
+              {/* Previsualización */}
+              {imagePreview && (
+                <div className="w-20 h-20 bg-app rounded-xl border border-line overflow-hidden relative flex items-center justify-center flex-shrink-0">
+                  <img src={imagePreview} alt="Vista previa" className="w-full h-full object-cover" />
+                  <button
+                    type="button"
+                    onClick={() => { setImageFile(null); setImagePreview(null); }}
+                    className="absolute top-1 right-1 p-0.5 rounded-full bg-hi/80 text-card hover:bg-hi transition-colors cursor-pointer"
+                    title="Quitar imagen"
+                  >
+                    <X size={10} weight="bold" />
+                  </button>
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* Footer */}
+          <div className="flex items-center justify-end gap-2 pt-4 border-t border-line">
+            <button
+              type="button"
+              onClick={closeModal}
+              className="px-4 py-2 text-xs font-semibold border border-line text-mid hover:bg-app rounded-lg transition-colors cursor-pointer"
+            >
+              Cancelar
+            </button>
+            <button
+              type="submit"
+              disabled={saving || !name || price === ''}
+              className="px-4 py-2 text-xs font-bold bg-brand text-white hover:bg-brand-hover rounded-lg shadow cursor-pointer disabled:opacity-50"
+            >
+              {saving ? 'Guardando...' : (editingProduct ? 'Actualizar Producto' : 'Guardar Producto')}
+            </button>
+          </div>
+        </form>
+      </Modal>
+
+      {/* Modal Global de Confirmación de Eliminación */}
+      <ConfirmModal
+        isOpen={!!productToDelete}
+        onClose={() => setProductToDelete(null)}
+        onConfirm={handleConfirmDeleteProduct}
+        title="Eliminar Producto"
+        message="¿Está seguro que desea eliminar este producto? Esta acción no se puede deshacer."
+        confirmText="Eliminar"
+        cancelText="Cancelar"
+        isLoading={isDeleting}
+      />
 
       {/* Toasts */}
       {toast && (

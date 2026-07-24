@@ -1,11 +1,12 @@
 import prisma from '../db.js';
+import cloudinary from '../config/cloudinary.js';
 
 /**
  * Registra un nuevo producto en la base de datos vinculándolo al usuario autenticado
  */
 export async function createProduct(req, res) {
   try {
-    const { name, description, price, isAvailable } = req.body;
+    const { name, description, price, isAvailable, promotionalPrice, promoStartDate, promoEndDate } = req.body;
     const userId = req.user.userId || req.user.id;
 
     if (!userId) {
@@ -19,6 +20,12 @@ export async function createProduct(req, res) {
     // Obtener la URL de Cloudinary del middleware de Multer
     const imageUrl = req.file?.path || null;
 
+    const parsedPromoPrice = (promotionalPrice !== undefined && promotionalPrice !== '' && promotionalPrice !== 'null' && promotionalPrice !== null) 
+      ? parseFloat(promotionalPrice) 
+      : null;
+    const parsedPromoStart = (promoStartDate && promoStartDate !== 'null') ? new Date(promoStartDate) : null;
+    const parsedPromoEnd = (promoEndDate && promoEndDate !== 'null') ? new Date(promoEndDate) : null;
+
     const product = await prisma.product.create({
       data: {
         name,
@@ -26,6 +33,9 @@ export async function createProduct(req, res) {
         price: parseFloat(price),
         isAvailable: isAvailable !== undefined ? (isAvailable === true || isAvailable === 'true') : true,
         imageUrl,
+        promotionalPrice: parsedPromoPrice,
+        promoStartDate: parsedPromoStart,
+        promoEndDate: parsedPromoEnd,
         userId,
       },
     });
@@ -105,6 +115,37 @@ export async function createBulkProducts(req, res) {
 }
 
 /**
+ * Extrae el public_id de un recurso de Cloudinary a partir de su URL completa
+ */
+function getPublicIdFromUrl(url) {
+  if (!url || !url.includes('res.cloudinary.com')) return null;
+  try {
+    const parts = url.split('/upload/');
+    if (parts.length < 2) return null;
+    
+    let pathPart = parts[1];
+    // Remover la versión (ej: v1721111716/)
+    if (pathPart.startsWith('v')) {
+      const slashIndex = pathPart.indexOf('/');
+      if (slashIndex !== -1) {
+        pathPart = pathPart.substring(slashIndex + 1);
+      }
+    }
+    
+    // Remover la extensión del archivo
+    const dotIndex = pathPart.lastIndexOf('.');
+    if (dotIndex !== -1) {
+      pathPart = pathPart.substring(0, dotIndex);
+    }
+    
+    return pathPart;
+  } catch (err) {
+    console.error('Error al extraer public_id de Cloudinary:', err);
+    return null;
+  }
+}
+
+/**
  * Elimina un producto de forma segura filtrando por el ID de producto y del usuario
  */
 export async function deleteProduct(req, res) {
@@ -116,20 +157,42 @@ export async function deleteProduct(req, res) {
       return res.status(401).json({ error: 'Usuario no autenticado o sesión inválida.' });
     }
 
-    const result = await prisma.product.deleteMany({
+    // 1. Obtener la información del producto antes de borrarlo
+    const product = await prisma.product.findFirst({
       where: {
         id,
         userId,
       },
     });
 
-    if (result.count === 0) {
+    if (!product) {
       return res.status(404).json({ error: 'Producto no encontrado o no autorizado para su eliminación.' });
     }
 
+    // 2. Si tiene una imagen en Cloudinary, eliminarla físicamente de la nube
+    if (product.imageUrl) {
+      const publicId = getPublicIdFromUrl(product.imageUrl);
+      if (publicId) {
+        console.log(`[Cloudinary Cleanup] Destruyendo imagen huérfana de Cloudinary: ${publicId}`);
+        try {
+          await cloudinary.uploader.destroy(publicId);
+          console.log('[Cloudinary Cleanup] Imagen destruida en la nube con éxito.');
+        } catch (uploadErr) {
+          console.error('[Cloudinary Cleanup] Error al destruir imagen en Cloudinary:', uploadErr);
+        }
+      }
+    }
+
+    // 3. Borrar el producto de PostgreSQL
+    await prisma.product.delete({
+      where: {
+        id,
+      },
+    });
+
     return res.json({
       success: true,
-      message: 'Producto eliminado con éxito.',
+      message: 'Producto e imagen eliminados con éxito.',
     });
   } catch (error) {
     console.error('Error en deleteProduct:', error);
@@ -143,7 +206,7 @@ export async function deleteProduct(req, res) {
 export async function updateProduct(req, res) {
   try {
     const { id } = req.params;
-    const { name, description, price, isAvailable } = req.body;
+    const { name, description, price, isAvailable, promotionalPrice, promoStartDate, promoEndDate } = req.body;
     const userId = req.user.userId || req.user.id;
 
     if (!userId) {
@@ -159,6 +222,15 @@ export async function updateProduct(req, res) {
       ...(price !== undefined && { price: parseFloat(price) }),
       ...(isAvailable !== undefined && { isAvailable: (isAvailable === true || isAvailable === 'true') }),
       ...(imageUrl && { imageUrl }),
+      ...(promotionalPrice !== undefined && { 
+        promotionalPrice: (promotionalPrice === '' || promotionalPrice === null || promotionalPrice === 'null') ? null : parseFloat(promotionalPrice) 
+      }),
+      ...(promoStartDate !== undefined && { 
+        promoStartDate: (promoStartDate === '' || promoStartDate === null || promoStartDate === 'null') ? null : new Date(promoStartDate) 
+      }),
+      ...(promoEndDate !== undefined && { 
+        promoEndDate: (promoEndDate === '' || promoEndDate === null || promoEndDate === 'null') ? null : new Date(promoEndDate) 
+      }),
     };
 
     const result = await prisma.product.updateMany({

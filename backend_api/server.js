@@ -1,6 +1,8 @@
 import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
+import helmet from 'helmet';
+import rateLimit from 'express-rate-limit';
 import { createServer } from 'http';
 import { Server } from 'socket.io';
 import prisma from './src/db.js';
@@ -16,18 +18,39 @@ import campaignRoutes from './src/routes/campaignRoutes.js';
 import flowRoutes from './src/routes/flowRoutes.js';
 import settingsRoutes from './src/routes/settingsRoutes.js';
 import connectionRoutes from './src/routes/connectionRoutes.js';
+import userRoutes from './src/routes/userRoutes.js';
+import tenantDashboardRoutes from './src/routes/tenantDashboardRoutes.js';
+import stripeRoutes from './src/routes/stripeRoutes.js';
+import planRoutes from './src/routes/planRoutes.js';
+import { initBackupScheduler } from './src/services/backupScheduler.js';
 
 // Cargar variables de entorno
 dotenv.config();
 
 const app = express();
+
+// Aumentar el límite de carga a 50mb para flujos pesados con multimedia (Base64)
+app.use(express.json({
+  limit: '50mb',
+  verify: (req, res, buf) => {
+    if (req.originalUrl && req.originalUrl.includes('/stripe/webhook')) {
+      req.rawBody = buf;
+    }
+  }
+}));
+app.use(express.urlencoded({ limit: '50mb', extended: true }));
+
 const PORT = process.env.PORT || 3000;
 const httpServer = createServer(app);
 
 // Configuración del servidor WebSocket
+const allowedOrigins = process.env.FRONTEND_URL 
+  ? [process.env.FRONTEND_URL, 'http://localhost:5173'] 
+  : ['http://localhost:5173'];
+
 const io = new Server(httpServer, {
   cors: {
-    origin: '*', // Permitir todos los orígenes para máxima compatibilidad con localhosts
+    origin: allowedOrigins,
     methods: ['GET', 'POST']
   }
 });
@@ -42,8 +65,26 @@ app.use((req, res, next) => {
 });
 
 // Middlewares generales
-app.use(cors());
-app.use(express.json());
+app.use(helmet());
+app.use(cors({ origin: allowedOrigins }));
+
+// Rate Limiting Básico (100 peticiones por 15 minutos)
+const apiLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 100, 
+  message: { error: 'Demasiadas peticiones desde esta IP, intenta de nuevo en 15 minutos.' },
+  skip: (req) => {
+    // 🔴 CRÍTICO: No bloquear rutas de webhooks bajo ninguna circunstancia
+    if (req.originalUrl.includes('/api/stripe/webhook') || req.originalUrl.includes('/api/whatsapp/webhook')) {
+      return true;
+    }
+    return false;
+  }
+});
+app.use('/api', apiLimiter);
+
+// Webhook de Stripe: Requiere el body crudo (Buffer) para verificar firmas
+app.use('/api/stripe/webhook', express.raw({ type: 'application/json' }));
 
 // Rutas de la API
 app.use('/api/auth', authRoutes);
@@ -58,6 +99,10 @@ app.use('/api/campaigns', campaignRoutes);
 app.use('/api/flows', flowRoutes);
 app.use('/api/settings', settingsRoutes);
 app.use('/api/connections', connectionRoutes);
+app.use('/api/users', userRoutes);
+app.use('/api/tenant/dashboard', tenantDashboardRoutes);
+app.use('/api/stripe', stripeRoutes);
+app.use('/api/plans', planRoutes);
 
 // Ruta de comprobación de estado (Healthcheck + DB Test)
 app.get('/api/health', async (req, res) => {
@@ -65,7 +110,7 @@ app.get('/api/health', async (req, res) => {
     const tenantCount = await prisma.tenant.count();
     res.json({
       status: 'ok',
-      message: 'Servidor ElitePOS/Velion Operativo',
+      message: 'Servidor API Operativo',
       database: 'Conectado',
       tenants: tenantCount,
     });
@@ -89,4 +134,6 @@ io.on('connection', (socket) => {
 // Levantar servidor
 httpServer.listen(PORT, () => {
   console.log(`🚀 Servidor ejecutándose en http://localhost:${PORT}`);
+  // Iniciar la tarea programada de copias de seguridad automáticas
+  initBackupScheduler();
 });

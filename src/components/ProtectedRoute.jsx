@@ -6,7 +6,7 @@ import { useAuth } from '../context/AuthContext';
  * Muestra un spinner mientras Firebase resuelve el estado de sesión.
  * Redirige a /login si no hay usuario autenticado.
  */
-export default function ProtectedRoute({ children }) {
+export default function ProtectedRoute({ children, allowedRoles }) {
   const { user, loading } = useAuth();
   const location = useLocation();
 
@@ -37,6 +37,23 @@ export default function ProtectedRoute({ children }) {
   /* Sin usuario → redirige preservando la URL de destino */
   if (!user) {
     return <Navigate to="/login" state={{ from: location }} replace />;
+  }
+
+  /* Verificación de Plan Obligatorio (Paywall Gate) */
+  const isSuperAdmin = user.role === 'superadmin';
+  const hasPlan = isSuperAdmin || Boolean(user.hasPlan || user.tenant?.hasPlan || user.tenant?.planId || (user.plan && user.plan !== 'Sin Plan'));
+
+  if (!hasPlan && location.pathname !== '/select-plan') {
+    return <Navigate to="/select-plan" replace />;
+  }
+
+  if (hasPlan && location.pathname === '/select-plan') {
+    return <Navigate to="/dashboard" replace />;
+  }
+
+  /* Control de Roles (RBAC) */
+  if (allowedRoles && !allowedRoles.includes(user.role)) {
+    return <Navigate to="/productos" replace />;
   }
 
   return children;

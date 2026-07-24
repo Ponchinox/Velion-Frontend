@@ -14,6 +14,7 @@ import {
   WarningCircle,
 } from '@phosphor-icons/react';
 import * as planService from '../services/planService';
+import { useUnsavedChanges } from '../context/UnsavedChangesContext';
 
 const INITIAL_PLANS = [
   {
@@ -100,6 +101,14 @@ export default function AdminPlanesPage() {
   const [isLoading, setIsLoading] = useState(true);
   const [toast, setToast] = useState(null);
 
+  const { setIsDirty } = useUnsavedChanges();
+  const setIsFormDirty = setIsDirty;
+
+  const closeModal = () => {
+    setShowModal(false);
+    setIsFormDirty(false);
+  };
+
   const [selectedPlan, setSelectedPlan] = useState(null);
   const [showModal, setShowModal] = useState(false);
   const [modalMode, setModalMode] = useState('edit'); // 'create' | 'edit'
@@ -107,11 +116,13 @@ export default function AdminPlanesPage() {
   // State for form fields
   const [formName, setFormName] = useState('');
   const [formPrice, setFormPrice] = useState(0);
+  const [formStripePriceId, setFormStripePriceId] = useState('');
   const [formConnLimit, setFormConnLimit] = useState(1);
   const [formMsgLimit, setFormMsgLimit] = useState(1000);
   const [formFlowBuilder, setFormFlowBuilder] = useState(false);
   const [formAiBrain, setFormAiBrain] = useState(false);
   const [formPopular, setFormPopular] = useState(false);
+  const [formFeatures, setFormFeatures] = useState(['']);
   const [saving, setSaving] = useState(false);
 
   const showToast = (msg, type = 'success') => {
@@ -142,11 +153,20 @@ export default function AdminPlanesPage() {
     setModalMode('edit');
     setFormName(plan.name);
     setFormPrice(plan.price);
+    setFormStripePriceId(plan.stripePriceId || '');
     setFormConnLimit(plan.connLimit);
     setFormMsgLimit(plan.msgLimit);
     setFormFlowBuilder(plan.flowBuilder);
     setFormAiBrain(plan.aiBrain);
     setFormPopular(plan.popular);
+    
+    // Normalizar las features a un array de strings
+    if (plan.features && plan.features.length > 0) {
+      const normalizedFeatures = plan.features.map(f => typeof f === 'string' ? f : f.text);
+      setFormFeatures(normalizedFeatures);
+    } else {
+      setFormFeatures(['']);
+    }
     setShowModal(true);
   };
 
@@ -155,34 +175,35 @@ export default function AdminPlanesPage() {
     setModalMode('create');
     setFormName('');
     setFormPrice(29);
+    setFormStripePriceId('');
     setFormConnLimit(1);
     setFormMsgLimit(1000);
     setFormFlowBuilder(false);
     setFormAiBrain(false);
     setFormPopular(false);
+    setFormFeatures(['']);
     setShowModal(true);
   };
 
   const handleSave = async (e) => {
     e.preventDefault();
     if (!formName.trim()) return;
+    if (!formStripePriceId.trim()) {
+      showToast('El identificador de precio de Stripe es obligatorio.', 'error');
+      return;
+    }
     setSaving(true);
 
     const payload = {
       name: formName.trim(),
       price: Number(formPrice),
+      stripePriceId: formStripePriceId.trim(),
       connLimit: Number(formConnLimit),
       msgLimit: Number(formMsgLimit),
       flowBuilder: formFlowBuilder,
       aiBrain: formAiBrain,
       popular: formPopular,
-      features: [
-        { text: `${formConnLimit} Conexión${formConnLimit > 1 ? 'es' : ''} WhatsApp`, included: true },
-        { text: `${Number(formMsgLimit).toLocaleString()} Mensajes / mes`, included: true },
-        { text: 'Soporte', included: true },
-        { text: 'Acceso a Flow Builder', included: formFlowBuilder },
-        { text: 'Cerebro IA (Gemini/Groq)', included: formAiBrain },
-      ],
+      features: formFeatures.filter(f => f.trim() !== ''),
     };
 
     try {
@@ -192,17 +213,21 @@ export default function AdminPlanesPage() {
         await planService.createPlan(payload);
       }
       showToast('Plan guardado exitosamente');
-      setShowModal(false);
+      closeModal();
       loadPlans();
     } catch {
       // Fallback local en modo demo
+      const mockPayload = {
+        ...payload,
+        features: payload.features.map(text => ({ text, included: true }))
+      };
       if (modalMode === 'edit') {
-        setPlans(prev => prev.map(p => p.id === selectedPlan.id ? { ...p, ...payload } : p));
+        setPlans(prev => prev.map(p => p.id === selectedPlan.id ? { ...p, ...mockPayload } : p));
       } else {
-        setPlans(prev => [...prev, { id: `p-${Date.now()}`, ...payload }]);
+        setPlans(prev => [...prev, { id: `p-${Date.now()}`, ...mockPayload }]);
       }
       showToast('Modo Local: Cambios guardados temporalmente.', 'success');
-      setShowModal(false);
+      closeModal();
     } finally {
       setSaving(false);
     }
@@ -293,22 +318,26 @@ export default function AdminPlanesPage() {
 
                   {/* Features List */}
                   <ul className="space-y-3.5 mb-8" role="list">
-                    {plan.features && plan.features.map((feature, i) => (
-                      <li key={i} className="flex items-start gap-3">
-                        {feature.included ? (
-                          <span className="flex-shrink-0 w-5 h-5 rounded-full bg-emerald-50 text-success flex items-center justify-center border border-emerald-200">
-                            <Check size={12} weight="bold" />
+                    {plan.features && plan.features.map((feature, i) => {
+                      const text = typeof feature === 'string' ? feature : feature.text;
+                      const included = typeof feature === 'string' ? true : feature.included;
+                      return (
+                        <li key={i} className="flex items-start gap-3">
+                          {included ? (
+                            <span className="flex-shrink-0 w-5 h-5 rounded-full bg-emerald-50 text-success flex items-center justify-center border border-emerald-200">
+                              <Check size={12} weight="bold" />
+                            </span>
+                          ) : (
+                            <span className="flex-shrink-0 w-5 h-5 rounded-full bg-gray-50 text-lo flex items-center justify-center border border-line">
+                              <X size={10} weight="bold" />
+                            </span>
+                          )}
+                          <span className={`text-sm ${included ? 'text-mid' : 'text-lo line-through decoration-gray-300'}`}>
+                            {text}
                           </span>
-                        ) : (
-                          <span className="flex-shrink-0 w-5 h-5 rounded-full bg-gray-50 text-lo flex items-center justify-center border border-line">
-                            <X size={10} weight="bold" />
-                          </span>
-                        )}
-                        <span className={`text-sm ${feature.included ? 'text-mid' : 'text-lo line-through decoration-gray-300'}`}>
-                          {feature.text}
-                        </span>
-                      </li>
-                    ))}
+                        </li>
+                      );
+                    })}
                   </ul>
                 </div>
 
@@ -358,7 +387,7 @@ export default function AdminPlanesPage() {
               </div>
               <button
                 type="button"
-                onClick={() => setShowModal(false)}
+                onClick={closeModal}
                 className="p-1.5 rounded-md text-lo hover:text-hi hover:bg-app transition-colors duration-fast cursor-pointer"
                 aria-label="Cerrar modal"
               >
@@ -367,7 +396,7 @@ export default function AdminPlanesPage() {
             </div>
 
             {/* Formulario */}
-            <form onSubmit={handleSave} className="flex flex-col">
+            <form onSubmit={handleSave} onChange={() => setIsFormDirty(true)} className="flex flex-col">
               <div className="px-6 py-5 space-y-4">
                 {/* Plan Name & Price */}
                 <div className="grid grid-cols-2 gap-4">
@@ -402,6 +431,22 @@ export default function AdminPlanesPage() {
                       />
                     </div>
                   </div>
+                </div>
+
+                {/* Stripe Price ID (Strictly Required) */}
+                <div>
+                  <label htmlFor="plan-stripe-id" className="block text-sm font-semibold text-hi mb-1">
+                    Stripe Price ID (Obligatorio) <span className="text-danger">*</span>
+                  </label>
+                  <input
+                    id="plan-stripe-id"
+                    type="text"
+                    required
+                    value={formStripePriceId}
+                    onChange={(e) => setFormStripePriceId(e.target.value)}
+                    placeholder="ej. price_1TumDpDy1pBZYZd6IwYnVkya"
+                    className="w-full px-3 py-2 rounded-md border border-line bg-card text-sm text-hi placeholder:text-muted focus:outline-none focus:border-brand font-mono"
+                  />
                 </div>
 
                 {/* Connection Limit */}
@@ -458,7 +503,7 @@ export default function AdminPlanesPage() {
                       type="button"
                       role="switch"
                       aria-checked={formFlowBuilder}
-                      onClick={() => setFormFlowBuilder(!formFlowBuilder)}
+                      onClick={() => { setFormFlowBuilder(!formFlowBuilder); setIsFormDirty(true); }}
                       className={`
                         relative inline-flex h-5 w-9 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent
                         transition-colors duration-200 focus:outline-none
@@ -481,7 +526,7 @@ export default function AdminPlanesPage() {
                       type="button"
                       role="switch"
                       aria-checked={formAiBrain}
-                      onClick={() => setFormAiBrain(!formAiBrain)}
+                      onClick={() => { setFormAiBrain(!formAiBrain); setIsFormDirty(true); }}
                       className={`
                         relative inline-flex h-5 w-9 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent
                         transition-colors duration-200 focus:outline-none
@@ -494,19 +539,17 @@ export default function AdminPlanesPage() {
 
                   <div className="flex items-center justify-between py-1">
                     <div className="flex items-center gap-2">
-                      <div className="w-4 h-4 rounded bg-brand/10 text-brand flex items-center justify-center">
-                        <Check size={10} weight="bold" />
-                      </div>
+                      <Coins size={16} className="text-brand" />
                       <div>
-                        <p className="text-sm font-medium text-hi leading-tight">Marcar como popular</p>
-                        <p className="text-2xs text-lo mt-0.5 font-medium">Destacar visualmente con borde e insignia</p>
+                        <p className="text-sm font-medium text-hi leading-tight">Plan Destacado (Popular)</p>
+                        <p className="text-2xs text-lo mt-0.5 font-medium">Muestra un badge visual llamativo</p>
                       </div>
                     </div>
                     <button
                       type="button"
                       role="switch"
                       aria-checked={formPopular}
-                      onClick={() => setFormPopular(!formPopular)}
+                      onClick={() => { setFormPopular(!formPopular); setIsFormDirty(true); }}
                       className={`
                         relative inline-flex h-5 w-9 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent
                         transition-colors duration-200 focus:outline-none
@@ -517,14 +560,57 @@ export default function AdminPlanesPage() {
                     </button>
                   </div>
                 </div>
+
+                {/* Beneficios Dinámicos */}
+                <div className="space-y-2.5 pt-2">
+                  <div className="flex items-center justify-between">
+                    <p className="text-xs font-semibold text-lo uppercase tracking-wider">Beneficios del Plan</p>
+                    <button
+                      type="button"
+                      onClick={() => setFormFeatures([...formFeatures, ''])}
+                      className="text-xs font-bold text-brand hover:text-brand-hover flex items-center gap-1 cursor-pointer"
+                    >
+                      + Añadir Beneficio
+                    </button>
+                  </div>
+                  <div className="space-y-2 max-h-40 overflow-y-auto pr-1">
+                    {formFeatures.map((feature, idx) => (
+                      <div key={idx} className="flex items-center gap-2">
+                        <input
+                          type="text"
+                          required
+                          value={feature}
+                          onChange={(e) => {
+                            const newFeats = [...formFeatures];
+                            newFeats[idx] = e.target.value;
+                            setFormFeatures(newFeats);
+                          }}
+                          placeholder="ej. Soporte 24/7"
+                          className="flex-1 px-3 py-1.5 rounded-md border border-line bg-card text-xs text-hi placeholder:text-muted focus:outline-none focus:border-brand"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const newFeats = formFeatures.filter((_, i) => i !== idx);
+                            setFormFeatures(newFeats.length > 0 ? newFeats : ['']);
+                          }}
+                          className="p-1.5 rounded-md border border-line hover:border-danger hover:text-danger bg-card text-lo transition-colors duration-fast cursor-pointer"
+                          title="Eliminar beneficio"
+                        >
+                          <Trash size={14} />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                </div>
               </div>
 
               {/* Footer */}
-              <div className="flex items-center justify-between px-6 py-4 border-t border-line bg-app">
+              <div className="px-6 py-4 bg-app border-t border-line flex items-center justify-end gap-3">
                 <button
                   type="button"
-                  onClick={() => setShowModal(false)}
-                  className="px-4 py-2.5 rounded-md border border-line bg-card text-sm font-medium text-mid hover:bg-app transition-colors cursor-pointer"
+                  onClick={closeModal}
+                  className="px-4 py-2 text-xs font-semibold border border-line bg-card text-hi hover:bg-app rounded-md transition-colors duration-fast cursor-pointer"
                 >
                   Cancelar
                 </button>

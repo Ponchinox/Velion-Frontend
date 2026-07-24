@@ -11,10 +11,11 @@ generator client {
 model Tenant {
   id              String           @id @default(uuid())
   name            String
-  plan            String           @default("Básico") // "Básico" | "Pro" | "Elite"
+  plan            String?          @default("Sin Plan") // "Sin Plan" | "Básico" | "Pro" | "Elite"
+  planId          String?
   active          Boolean          @default(true)
-  msgLimit        Int              @default(1000)
-  connLimit       Int              @default(1)
+  msgLimit        Int              @default(0)
+  connLimit       Int              @default(0)
   logoUrl         String?
   companyName     String?          @default("")
   taxId           String?
@@ -25,6 +26,13 @@ model Tenant {
   bankAccounts    String?          @db.Text
   businessHours   String?          @db.Text
   termsAndPolicies String?         @db.Text
+  customPrompt    String?          @db.Text
+  botRole         String?          @db.Text
+  multiMessageMode Boolean         @default(true)
+  respondInGroups Boolean          @default(false)
+  notificationPhone String?
+  notifySalesWhatsApp Boolean      @default(false)
+  marketingModeEnabled Boolean     @default(false)
   createdAt       DateTime         @default(now())
   updatedAt       DateTime         @updatedAt
 
@@ -38,6 +46,7 @@ model Tenant {
   customers       Customer[]
   campaigns       Campaign[]
   flows           Flow[]
+  registeredNumbers RegisteredWhatsAppNumber[]
 }
 
 // ─── MODELO USER (Usuarios / Miembros del Tenant) ───
@@ -45,6 +54,8 @@ model User {
   id        String   @id @default(uuid())
   email     String   @unique
   password  String   // Hash de la contraseña
+  name      String?
+  phone     String?
   role      String   @default("client") // "superadmin" | "client" | "user"
   tenantId  String?  // Opcional para soportar administradores globales del SaaS sin Tenant
   tenant    Tenant?  @relation(fields: [tenantId], references: [id], onDelete: Cascade)
@@ -63,6 +74,7 @@ model Contact {
   category        String   @default("Nuevos Leads") // "Nuevos Leads" | "En Seguimiento" | "Clientes Cerrados"
   tags            String[] // Postgres soporta arrays nativamente en Prisma
   lastInteraction String?
+  botPaused       Boolean  @default(false)
   tenantId        String
   tenant          Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   createdAt       DateTime @default(now())
@@ -76,6 +88,7 @@ model Contact {
 model Chat {
   id        String   @id @default(uuid())
   status    String   @default("open") // "open" | "closed"
+  botPaused Boolean  @default(false)
   contactId String
   contact   Contact  @relation(fields: [contactId], references: [id], onDelete: Cascade)
   tenantId  String
@@ -114,16 +127,19 @@ model AutomationFlow {
 
 // ─── MODELO PRODUCT (Inventario de Productos) ───
 model Product {
-  id          String   @id @default(uuid())
-  name        String
-  description String?
-  price       Float
-  isAvailable Boolean  @default(true)
-  imageUrl    String?  // URL del archivo subido a Cloudinary (saas_products)
-  userId      String
-  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  id               String    @id @default(uuid())
+  name             String
+  description      String?
+  price            Float
+  isAvailable      Boolean   @default(true)
+  imageUrl         String?   // URL del archivo subido a Cloudinary (saas_products)
+  promotionalPrice Float?
+  promoStartDate   DateTime?
+  promoEndDate     DateTime?
+  userId           String
+  user             User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
 }
 
 // ─── MODELO ALERT (Alertas Globales de Errores/Límites) ───
@@ -141,18 +157,19 @@ model Alert {
 
 // ─── MODELO PLAN (Planes Comerciales del SaaS) ───
 model Plan {
-  id           String   @id @default(uuid())
-  name         String   @unique
-  price        Float
-  connLimit    Int      @default(1)
-  msgLimit     Int      @default(1000)
-  features     Json     // Array de { text: String, included: Boolean }
-  flowBuilder  Boolean  @default(false)
-  aiBrain      Boolean  @default(false)
-  popular      Boolean  @default(false)
-  active       Boolean  @default(true)
-  createdAt    DateTime @default(now())
-  updatedAt    DateTime @updatedAt
+  id            String   @id @default(uuid())
+  name          String   @unique
+  price         Float
+  stripePriceId String
+  connLimit     Int      @default(1)
+  msgLimit      Int      @default(1000)
+  features      Json     // Array de { text: String, included: Boolean } o Strings
+  flowBuilder   Boolean  @default(false)
+  aiBrain       Boolean  @default(false)
+  popular       Boolean  @default(false)
+  active        Boolean  @default(true)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
 }
 
 // ─── MODELO SYSTEMCONFIG (Configuración Global del SaaS, persistida clave/valor) ───
@@ -222,4 +239,13 @@ model Flow {
   tenant         Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   createdAt      DateTime @default(now())
   updatedAt      DateTime @updatedAt
+}
+
+// ─── MODELO REGISTEREDWHATSAPPNUMBER (Anti-Fraude / Fingerprinting Único de Número) ───
+model RegisteredWhatsAppNumber {
+  id          String   @id @default(uuid())
+  phoneNumber String   @unique
+  tenantId    String
+  tenant      Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  createdAt   DateTime @default(now())
 }

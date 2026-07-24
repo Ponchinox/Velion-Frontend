@@ -1,8 +1,23 @@
-import { SignOut, ShieldCheck } from '@phosphor-icons/react';
+import { useState, useEffect } from 'react';
+import { SignOut } from '@phosphor-icons/react';
 import { useAuth } from '../../context/AuthContext';
+import * as settingsService from '../../services/settingsService';
 
 export default function TopBar() {
-  const { signOut } = useAuth();
+  const { user, signOut } = useAuth();
+  const [storeName, setStoreName] = useState(() => user?.tenantName || 'Velion Agent');
+
+  useEffect(() => {
+    let isMounted = true;
+    settingsService.getSettings().then(data => {
+      if (isMounted && data?.name) {
+        setStoreName(data.name);
+      }
+    }).catch(() => {});
+    return () => { isMounted = false; };
+  }, []);
+
+  const displayName = storeName || user?.tenantName || 'Velion Agent';
 
   return (
     <header
@@ -15,9 +30,10 @@ export default function TopBar() {
       role="banner"
     >
       {/* Brand logo/name on the left for Mobile View */}
-      <div className="flex items-center gap-2">
-        <ShieldCheck size={18} weight="bold" className="text-brand" aria-hidden="true" />
-        <span className="text-sm font-bold text-hi">SuperAdmin</span>
+      <div className="flex items-center min-w-0">
+        <span className="text-base font-extrabold tracking-tight text-hi bg-gradient-to-r from-brand via-indigo-600 to-blue-500 bg-clip-text text-transparent truncate">
+          {displayName}
+        </span>
       </div>
 
       {/* Profile/Logout on the right for Mobile View */}
@@ -26,7 +42,7 @@ export default function TopBar() {
         className="
           flex items-center justify-center w-8 h-8 rounded-md
           border border-line text-lo hover:text-danger hover:bg-red-50
-          transition-colors duration-[120ms] cursor-pointer
+          transition-colors duration-[120ms] cursor-pointer flex-shrink-0
         "
         aria-label="Cerrar sesión"
       >

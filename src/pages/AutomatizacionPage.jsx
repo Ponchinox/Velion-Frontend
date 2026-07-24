@@ -87,19 +87,8 @@ const TOOL_BLOCKS = [
 ];
 
 /* ─── Respaldos estáticos locales ─── */
-const MOCK_NODES = [
-  { id: 'n1', type: 'trigger', label: 'Disparador', content: 'Palabra clave: "Hola"', x: 180, y: 120 },
-  { id: 'n2', type: 'text', label: 'Mensaje de Texto', content: '¡Hola! ¿En qué te puedo ayudar hoy? 😊', x: 480, y: 60 },
-  { id: 'n3', type: 'ai', label: 'Cerebro IA', content: 'Responder con catálogo de productos', x: 480, y: 210 },
-  { id: 'n4', type: 'condition', label: 'Condición', content: '¿El cliente confirmó interés?', x: 780, y: 140 },
-];
-
-const MOCK_EDGES = [
-  { id: 'e1', from: 'n1', to: 'n2', label: '' },
-  { id: 'e2', from: 'n1', to: 'n3', label: '' },
-  { id: 'e3', from: 'n2', to: 'n4', label: 'Sí' },
-  { id: 'e4', from: 'n3', to: 'n4', label: '' },
-];
+const MOCK_NODES = [];
+const MOCK_EDGES = [];
 
 /* ─── Componente Bloque de herramienta ─── */
 function ToolBlock({ block }) {
@@ -186,7 +175,7 @@ export default function AutomatizacionPage() {
   const [nodes, setNodes] = useState(MOCK_NODES);
   const [edges, setEdges] = useState(MOCK_EDGES);
   
-  const [selectedNodeId, setSelectedNodeId] = useState('n1');
+  const [selectedNodeId, setSelectedNodeId] = useState(null);
   const [toast, setToast] = useState(null);
   const [toolboxOpen, setToolboxOpen] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
@@ -207,7 +196,8 @@ export default function AutomatizacionPage() {
         setEdges(data.edges);
       }
     } catch {
-      showToast('Modo Local: No se pudo conectar con el servidor de automatización', 'warning');
+      setNodes([]);
+      setEdges([]);
     }
   };
 
@@ -269,11 +259,11 @@ export default function AutomatizacionPage() {
 
         <div className="flex items-center gap-2 flex-shrink-0">
           <button
-            onClick={() => showToast('Modo prueba activado. Simula una conversación.', 'warning')}
-            className="flex items-center gap-1.5 px-3.5 py-2 rounded-md border border-line bg-card text-sm font-semibold text-mid hover:bg-app hover:border-line-strong shadow-card cursor-pointer"
+            disabled
+            className="flex items-center gap-1.5 px-3.5 py-2 rounded-md border border-line bg-card text-sm font-semibold text-muted shadow-card opacity-50 cursor-not-allowed"
           >
-            <Play size={14} weight="bold" className="text-emerald-600" />
-            <span className="hidden sm:inline">Probar Bot</span>
+            <Play size={14} weight="bold" className="text-muted" />
+            <span className="hidden sm:inline">Probar Bot (Próximamente)</span>
           </button>
           <button
             onClick={handleSave}

@@ -1,5 +1,6 @@
 import axios from 'axios';
 import prisma from '../db.js';
+import { validateAndRegisterWhatsAppConnection } from '../services/antiFraudService.js';
 
 /**
  * Helper para generar los headers de autenticación de Evolution API
@@ -7,7 +8,7 @@ import prisma from '../db.js';
 function getEvoHeaders() {
   return {
     headers: {
-      apikey: process.env.EVOLUTION_API_KEY || 'bot_clave_maestra_2026',
+      apikey: process.env.EVOLUTION_API_KEY || 'A59F9002-9FFF-41CF-8EA6-58AEEB06ED7B',
       'Content-Type': 'application/json',
     },
   };
@@ -17,7 +18,7 @@ function getEvoHeaders() {
  * Helper para formatear el nombre de la instancia en base al tenantId
  */
 function getEvoInstanceName(tenantId) {
-  return `velion_instance_${tenantId.slice(0, 8)}`;
+  return `bot_prod_${tenantId.slice(0, 8)}`;
 }
 
 /**
@@ -50,11 +51,24 @@ export async function getStatus(req, res) {
     );
 
     const state = response.data?.instance?.state || 'close';
+    const phone = response.data?.instance?.phone || null;
+
+    if (state === 'open' && phone) {
+      const validation = await validateAndRegisterWhatsAppConnection(tenantId, instanceName, phone);
+      if (!validation.allowed) {
+        return res.status(403).json({
+          status: 'close',
+          instanceName,
+          phone: null,
+          error: validation.errorMessage,
+        });
+      }
+    }
 
     return res.json({
       status: state === 'open' ? 'open' : 'close',
       instanceName,
-      phone: response.data?.instance?.phone || null,
+      phone,
     });
   } catch (error) {
     if (error.response && error.response.status === 404) {
@@ -79,13 +93,30 @@ export async function getStatus(req, res) {
  */
 export async function getQrCode(req, res) {
   try {
-    const tenantId = req.user.tenantId;
+    const tenantId = req.user?.tenantId;
     if (!tenantId) {
-      return res.status(400).json({ error: 'El usuario no está asociado a ningún Tenant.' });
+      return res.status(400).json({ error: 'El usuario no está asociado a ningún Tenant.', message: 'El usuario no está asociado a ningún Tenant.' });
     }
 
     const instanceName = getEvoInstanceName(tenantId);
     const evoUrl = process.env.EVOLUTION_API_URL || 'http://localhost:8080';
+
+    // 0. Verificar primero si la instancia ya se encuentra conectada (state === open)
+    try {
+      const stateRes = await axios.get(
+        `${evoUrl}/instance/connectionState/${instanceName}`,
+        getEvoHeaders()
+      );
+      if (stateRes.data?.instance?.state === 'open') {
+        return res.status(200).json({
+          status: 'open',
+          message: 'La instancia ya está conectada y activa.',
+          phone: stateRes.data?.instance?.phone || null,
+        });
+      }
+    } catch (stateErr) {
+      // Si falla o no existe, continuamos con el flujo normal de generación de QR
+    }
 
     // 1. Asegurar la creación previa de la instancia
     try {
@@ -131,12 +162,35 @@ export async function getQrCode(req, res) {
     }
 
     // 2. Solicitar el código QR de conexión
-    const connectRes = await axios.get(
-      `${evoUrl}/instance/connect/${instanceName}`,
-      getEvoHeaders()
-    );
+    let connectRes;
+    try {
+      connectRes = await axios.get(
+        `${evoUrl}/instance/connect/${instanceName}`,
+        getEvoHeaders()
+      );
+    } catch (connectError) {
+      // Si devolvió 404 porque la instancia no existe en Evolution API, la creamos de nuevo e reintentamos
+      if (connectError.response?.status === 404) {
+        try {
+          await axios.post(
+            `${evoUrl}/instance/create`,
+            { instanceName, qrcode: true, integration: 'WHATSAPP-BAILEYS' },
+            getEvoHeaders()
+          );
+          connectRes = await axios.get(
+            `${evoUrl}/instance/connect/${instanceName}`,
+            getEvoHeaders()
+          );
+        } catch (retryErr) {
+          console.error('❌ Error en reintento de conexión:', retryErr.response?.data || retryErr.message);
+          throw connectError;
+        }
+      } else {
+        throw connectError;
+      }
+    }
 
-    const qrBase64 = connectRes.data?.base64 || connectRes.data?.qrcode?.base64 || null;
+    const qrBase64 = connectRes.data?.base64 || connectRes.data?.qrcode?.base64 || connectRes.data?.code || null;
 
     if (!qrBase64) {
       const lowerDataStr = JSON.stringify(connectRes.data || {}).toLowerCase();
@@ -151,7 +205,7 @@ export async function getQrCode(req, res) {
         });
       }
 
-      return res.status(400).json({ error: 'No se pudo generar el código QR de vinculación.' });
+      return res.status(400).json({ error: 'No se pudo generar el código QR de vinculación.', message: 'No se pudo generar el código QR de vinculación.' });
     }
 
     return res.json({
@@ -159,7 +213,7 @@ export async function getQrCode(req, res) {
     });
   } catch (error) {
     const errorMsg = error.response?.data || error.message || '';
-    const isAlreadyConnected = error.response?.status === 400 && 
+    const isAlreadyConnected = (error.response?.status === 400 || error.response?.status === 403) && 
                                containsKeywords(errorMsg, ['already connected', 'connected', 'open', 'conectada']);
 
     if (isAlreadyConnected) {
@@ -170,13 +224,21 @@ export async function getQrCode(req, res) {
     }
 
     console.error('❌ Error al obtener código QR:', error.response?.data || error.message);
-    return res.status(500).json({ error: 'Error interno al comunicarse con Evolution API.' });
+    const detailMsg = error.code === 'ECONNREFUSED' 
+      ? 'No se pudo conectar con el servidor de WhatsApp (Evolution API no responde).' 
+      : (error.response?.data?.message || error.message || 'Error al comunicarse con el servidor de WhatsApp.');
+
+    return res.status(500).json({
+      error: detailMsg,
+      message: detailMsg
+    });
   }
 }
 
 /**
  * POST /api/connections/logout
- * Cierra la sesión activa de WhatsApp
+ * Cierra la sesión activa y destruye por completo la instancia en Evolution API
+ * eliminando cualquier instancia zombi y limpiando registros en la BD.
  */
 export async function logoutDevice(req, res) {
   try {
@@ -188,21 +250,49 @@ export async function logoutDevice(req, res) {
     const instanceName = getEvoInstanceName(tenantId);
     const evoUrl = process.env.EVOLUTION_API_URL || 'http://localhost:8080';
 
+    // 1. Petición HTTP DELETE a Evolution API para cerrar sesión (logout)
     try {
       await axios.delete(
         `${evoUrl}/instance/logout/${instanceName}`,
         getEvoHeaders()
       );
+      console.log(`🔌 [Evolution API] Logout exitoso para instancia: ${instanceName}`);
     } catch (logoutError) {
-      if (logoutError.response && logoutError.response.status === 404) {
-        return res.json({ message: 'Sesión de WhatsApp cerrada con éxito.' });
-      }
-      throw logoutError;
+      console.log(`ℹ️ [Evolution API] Logout aviso/ya desvinculado (${logoutError.response?.status || 'network error'}):`, logoutError.response?.data || logoutError.message);
     }
 
-    return res.json({ message: 'Sesión de WhatsApp cerrada con éxito.' });
+    // 2. Petición HTTP DELETE a Evolution API para destruir la instancia por completo
+    try {
+      await axios.delete(
+        `${evoUrl}/instance/delete/${instanceName}`,
+        getEvoHeaders()
+      );
+      console.log(`🗑️ [Evolution API] Instancia destruida totalmente: ${instanceName}`);
+    } catch (deleteError) {
+      if (deleteError.response && (deleteError.response.status === 404 || deleteError.response.status === 400)) {
+        console.log(`ℹ️ [Evolution API] Instancia "${instanceName}" ya no existía en el servidor (404/400).`);
+      } else {
+        console.warn(`⚠️ Error de respuesta al eliminar instancia en Evolution API:`, deleteError.response?.data || deleteError.message);
+      }
+    }
+
+    // 3. Limpieza en Base de Datos (Prisma)
+    try {
+      if (prisma.whatsappConnection) {
+        await prisma.whatsappConnection.deleteMany({
+          where: { tenantId }
+        });
+      }
+    } catch (dbError) {
+      console.log(`ℹ️ Limpieza en Prisma finalizada o no requerida:`, dbError.message);
+    }
+
+    return res.json({
+      status: 'DISCONNECTED',
+      message: 'Instancia destruida y sesión de WhatsApp eliminada por completo.'
+    });
   } catch (error) {
-    console.error("❌ Error al desconectar dispositivo:", error.response?.data || error.message);
+    console.error("❌ Error al desconectar/destruir dispositivo:", error.response?.data || error.message);
     return res.status(500).json({ error: 'Error al desconectar el dispositivo.' });
   }
 }

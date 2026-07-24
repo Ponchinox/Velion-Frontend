@@ -17,10 +17,10 @@ export async function loginAccount(email, password) {
 /**
  * Registra un nuevo tenant/negocio en el sistema
  */
-export async function registerAccount(businessName, email, password) {
+export async function registerAccount(companyName, userName, email, password) {
   return apiClient('/auth/register', {
     method: 'POST',
-    body: { name: businessName, email, password, plan: 'Básico' },
+    body: { companyName, userName, email, password },
   });
 }
 

@@ -37,3 +37,13 @@ export async function deleteContact(id) {
     method: 'DELETE',
   });
 }
+
+/**
+ * Reactiva / Alterna el bot para un contacto
+ */
+export async function toggleBotPause(id, botPaused) {
+  return apiClient(`/contacts/${id}/toggle-bot`, {
+    method: 'PUT',
+    body: { botPaused },
+  });
+}

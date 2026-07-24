@@ -29,6 +29,7 @@ import {
   Globe
 } from 'lucide-react';
 import * as flowService from '../services/flowService';
+import { useUnsavedChanges } from '../context/UnsavedChangesContext';
 
 // --- COMPONENTES DE NODOS PERSONALIZADOS ---
 
@@ -160,6 +161,8 @@ const nodeTypes = {
   apiNode: ApiNode
 };
 
+const edgeTypes = {};
+
 const initialNodes = [
   {
     id: 'n1',
@@ -185,6 +188,8 @@ function FlowBuilderInner() {
   const [isSaving, setIsSaving] = useState(false);
   const [toast, setToast] = useState(null);
 
+  const { isDirty, setIsDirty } = useUnsavedChanges();
+
   const showToast = (msg, type = 'success') => {
     setToast({ msg, type });
     setTimeout(() => setToast(null), 4000);
@@ -205,6 +210,8 @@ function FlowBuilderInner() {
         if (activeFlow.edges) {
           setEdges(typeof activeFlow.edges === 'string' ? JSON.parse(activeFlow.edges) : activeFlow.edges);
         }
+        // Marcar como limpio nada más cargarse el flujo inicial
+        setTimeout(() => setIsDirty(false), 200);
       }
     } catch {
       showToast('Error al conectar con el servidor de flujos.', 'error');
@@ -216,7 +223,10 @@ function FlowBuilderInner() {
   }, []);
 
   const onConnect = useCallback(
-    (params) => setEdges((eds) => addEdge({ ...params, animated: true }, eds)),
+    (params) => {
+      setEdges((eds) => addEdge({ ...params, animated: true }, eds));
+      setIsDirty(true);
+    },
     [setEdges]
   );
 
@@ -272,6 +282,7 @@ function FlowBuilderInner() {
       };
 
       setNodes((nds) => nds.concat(newNode));
+      setIsDirty(true);
     },
     [reactFlowInstance, setNodes]
   );
@@ -290,6 +301,7 @@ function FlowBuilderInner() {
       })
     );
     setSelectedNode((prev) => ({ ...prev, data: { ...prev.data, ...newData } }));
+    setIsDirty(true);
   };
 
   const handleSave = async () => {
@@ -312,6 +324,7 @@ function FlowBuilderInner() {
       if (response && response.id) {
         setFlowId(response.id);
         showToast('Flujo visual guardado correctamente.');
+        setIsDirty(false);
       }
     } catch {
       showToast('Error al persistir el flujo visual en la base de datos.', 'error');
@@ -334,7 +347,10 @@ function FlowBuilderInner() {
             <input
               type="text"
               value={flowName}
-              onChange={(e) => setFlowName(e.target.value)}
+              onChange={(e) => {
+                setFlowName(e.target.value);
+                setIsDirty(true);
+              }}
               className="w-full px-3 py-2 rounded-md border border-line bg-app text-xs text-hi focus:outline-none focus:border-brand"
             />
           </div>
@@ -343,7 +359,10 @@ function FlowBuilderInner() {
             <input
               type="text"
               value={triggerKeyword}
-              onChange={(e) => setTriggerKeyword(e.target.value)}
+              onChange={(e) => {
+                setTriggerKeyword(e.target.value);
+                setIsDirty(true);
+              }}
               placeholder="ej. precio, catalogo"
               className="w-full px-3 py-2 rounded-md border border-line bg-app text-xs text-hi focus:outline-none focus:border-brand font-mono"
             />
@@ -352,7 +371,10 @@ function FlowBuilderInner() {
             <span className="text-xs font-semibold text-mid">Estado del Flujo</span>
             <button
               type="button"
-              onClick={() => setIsActive(!isActive)}
+              onClick={() => {
+                setIsActive(!isActive);
+                setIsDirty(true);
+              }}
               className={`px-3 py-1.5 rounded-full text-2xs font-bold transition-colors cursor-pointer ${isActive ? 'bg-emerald-50 text-emerald-700' : 'bg-gray-100 text-lo'}`}
             >
               {isActive ? 'Activo' : 'Inactivo'}
@@ -726,14 +748,23 @@ function FlowBuilderInner() {
         <ReactFlow
           nodes={nodes}
           edges={edges}
-          onNodesChange={onNodesChange}
-          onEdgesChange={onEdgesChange}
+          onNodesChange={(changes) => {
+            onNodesChange(changes);
+            const isRealChange = changes.some(c => c.type === 'position' || c.type === 'remove' || c.type === 'add');
+            if (isRealChange) setIsDirty(true);
+          }}
+          onEdgesChange={(changes) => {
+            onEdgesChange(changes);
+            const isRealChange = changes.some(c => c.type === 'remove' || c.type === 'add');
+            if (isRealChange) setIsDirty(true);
+          }}
           onConnect={onConnect}
           onInit={setReactFlowInstance}
           onDrop={onDrop}
           onDragOver={onDragOver}
           onNodeClick={onNodeClick}
           nodeTypes={nodeTypes}
+          edgeTypes={edgeTypes}
           fitView
         >
           <Controls />

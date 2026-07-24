@@ -11,12 +11,14 @@ import {
   WarningCircle,
   Sparkle,
   Buildings,
+  User,
 } from '@phosphor-icons/react';
 
 export default function RegisterPage() {
   const navigate = useNavigate();
 
   const [businessName, setBusinessName] = useState('');
+  const [userName, setUserName] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
@@ -27,16 +29,21 @@ export default function RegisterPage() {
 
   const handleSubmit = async (e) => {
     e.preventDefault();
-    if (!businessName || !email || !password || !confirmPassword) {
+    if (!businessName || !userName || !email || !password || !confirmPassword) {
       setError('Por favor, completa todos los campos.');
       return;
     }
-    if (password !== confirmPassword) {
-      setError('Las contraseñas no coinciden.');
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(email)) {
+      setError('Por favor, introduce un correo electrónico válido.');
       return;
     }
     if (password.length < 6) {
       setError('La contraseña debe tener al menos 6 caracteres.');
+      return;
+    }
+    if (password !== confirmPassword) {
+      setError('Las contraseñas no coinciden.');
       return;
     }
 
@@ -45,7 +52,7 @@ export default function RegisterPage() {
 
     try {
       // Llamada real a la API del backend
-      await registerAccount(businessName, email, password);
+      await registerAccount(businessName, userName, email, password);
       setSuccess(true);
       setTimeout(() => {
         navigate('/login');
@@ -68,12 +75,20 @@ export default function RegisterPage() {
           <div className="inline-flex items-center justify-center w-14 h-14 rounded-xl bg-white/15 backdrop-blur-md">
             <ShieldCheck size={32} weight="bold" className="text-white" />
           </div>
-          <div className="space-y-2">
+          <div className="space-y-4">
+            {/* Texto anterior de registro (conservado como comentario):
             <h2 className="text-4xl font-extrabold tracking-tight leading-tight">
               Únete a la nueva era del marketing conversacional.
             </h2>
             <p className="text-white/80 text-lg leading-relaxed">
               Crea tu cuenta de inquilino y comienza a conectar múltiples números de WhatsApp, configurar automatizaciones y diseñar flujos interactivos de forma inmediata.
+            </p>
+            */}
+            <h2 className="text-4xl font-extrabold tracking-tight leading-tight text-white">
+              Automatiza tus ventas y atención al cliente 24/7
+            </h2>
+            <p className="text-white/75 text-lg leading-relaxed">
+              Gestiona campañas masivas, inventario y respuestas automáticas con Inteligencia Artificial. Todo desde un solo lugar.
             </p>
           </div>
           <div className="flex items-center gap-2 pt-4 text-xs text-white/70 font-semibold tracking-wider uppercase">
@@ -137,10 +152,39 @@ export default function RegisterPage() {
                 </div>
               </div>
 
+              {/* Nombre de Usuario Administrador */}
+              <div>
+                <label htmlFor="reg-username" className="block text-sm font-semibold text-mid mb-1.5">
+                  Tu Nombre Completo
+                </label>
+                <div className="relative">
+                  <User
+                    size={18}
+                    className="absolute left-3.5 top-1/2 -translate-y-1/2 text-muted pointer-events-none"
+                    aria-hidden="true"
+                  />
+                  <input
+                    id="reg-username"
+                    type="text"
+                    value={userName}
+                    onChange={(e) => { setUserName(e.target.value); if (error) setError(''); }}
+                    placeholder="Juan Pérez"
+                    required
+                    className="
+                      w-full pl-10 pr-4 py-3 text-sm
+                      bg-app border border-line rounded-md text-hi
+                      placeholder:text-muted
+                      focus:outline-none focus:border-brand focus:shadow-input-focus
+                      transition-all duration-fast
+                    "
+                  />
+                </div>
+              </div>
+
               {/* Email */}
               <div>
                 <label htmlFor="reg-email" className="block text-sm font-semibold text-mid mb-1.5">
-                  Correo electrónico del administrador
+                  Correo electrónico
                 </label>
                 <div className="relative">
                   <EnvelopeSimple
@@ -185,6 +229,7 @@ export default function RegisterPage() {
                     onChange={(e) => { setPassword(e.target.value); if (error) setError(''); }}
                     placeholder="Mínimo 6 caracteres"
                     autoComplete="new-password"
+                    minLength={6}
                     required
                     className="
                       w-full pl-10 pr-10 py-3 text-sm
@@ -229,6 +274,7 @@ export default function RegisterPage() {
                     onChange={(e) => { setConfirmPassword(e.target.value); if (error) setError(''); }}
                     placeholder="Repite la contraseña"
                     autoComplete="new-password"
+                    minLength={6}
                     required
                     className="
                       w-full pl-10 pr-10 py-3 text-sm

@@ -1,4 +1,4 @@
-const API_URL = 'http://localhost:3000/api';
+const API_URL = (import.meta.env.VITE_API_URL || 'http://localhost:3000') + '/api';
 
 /**
  * Función de ayuda para realizar peticiones HTTP Fetch con interceptores globales
@@ -32,16 +32,31 @@ export async function apiClient(endpoint, options = {}) {
     config.body = JSON.stringify(options.body);
   }
 
+  let finalUrl = `${API_URL}${endpoint}`;
+  const method = (options.method || 'GET').toUpperCase();
+  if (method === 'GET') {
+    const separator = finalUrl.includes('?') ? '&' : '?';
+    finalUrl = `${finalUrl}${separator}_t=${Date.now()}`;
+  }
+
   try {
-    const response = await fetch(`${API_URL}${endpoint}`, config);
+    const response = await fetch(finalUrl, config);
 
     // Manejo de errores globales (ej: 401 No Autorizado)
     if (response.status === 401) {
+      const errorData = await response.json().catch(() => ({}));
+
+      // Si el error ocurrió en el login, no limpiamos la sesión ni redirigimos
+      if (endpoint === '/auth/login') {
+        const error = new Error(errorData.error || errorData.message || 'Correo o contraseña incorrectos.');
+        error.status = 401;
+        throw error;
+      }
+
       localStorage.removeItem('sa_token');
       localStorage.removeItem('sa_mock_user');
       // Recargar para limpiar el estado de la app y forzar redirección
       window.location.href = '/login';
-      const errorData = await response.json().catch(() => ({}));
       const error = new Error(errorData.message || 'Sesión expirada. Por favor inicie sesión nuevamente.');
       error.status = 401;
       throw error;
@@ -50,7 +65,8 @@ export async function apiClient(endpoint, options = {}) {
     const data = await response.json().catch(() => ({}));
 
     if (!response.ok) {
-      const error = new Error(data.message || 'Ocurrió un error en el servidor');
+      const errorMessage = data.error || data.message || 'Ocurrió un error en el servidor';
+      const error = new Error(errorMessage);
       error.status = response.status;
       error.code = data.code; // Soporte para códigos de error específicos (ej: Firebase format)
       throw error;

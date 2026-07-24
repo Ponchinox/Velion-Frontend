@@ -10,6 +10,10 @@ import {
   CheckCircle
 } from '@phosphor-icons/react';
 
+import * as configService from '../services/configService';
+
+const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:3000';
+
 export default function AdminBackupsPage() {
   const [backups, setBackups] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -17,9 +21,45 @@ export default function AdminBackupsPage() {
   const [errorMsg, setErrorMsg] = useState('');
   const [toast, setToast] = useState(null);
 
+  // Estados de Configuración Automática de Backups
+  const [backupFrequency, setBackupFrequency] = useState('off');
+  const [backupCloudEnabled, setBackupCloudEnabled] = useState(false);
+  const [backupCloudProvider, setBackupCloudProvider] = useState('cloudinary');
+  const [savingSettings, setSavingSettings] = useState(false);
+
   const showToast = (msg, type = 'success') => {
     setToast({ msg, type });
     setTimeout(() => setToast(null), 4000);
+  };
+
+  const loadSettings = async () => {
+    try {
+      const data = await configService.getGlobalConfig();
+      if (data) {
+        if (data.backupFrequency) setBackupFrequency(data.backupFrequency);
+        if (data.backupCloudEnabled !== undefined) setBackupCloudEnabled(data.backupCloudEnabled);
+        if (data.backupCloudProvider) setBackupCloudProvider(data.backupCloudProvider);
+      }
+    } catch (err) {
+      console.error('Error al cargar la configuración de backups:', err);
+    }
+  };
+
+  const handleSaveSettings = async () => {
+    setSavingSettings(true);
+    try {
+      await configService.saveGlobalConfig({
+        backupFrequency,
+        backupCloudEnabled,
+        backupCloudProvider,
+      });
+      showToast('Configuración de copias de seguridad actualizada con éxito');
+    } catch (err) {
+      console.error(err);
+      showToast('Error al guardar los ajustes de copias de seguridad.', 'error');
+    } finally {
+      setSavingSettings(false);
+    }
   };
 
   const fetchBackups = async () => {
@@ -28,7 +68,7 @@ export default function AdminBackupsPage() {
     const token = localStorage.getItem('sa_token');
 
     try {
-      const response = await fetch('http://localhost:3000/api/admin/backups', {
+      const response = await fetch(`${API_BASE_URL}/api/admin/backups`, {
         headers: {
           'Authorization': `Bearer ${token}`,
           'Content-Type': 'application/json',
@@ -51,6 +91,7 @@ export default function AdminBackupsPage() {
 
   useEffect(() => {
     fetchBackups();
+    loadSettings();
   }, []);
 
   const handleGenerate = async () => {
@@ -58,7 +99,7 @@ export default function AdminBackupsPage() {
     const token = localStorage.getItem('sa_token');
 
     try {
-      const response = await fetch('http://localhost:3000/api/admin/backups/generate', {
+      const response = await fetch(`${API_BASE_URL}/api/admin/backups/generate`, {
         method: 'POST',
         headers: {
           'Authorization': `Bearer ${token}`,
@@ -94,7 +135,7 @@ export default function AdminBackupsPage() {
   const handleDownload = async (filename) => {
     const token = localStorage.getItem('sa_token');
     try {
-      const response = await fetch(`http://localhost:3000/api/admin/backups/download/${filename}`, {
+      const response = await fetch(`${API_BASE_URL}/api/admin/backups/download/${filename}`, {
         headers: {
           'Authorization': `Bearer ${token}`,
         },
@@ -155,6 +196,80 @@ export default function AdminBackupsPage() {
           <Plus size={16} weight="bold" />
           {generating ? 'Generando...' : 'Generar Nuevo Backup'}
         </button>
+      </div>
+
+      {/* Configuración de Copias de Seguridad Automáticas */}
+      <div className="bg-card border border-line rounded-xl shadow-card p-6 space-y-4">
+        <h2 className="text-sm font-bold text-hi flex items-center gap-2 pb-2 border-b border-line font-semibold">
+          <HardDrive size={18} className="text-brand" />
+          Programación de Copias Automáticas
+        </h2>
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-6 items-end">
+          {/* Frecuencia */}
+          <div>
+            <label htmlFor="backup-freq" className="block text-xs font-semibold text-hi mb-1.5">Frecuencia de Respaldo</label>
+            <select
+              id="backup-freq"
+              value={backupFrequency}
+              onChange={(e) => setBackupFrequency(e.target.value)}
+              className="w-full px-3 py-2 text-sm bg-card border border-line rounded-md focus:outline-none focus:border-brand cursor-pointer text-mid font-medium"
+            >
+              <option value="off">Desactivado</option>
+              <option value="1d">Cada 1 día (Diario)</option>
+              <option value="3d">Cada 3 días</option>
+              <option value="7d">Cada semana</option>
+            </select>
+          </div>
+
+          {/* Backup en la Nube */}
+          <div className="flex flex-col gap-2">
+            <span className="block text-xs font-semibold text-hi">Respaldo en la Nube</span>
+            <div className="flex items-center gap-2.5 py-1.5">
+              <button
+                type="button"
+                role="switch"
+                aria-checked={backupCloudEnabled}
+                onClick={() => setBackupCloudEnabled(!backupCloudEnabled)}
+                className={`
+                  relative inline-flex h-4 w-7 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent
+                  transition-colors duration-200 focus:outline-none
+                  ${backupCloudEnabled ? 'bg-brand' : 'bg-gray-200'}
+                `}
+              >
+                <span className={`pointer-events-none inline-block h-3 w-3 transform rounded-full bg-white shadow transition duration-200 ${backupCloudEnabled ? 'translate-x-3' : 'translate-x-0'}`} />
+              </button>
+              <span className="text-xs text-mid font-medium">Sincronizar en la Nube</span>
+            </div>
+          </div>
+
+          {/* Proveedor de Nube */}
+          <div>
+            <label htmlFor="backup-provider" className="block text-xs font-semibold text-hi mb-1.5">Proveedor de Nube</label>
+            <select
+              id="backup-provider"
+              value={backupCloudProvider}
+              disabled={!backupCloudEnabled}
+              onChange={(e) => setBackupCloudProvider(e.target.value)}
+              className="w-full px-3 py-2 text-sm bg-card border border-line rounded-md focus:outline-none focus:border-brand cursor-pointer disabled:opacity-50 text-mid font-medium"
+            >
+              <option value="cloudinary">Cloudinary (Nativo - Integrado)</option>
+              <option value="gdrive">Google Drive</option>
+            </select>
+          </div>
+        </div>
+
+        <div className="flex flex-col sm:flex-row sm:justify-between sm:items-center gap-4 pt-2 border-t border-line">
+          <p className="text-[10px] text-muted max-w-xl leading-relaxed">
+            *La rotación automática del servidor local mantendrá activas únicamente las últimas 3 copias para evitar el consumo excesivo de espacio de disco.
+          </p>
+          <button
+            onClick={handleSaveSettings}
+            disabled={savingSettings}
+            className="px-4 py-2 bg-brand hover:bg-brand-hover text-white text-xs font-semibold rounded-md shadow cursor-pointer transition-colors disabled:opacity-50 self-end sm:self-auto"
+          >
+            {savingSettings ? 'Guardando...' : 'Guardar Programación'}
+          </button>
+        </div>
       </div>
 
       {loading ? (

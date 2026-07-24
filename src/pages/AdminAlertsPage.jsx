@@ -9,6 +9,8 @@ import {
   Warning
 } from '@phosphor-icons/react';
 
+const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:3000';
+
 export default function AdminAlertsPage() {
   const [alerts, setAlerts] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -21,7 +23,7 @@ export default function AdminAlertsPage() {
     const token = localStorage.getItem('sa_token');
 
     try {
-      const response = await fetch('http://localhost:3000/api/admin/alerts', {
+      const response = await fetch(`${API_BASE_URL}/api/admin/alerts`, {
         headers: {
           'Authorization': `Bearer ${token}`,
           'Content-Type': 'application/json',
@@ -51,7 +53,7 @@ export default function AdminAlertsPage() {
     const token = localStorage.getItem('sa_token');
 
     try {
-      const response = await fetch(`http://localhost:3000/api/admin/alerts/${id}/resolve`, {
+      const response = await fetch(`${API_BASE_URL}/api/admin/alerts/${id}/resolve`, {
         method: 'PUT',
         headers: {
           'Authorization': `Bearer ${token}`,
