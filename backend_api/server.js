@@ -68,7 +68,16 @@ app.use((req, res, next) => {
 
 // Middlewares generales
 app.use(helmet());
-app.use(cors({ origin: allowedOrigins }));
+app.use(cors({
+  origin: [
+    'https://velion-dashboard-visual.vercel.app', // Tu página en producción
+    'http://localhost:5173', // Tu página local (para cuando programes)
+    'http://localhost:3000'
+  ],
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Tenant-Id'],
+  credentials: true
+}));
 
 // Rate Limiting Básico (100 peticiones por 15 minutos)
 const apiLimiter = rateLimit({
