@@ -29,6 +29,8 @@ dotenv.config();
 
 const app = express();
 
+app.set('trust proxy', 1);
+
 app.get('/ping', (req, res) => res.status(200).send('pong'));
 
 // Aumentar el límite de carga a 50mb para flujos pesados con multimedia (Base64)
