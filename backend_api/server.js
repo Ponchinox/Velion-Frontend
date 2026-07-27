@@ -81,21 +81,21 @@ app.use(cors({
   credentials: true
 }));
 
-// Rate Limiting Básico (100 peticiones por 15 minutos)
-const apiLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000,
-  max: 100, 
-  message: { error: 'Demasiadas peticiones desde esta IP, intenta de nuevo en 15 minutos.' },
-  validate: { xForwardedForHeader: false, trustProxy: false },
-  skip: (req) => {
-    // 🔴 CRÍTICO: No bloquear rutas de webhooks bajo ninguna circunstancia
-    if (req.originalUrl.includes('/api/stripe/webhook') || req.originalUrl.includes('/api/whatsapp/webhook')) {
-      return true;
-    }
-    return false;
-  }
-});
-app.use('/api', apiLimiter);
+// Rate Limiting Básico (Desactivado temporalmente para producción)
+// const apiLimiter = rateLimit({
+//   windowMs: 15 * 60 * 1000,
+//   max: 100, 
+//   message: { error: 'Demasiadas peticiones desde esta IP, intenta de nuevo en 15 minutos.' },
+//   validate: { xForwardedForHeader: false, trustProxy: false },
+//   skip: (req) => {
+//     // 🔴 CRÍTICO: No bloquear rutas de webhooks bajo ninguna circunstancia
+//     if (req.originalUrl.includes('/api/stripe/webhook') || req.originalUrl.includes('/api/whatsapp/webhook')) {
+//       return true;
+//     }
+//     return false;
+//   }
+// });
+// app.use('/api', apiLimiter);
 
 // Webhook de Stripe: Requiere el body crudo (Buffer) para verificar firmas
 app.use('/api/stripe/webhook', express.raw({ type: 'application/json' }));
