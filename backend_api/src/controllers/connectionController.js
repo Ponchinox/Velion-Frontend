@@ -118,6 +118,11 @@ export async function getQrCode(req, res) {
       // Si falla o no existe, continuamos con el flujo normal de generación de QR
     }
 
+    const rawWebhookUrl = process.env.WEBHOOK_URL || 'https://velion-backend-a7vw.onrender.com/api/whatsapp/webhook';
+    const cleanApiKey = (process.env.EVOLUTION_API_KEY || '').trim();
+    const apiKeyParam = cleanApiKey ? `?apikey=${cleanApiKey}` : '';
+    const webhookUrl = rawWebhookUrl.includes('?') ? `${rawWebhookUrl}&apikey=${cleanApiKey}` : `${rawWebhookUrl}${apiKeyParam}`;
+
     // 1. Asegurar la creación previa de la instancia
     try {
       await axios.post(
@@ -126,6 +131,15 @@ export async function getQrCode(req, res) {
           instanceName,
           qrcode: true,
           integration: 'WHATSAPP-BAILEYS',
+          webhook: {
+            enabled: true,
+            url: webhookUrl,
+            byEvents: false,
+            webhookByEvents: false,
+            events: [
+              "MESSAGES_UPSERT"
+            ]
+          }
         },
         getEvoHeaders()
       );
@@ -142,13 +156,13 @@ export async function getQrCode(req, res) {
 
     // 1.5. Configurar el webhook en Evolution API
     try {
-      const webhookUrl = process.env.WEBHOOK_URL || 'https://velion-backend-a7vw.onrender.com/api/whatsapp/webhook';
       await axios.post(
         `${evoUrl}/webhook/set/${instanceName}`,
         {
           webhook: {
             enabled: true,
             url: webhookUrl,
+            byEvents: false,
             webhookByEvents: false,
             events: [
               "MESSAGES_UPSERT"

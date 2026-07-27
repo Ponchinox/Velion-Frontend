@@ -169,6 +169,11 @@ export async function connectDevice(req, res) {
   const instanceName = getEvoInstanceName(tenantId);
   const evoUrl = process.env.EVOLUTION_API_URL || 'http://localhost:8080';
 
+  const rawWebhookUrl = process.env.WEBHOOK_URL || 'https://velion-backend-a7vw.onrender.com/api/whatsapp/webhook';
+  const cleanApiKey = (process.env.EVOLUTION_API_KEY || '').trim();
+  const apiKeyParam = cleanApiKey ? `?apikey=${cleanApiKey}` : '';
+  const webhookUrl = rawWebhookUrl.includes('?') ? `${rawWebhookUrl}&apikey=${cleanApiKey}` : `${rawWebhookUrl}${apiKeyParam}`;
+
   // 1. Asegurar la creación previa de la instancia
   try {
     await axios.post(
@@ -177,6 +182,15 @@ export async function connectDevice(req, res) {
         instanceName,
         qrcode: true,
         integration: 'WHATSAPP-BAILEYS',
+        webhook: {
+          enabled: true,
+          url: webhookUrl,
+          byEvents: false,
+          webhookByEvents: false,
+          events: [
+            "MESSAGES_UPSERT"
+          ]
+        }
       },
       getEvoHeaders()
     );
@@ -195,11 +209,6 @@ export async function connectDevice(req, res) {
 
   // 1.5. Configurar el webhook en Evolution API para que los mensajes lleguen al backend
   try {
-    const rawWebhookUrl = process.env.WEBHOOK_URL || 'https://velion-backend-a7vw.onrender.com/api/whatsapp/webhook';
-    const cleanApiKey = (process.env.EVOLUTION_API_KEY || '').trim();
-    const apiKeyParam = cleanApiKey ? `?apikey=${cleanApiKey}` : '';
-    const webhookUrl = rawWebhookUrl.includes('?') ? `${rawWebhookUrl}&apikey=${cleanApiKey}` : `${rawWebhookUrl}${apiKeyParam}`;
-
     console.log(`🔌 [Evolution API] Sobrescribiendo webhook en: ${webhookUrl} para la instancia: ${instanceName}`);
     await axios.post(
       `${evoUrl}/webhook/set/${instanceName}`,
@@ -210,6 +219,7 @@ export async function connectDevice(req, res) {
           headers: {
             apikey: cleanApiKey
           },
+          byEvents: false,
           webhookByEvents: false,
           events: [
             "MESSAGES_UPSERT"
