@@ -29,7 +29,7 @@ dotenv.config();
 
 const app = express();
 
-app.set('trust proxy', 1);
+app.set('trust proxy', true);
 
 app.get('/ping', (req, res) => res.status(200).send('pong'));
 
@@ -86,6 +86,7 @@ const apiLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 100, 
   message: { error: 'Demasiadas peticiones desde esta IP, intenta de nuevo en 15 minutos.' },
+  validate: { xForwardedForHeader: false, trustProxy: false },
   skip: (req) => {
     // 🔴 CRÍTICO: No bloquear rutas de webhooks bajo ninguna circunstancia
     if (req.originalUrl.includes('/api/stripe/webhook') || req.originalUrl.includes('/api/whatsapp/webhook')) {
