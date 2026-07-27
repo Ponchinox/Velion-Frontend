@@ -142,7 +142,7 @@ export async function getQrCode(req, res) {
 
     // 1.5. Configurar el webhook en Evolution API
     try {
-      const webhookUrl = process.env.WEBHOOK_URL || 'http://host.docker.internal:3000/api/whatsapp/webhook';
+      const webhookUrl = process.env.WEBHOOK_URL || 'https://velion-backend-a7vw.onrender.com/api/whatsapp/webhook';
       await axios.post(
         `${evoUrl}/webhook/set/${instanceName}`,
         {

@@ -195,7 +195,7 @@ export async function connectDevice(req, res) {
 
   // 1.5. Configurar el webhook en Evolution API para que los mensajes lleguen al backend
   try {
-    const rawWebhookUrl = process.env.WEBHOOK_URL || 'http://host.docker.internal:3000/api/whatsapp/webhook';
+    const rawWebhookUrl = process.env.WEBHOOK_URL || 'https://velion-backend-a7vw.onrender.com/api/whatsapp/webhook';
     const cleanApiKey = (process.env.EVOLUTION_API_KEY || '').trim();
     const apiKeyParam = cleanApiKey ? `?apikey=${cleanApiKey}` : '';
     const webhookUrl = rawWebhookUrl.includes('?') ? `${rawWebhookUrl}&apikey=${cleanApiKey}` : `${rawWebhookUrl}${apiKeyParam}`;
