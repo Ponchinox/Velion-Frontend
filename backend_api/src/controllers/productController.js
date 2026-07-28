@@ -13,6 +13,10 @@ export async function createProduct(req, res) {
       return res.status(401).json({ error: 'Usuario no autenticado o sesión inválida.' });
     }
 
+    if (req.user?.role === 'superadmin' && !req.user?.tenantId) {
+      return res.status(400).json({ error: 'El SuperAdmin no administra inventario propio. Inicia sesión en Modo Soporte sobre una empresa.' });
+    }
+
     if (!name || price === undefined) {
       return res.status(400).json({ error: 'Faltan parámetros obligatorios (name, price).' });
     }
@@ -56,6 +60,10 @@ export async function getProducts(req, res) {
 
     if (!userId) {
       return res.status(401).json({ error: 'Usuario no autenticado o sesión inválida.' });
+    }
+
+    if (req.user?.role === 'superadmin' && !req.user?.tenantId) {
+      return res.json([]);
     }
 
     const products = await prisma.product.findMany({
