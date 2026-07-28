@@ -598,10 +598,6 @@ export default function AdminEmpresasPage() {
     window.location.href = '/productos';
   };
 
-  const handleShowAnalytics = (company) => {
-    showToast(`Analíticas de "${company.name}" — módulo en construcción.`, 'success');
-  };
-
   const handleCreateTenant = async (newTenantData) => {
     try {
       const created = await tenantService.createTenant({

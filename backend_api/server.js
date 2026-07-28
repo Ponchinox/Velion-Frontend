@@ -20,7 +20,6 @@ import settingsRoutes from './src/routes/settingsRoutes.js';
 import connectionRoutes from './src/routes/connectionRoutes.js';
 import userRoutes from './src/routes/userRoutes.js';
 import tenantDashboardRoutes from './src/routes/tenantDashboardRoutes.js';
-import stripeRoutes from './src/routes/stripeRoutes.js';
 import planRoutes from './src/routes/planRoutes.js';
 import { initBackupScheduler } from './src/services/backupScheduler.js';
 
@@ -97,9 +96,6 @@ app.use(cors({
 // });
 // app.use('/api', apiLimiter);
 
-// Webhook de Stripe: Requiere el body crudo (Buffer) para verificar firmas
-app.use('/api/stripe/webhook', express.raw({ type: 'application/json' }));
-
 // Rutas de la API
 app.use('/api/auth', authRoutes);
 app.use('/api/contacts', contactRoutes);
@@ -115,7 +111,6 @@ app.use('/api/settings', settingsRoutes);
 app.use('/api/connections', connectionRoutes);
 app.use('/api/users', userRoutes);
 app.use('/api/tenant/dashboard', tenantDashboardRoutes);
-app.use('/api/stripe', stripeRoutes);
 app.use('/api/plans', planRoutes);
 
 // Ruta de comprobación de estado (Healthcheck + DB Test)

@@ -7,10 +7,6 @@ import { createContext, useContext, useEffect, useState } from 'react';
    La sesión persiste en localStorage bajo la clave "sa_token"
 ───────────────────────────────────────────────────────────── */
 
-// Importaciones reales de Firebase (comentadas hasta reactivar cuota):
-// import { onAuthStateChanged, signOut as firebaseSignOut } from 'firebase/auth';
-// import { auth } from '../firebase';
-
 const STORAGE_KEY = 'sa_mock_user';
 
 /* ── Helpers de persistencia ── */
