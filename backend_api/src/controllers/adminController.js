@@ -470,16 +470,53 @@ export async function saveGlobalConfig(req, res) {
  */
 export async function getGlobalStats(req, res) {
   try {
-    const totalTenants = await prisma.tenant.count();
-    const activeTenants = await prisma.tenant.count({ where: { active: true } });
+    // ── Rangos temporales ──────────────────────────────────────────────
+    const now = new Date();
+
+    const todayStart = new Date(now);
+    todayStart.setHours(0, 0, 0, 0);
+
+    const yesterdayStart = new Date(todayStart);
+    yesterdayStart.setDate(yesterdayStart.getDate() - 1);
+    const yesterdayEnd = new Date(todayStart); // = inicio de hoy (exclusive)
+
+    // ── Conteos de Tenants ─────────────────────────────────────────────
+    const totalTenants   = await prisma.tenant.count();
+    const activeTenants  = await prisma.tenant.count({ where: { active: true } });
     const suspendedTenants = totalTenants - activeTenants;
 
-    const totalUsers = await prisma.user.count();
+    // ── Usuarios y Productos ───────────────────────────────────────────
+    const totalUsers    = await prisma.user.count();
     const totalProducts = await prisma.product.count();
 
+    // ── Conversaciones (Chats) ─────────────────────────────────────────
+    // "Activas hoy" = chats donde se recibió al menos un mensaje hoy
+    const chatsToday = await prisma.chat.count({
+      where: {
+        messages: {
+          some: { createdAt: { gte: todayStart } }
+        }
+      }
+    });
+    const chatsYesterday = await prisma.chat.count({
+      where: {
+        messages: {
+          some: {
+            createdAt: { gte: yesterdayStart, lt: yesterdayEnd }
+          }
+        }
+      }
+    });
     const totalChats = await prisma.chat.count();
+
+    // ── Mensajes ───────────────────────────────────────────────────────
+    const msgsToday     = await prisma.message.count({ where: { createdAt: { gte: todayStart } } });
+    const msgsYesterday = await prisma.message.count({
+      where: { createdAt: { gte: yesterdayStart, lt: yesterdayEnd } }
+    });
     const totalMessages = await prisma.message.count();
 
+    // ── Estado de IA ───────────────────────────────────────────────────
     const aiStatusConfig = await prisma.systemConfig.findUnique({
       where: { key: 'aiStatus' }
     });
@@ -487,8 +524,8 @@ export async function getGlobalStats(req, res) {
 
     return res.json({
       tenants: {
-        total: totalTenants,
-        active: activeTenants,
+        total:     totalTenants,
+        active:    activeTenants,
         suspended: suspendedTenants,
       },
       users: {
@@ -498,10 +535,16 @@ export async function getGlobalStats(req, res) {
         total: totalProducts,
       },
       chats: {
-        total: totalChats,
+        total:     totalChats,
+        today:     chatsToday,
+        yesterday: chatsYesterday,
+        delta:     chatsToday - chatsYesterday,  // positivo = más que ayer
       },
       messages: {
-        total: totalMessages,
+        total:     totalMessages,
+        today:     msgsToday,
+        yesterday: msgsYesterday,
+        delta:     msgsToday - msgsYesterday,    // positivo = más que ayer
       },
       aiStatus,
     });
@@ -510,6 +553,82 @@ export async function getGlobalStats(req, res) {
     return res.status(500).json({ error: 'Error al calcular las estadísticas globales del sistema.' });
   }
 }
+
+/**
+ * Comprueba el estado real de los servicios del sistema:
+ * 1. Base de datos (Prisma ping)
+ * 2. API Gateway WhatsApp (Evolution API — ping desde SystemConfig)
+ * 3. Almacenamiento Cloudinary (variable de entorno)
+ * 4. Backend propio (siempre OK si esta función responde)
+ */
+export async function getSystemHealth(req, res) {
+  const checks = [];
+
+  // ── 1. Base de Datos ───────────────────────────────────────────────
+  const dbStart = Date.now();
+  try {
+    await prisma.$queryRaw`SELECT 1`;
+    checks.push({ label: 'Base de Datos', ok: true, status: 'Operacional', latencyMs: Date.now() - dbStart });
+  } catch {
+    checks.push({ label: 'Base de Datos', ok: false, status: 'Error de conexión', latencyMs: Date.now() - dbStart });
+  }
+
+  // ── 2. API Gateway (Evolution API) ────────────────────────────────
+  try {
+    const [urlRow, keyRow] = await Promise.all([
+      prisma.systemConfig.findUnique({ where: { key: 'evoUrl' } }),
+      prisma.systemConfig.findUnique({ where: { key: 'evoApiKey' } }),
+    ]);
+    const gatewayUrl = urlRow?.value;
+
+    if (!gatewayUrl) {
+      checks.push({ label: 'API Gateway (WhatsApp)', ok: false, status: 'Sin configurar', latencyMs: 0 });
+    } else {
+      const gwStart = Date.now();
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 4000);
+      try {
+        const r = await fetch(gatewayUrl, {
+          method: 'GET',
+          headers: keyRow?.value ? { apikey: keyRow.value } : {},
+          signal: controller.signal,
+        });
+        clearTimeout(timeout);
+        checks.push({
+          label: 'API Gateway (WhatsApp)',
+          ok: r.ok || r.status < 500,
+          status: (r.ok || r.status < 500) ? 'Operacional' : `HTTP ${r.status}`,
+          latencyMs: Date.now() - gwStart,
+        });
+      } catch (e) {
+        clearTimeout(timeout);
+        checks.push({
+          label: 'API Gateway (WhatsApp)',
+          ok: false,
+          status: e.name === 'AbortError' ? 'Timeout (>4s)' : 'Sin respuesta',
+          latencyMs: Date.now() - gwStart,
+        });
+      }
+    }
+  } catch {
+    checks.push({ label: 'API Gateway (WhatsApp)', ok: false, status: 'Error interno', latencyMs: 0 });
+  }
+
+  // ── 3. Almacenamiento (Cloudinary) ────────────────────────────────
+  const cloudOk = !!(process.env.CLOUDINARY_CLOUD_NAME && process.env.CLOUDINARY_API_KEY && process.env.CLOUDINARY_API_SECRET);
+  checks.push({
+    label: 'Almacenamiento (Cloudinary)',
+    ok: cloudOk,
+    status: cloudOk ? 'Configurado' : 'Credenciales no configuradas',
+    latencyMs: 0,
+  });
+
+  // ── 4. Backend (este propio servidor) ─────────────────────────────
+  checks.push({ label: 'Backend API (Render)', ok: true, status: 'Operacional', latencyMs: 0 });
+
+  return res.json({ services: checks, checkedAt: new Date().toISOString() });
+}
+
 
 /**
  * Restablece el estado global de los servidores de IA a 'OPERATIVE'

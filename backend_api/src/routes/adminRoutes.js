@@ -15,6 +15,7 @@ import {
   getRecentActivity,
   resetAiStatus,
   checkGatewayHealth,
+  getSystemHealth,
   getAlerts,
   resolveAlert,
   getBackups,
@@ -33,6 +34,7 @@ router.use(adminMiddleware);
 // Stats
 router.get('/stats', getGlobalStats);
 router.get('/activity', getRecentActivity);
+router.get('/system-health', getSystemHealth);
 router.post('/ai-status/reset', resetAiStatus);
 router.get('/health/gateway/:gateway', checkGatewayHealth);
 

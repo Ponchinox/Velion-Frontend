@@ -1,5 +1,4 @@
 import { useState, useEffect } from 'react';
-import { useNavigate } from 'react-router-dom';
 import MetricCard from '../components/ui/MetricCard';
 import {
   Buildings,
@@ -7,20 +6,26 @@ import {
   Package,
   ChatTeardrop,
   ArrowUpRight,
+  ArrowDownRight,
   Clock,
   WarningCircle,
   ArrowsClockwise,
   CheckCircle,
+  Database,
+  Globe,
+  CloudArrowUp,
+  Cpu,
 } from '@phosphor-icons/react';
 
 const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:3000';
 
-const SERVICES = [
-  { label: 'API Gateway',        status: 'Operacional', pct: 99.9, ok: true  },
-  { label: 'Base de Datos',      status: 'Operacional', pct: 100,  ok: true  },
-  { label: 'Servicio de Correo', status: 'Operacional', pct: 100,  ok: true  },
-  { label: 'Almacenamiento',     status: 'Operacional', pct: 100,  ok: true  },
-];
+// Icono por label de servicio
+const SERVICE_ICONS = {
+  'Base de Datos':               Database,
+  'API Gateway (WhatsApp)':      Globe,
+  'Almacenamiento (Cloudinary)': CloudArrowUp,
+  'Backend API (Render)':        Cpu,
+};
 
 // Formatea una fecha ISO en texto relativo legible
 function timeAgo(dateStr) {
@@ -33,12 +38,20 @@ function timeAgo(dateStr) {
   return `hace ${Math.floor(hrs / 24)} d`;
 }
 
+// Formatea el delta respecto a ayer
+function formatDelta(delta) {
+  if (delta > 0)  return `+${delta} más que ayer`;
+  if (delta < 0)  return `${delta} menos que ayer`;
+  return 'igual que ayer';
+}
+
 export default function DashboardPage() {
-  const navigate = useNavigate();
-  const [stats, setStats] = useState(null);
-  const [loading, setLoading] = useState(true);
-  const [errorMsg, setErrorMsg] = useState('');
-  const [activity, setActivity] = useState([]);
+  const [stats, setStats]             = useState(null);
+  const [loading, setLoading]         = useState(true);
+  const [errorMsg, setErrorMsg]       = useState('');
+  const [activity, setActivity]       = useState([]);
+  const [systemHealth, setSystemHealth] = useState(null);
+  const [healthLoading, setHealthLoading] = useState(true);
 
   const token = localStorage.getItem('sa_token');
   const authHeaders = {
@@ -73,49 +86,25 @@ export default function DashboardPage() {
     }
   };
 
+  const fetchSystemHealth = async () => {
+    setHealthLoading(true);
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/admin/system-health`, { headers: authHeaders });
+      if (res.ok) {
+        const data = await res.json();
+        setSystemHealth(data);
+      }
+    } catch (err) {
+      console.error('[system-health]', err);
+    } finally {
+      setHealthLoading(false);
+    }
+  };
+
   useEffect(() => {
     fetchStats();
+    fetchSystemHealth();
   }, []);
-
-  // Tarjetas de Métricas dinámicas en base a PostgreSQL
-  const metrics = stats ? [
-    {
-      id: 'metric-companies',
-      title: 'Empresas Registradas',
-      value: stats.tenants.total.toString(),
-      change: `${stats.tenants.active} activas`,
-      changeType: 'up',
-      description: `${stats.tenants.suspended} suspendidas`,
-      icon: Buildings,
-    },
-    {
-      id: 'metric-users',
-      title: 'Usuarios Totales',
-      value: stats.users.total.toLocaleString(),
-      change: '+100% en vivo',
-      changeType: 'up',
-      description: 'Usuarios en la plataforma',
-      icon: Users,
-    },
-    {
-      id: 'metric-products',
-      title: 'Productos Registrados',
-      value: stats.products.total.toLocaleString(),
-      change: 'Inventario Global',
-      changeType: 'up',
-      description: 'Catálogo de tenants',
-      icon: Package,
-    },
-    {
-      id: 'metric-chats',
-      title: 'Conversaciones Activas',
-      value: stats.chats.total.toLocaleString(),
-      change: `${stats.messages.total.toLocaleString()} mensajes`,
-      changeType: 'up',
-      description: 'Tráfico del Live Chat',
-      icon: ChatTeardrop,
-    },
-  ] : [];
 
   const handleResetAiStatus = async () => {
     try {
@@ -130,6 +119,46 @@ export default function DashboardPage() {
       console.error(err);
     }
   };
+
+  // Tarjetas de Métricas dinámicas
+  const metrics = stats ? [
+    {
+      id: 'metric-companies',
+      title: 'Empresas Registradas',
+      value: stats.tenants.total.toString(),
+      change: `${stats.tenants.active} activas`,
+      changeType: 'up',
+      description: `${stats.tenants.suspended} suspendidas`,
+      icon: Buildings,
+    },
+    {
+      id: 'metric-users',
+      title: 'Usuarios Totales',
+      value: stats.users.total.toLocaleString(),
+      change: `${stats.tenants.total} empresas`,
+      changeType: 'up',
+      description: 'Administradores y agentes',
+      icon: Users,
+    },
+    {
+      id: 'metric-products',
+      title: 'Productos Registrados',
+      value: stats.products.total.toLocaleString(),
+      change: 'Inventario Global',
+      changeType: 'up',
+      description: 'Catálogo de todos los tenants',
+      icon: Package,
+    },
+    {
+      id: 'metric-chats',
+      title: 'Conversaciones Hoy',
+      value: stats.chats.today.toLocaleString(),
+      change: formatDelta(stats.chats.delta),
+      changeType: stats.chats.delta >= 0 ? 'up' : 'down',
+      description: `${stats.chats.total.toLocaleString()} conversaciones en total`,
+      icon: ChatTeardrop,
+    },
+  ] : [];
 
   return (
     <section aria-labelledby="dashboard-heading" className="space-y-6">
@@ -194,7 +223,7 @@ export default function DashboardPage() {
             <p className="text-xs text-lo mt-1">{errorMsg}</p>
           </div>
           <button
-            onClick={fetchStats}
+            onClick={() => { fetchStats(); fetchSystemHealth(); }}
             className="inline-flex items-center gap-2 px-4 py-2 text-xs font-semibold bg-brand text-white hover:bg-brand-hover rounded-md shadow transition-colors cursor-pointer"
           >
             <ArrowsClockwise size={14} />
@@ -210,6 +239,38 @@ export default function DashboardPage() {
           aria-label="Métricas principales"
         >
           {metrics.map(m => <MetricCard key={m.id} {...m} />)}
+        </div>
+      )}
+
+      {/* Cuadro de mensajes de hoy vs ayer */}
+      {stats && !loading && (
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+          {/* Mensajes hoy */}
+          <div className="bg-card border border-line rounded-xl p-5 shadow-card flex flex-col gap-2">
+            <p className="text-xs font-semibold text-lo uppercase tracking-wider">Mensajes Hoy</p>
+            <p className="text-3xl font-bold text-hi font-mono">{stats.messages.today.toLocaleString()}</p>
+            <div className={`flex items-center gap-1 text-xs font-semibold ${stats.messages.delta >= 0 ? 'text-emerald-600' : 'text-danger'}`}>
+              {stats.messages.delta >= 0
+                ? <ArrowUpRight size={14} weight="bold" />
+                : <ArrowDownRight size={14} weight="bold" />}
+              {formatDelta(stats.messages.delta)}
+            </div>
+            <p className="text-xs text-lo">{stats.messages.total.toLocaleString()} mensajes históricos totales</p>
+          </div>
+
+          {/* Conversaciones ayer */}
+          <div className="bg-card border border-line rounded-xl p-5 shadow-card flex flex-col gap-2">
+            <p className="text-xs font-semibold text-lo uppercase tracking-wider">Conversaciones Ayer</p>
+            <p className="text-3xl font-bold text-hi font-mono">{stats.chats.yesterday.toLocaleString()}</p>
+            <p className="text-xs text-lo">Para comparar con el día de hoy</p>
+          </div>
+
+          {/* Mensajes ayer */}
+          <div className="bg-card border border-line rounded-xl p-5 shadow-card flex flex-col gap-2">
+            <p className="text-xs font-semibold text-lo uppercase tracking-wider">Mensajes Ayer</p>
+            <p className="text-3xl font-bold text-hi font-mono">{stats.messages.yesterday.toLocaleString()}</p>
+            <p className="text-xs text-lo">Referencia del día anterior</p>
+          </div>
         </div>
       )}
 
@@ -253,43 +314,71 @@ export default function DashboardPage() {
           )}
         </div>
 
-        {/* System status */}
+        {/* System status — REAL */}
         <div className="bg-card border border-line rounded-lg shadow-card p-6" role="region" aria-labelledby="status-heading">
-          <h2 id="status-heading" className="text-sm font-bold text-hi uppercase tracking-wide mb-5">
-            Estado del Sistema
-          </h2>
-
-          <div className="space-y-5">
-            {SERVICES.map(svc => (
-              <div key={svc.label}>
-                <div className="flex items-center justify-between mb-2">
-                  <span className="text-sm font-medium text-mid">{svc.label}</span>
-                  <span className={`
-                    inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full border text-xs font-semibold
-                    ${svc.ok
-                      ? 'bg-green-50 border-green-200 text-success'
-                      : 'bg-orange-50 border-orange-200 text-warning'
-                    }
-                  `}>
-                    <span className={`w-1.5 h-1.5 rounded-full ${svc.ok ? 'bg-success' : 'bg-warning'}`} aria-hidden="true" />
-                    {svc.status}
-                  </span>
-                </div>
-                <div
-                  className="w-full h-2 bg-app rounded-full overflow-hidden border border-line"
-                  role="progressbar"
-                  aria-valuenow={svc.pct} aria-valuemin={0} aria-valuemax={100}
-                  aria-label={`${svc.label}: ${svc.pct}%`}
-                >
-                  <div
-                    className={`h-full rounded-full transition-all duration-500 ${svc.ok ? 'bg-brand' : 'bg-warning'}`}
-                    style={{ width: `${svc.pct}%` }}
-                  />
-                </div>
-                <p className="text-xs text-muted mt-1 text-right font-mono">{svc.pct}%</p>
-              </div>
-            ))}
+          <div className="flex items-center justify-between mb-5">
+            <h2 id="status-heading" className="text-sm font-bold text-hi uppercase tracking-wide">
+              Estado del Sistema
+            </h2>
+            <button
+              onClick={fetchSystemHealth}
+              disabled={healthLoading}
+              className="flex items-center gap-1.5 text-xs text-lo hover:text-brand transition-colors cursor-pointer disabled:opacity-50"
+              title="Verificar servicios ahora"
+            >
+              <ArrowsClockwise size={13} className={healthLoading ? 'animate-spin' : ''} />
+              {healthLoading ? 'Verificando...' : 'Actualizar'}
+            </button>
           </div>
+
+          {healthLoading && !systemHealth ? (
+            <div className="space-y-4">
+              {[1, 2, 3, 4].map(i => (
+                <div key={i} className="animate-pulse flex items-center justify-between">
+                  <div className="h-3.5 bg-app rounded w-32" />
+                  <div className="h-5 bg-app rounded-full w-20" />
+                </div>
+              ))}
+            </div>
+          ) : systemHealth ? (
+            <div className="space-y-4">
+              {systemHealth.services.map(svc => {
+                const Icon = SERVICE_ICONS[svc.label] || Cpu;
+                return (
+                  <div key={svc.label} className="flex items-center justify-between gap-3">
+                    <div className="flex items-center gap-2.5 min-w-0">
+                      <div className={`w-7 h-7 rounded-lg flex items-center justify-center flex-shrink-0 ${svc.ok ? 'bg-emerald-50' : 'bg-red-50'}`}>
+                        <Icon size={14} className={svc.ok ? 'text-emerald-600' : 'text-danger'} />
+                      </div>
+                      <div className="min-w-0">
+                        <p className="text-sm font-medium text-mid truncate">{svc.label}</p>
+                        {svc.latencyMs > 0 && (
+                          <p className="text-2xs text-muted font-mono">{svc.latencyMs}ms</p>
+                        )}
+                      </div>
+                    </div>
+                    <span className={`
+                      inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full border text-xs font-semibold flex-shrink-0
+                      ${svc.ok
+                        ? 'bg-green-50 border-green-200 text-success'
+                        : 'bg-red-50 border-red-200 text-danger'
+                      }
+                    `}>
+                      <span className={`w-1.5 h-1.5 rounded-full ${svc.ok ? 'bg-success' : 'bg-danger animate-pulse'}`} aria-hidden="true" />
+                      {svc.status}
+                    </span>
+                  </div>
+                );
+              })}
+              {systemHealth.checkedAt && (
+                <p className="text-2xs text-muted text-right pt-1 border-t border-line mt-3">
+                  Verificado {timeAgo(systemHealth.checkedAt)}
+                </p>
+              )}
+            </div>
+          ) : (
+            <p className="text-xs text-lo text-center py-6">No se pudo obtener el estado del sistema.</p>
+          )}
         </div>
       </div>
     </section>
