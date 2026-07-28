@@ -305,21 +305,21 @@ export async function createPlan(req, res) {
     if (!planData.name || planData.price === undefined) {
       return res.status(400).json({ error: 'Nombre y precio son requeridos.' });
     }
-    if (!planData.stripePriceId) {
-      return res.status(400).json({ error: 'El stripePriceId es estrictamente obligatorio.' });
-    }
 
     const newPlan = await prisma.plan.create({
       data: {
-        name:        planData.name,
-        price:       Number(planData.price),
-        stripePriceId: planData.stripePriceId,
-        connLimit:   Number(planData.connLimit  || 1),
-        msgLimit:    Number(planData.msgLimit   || 1000),
-        flowBuilder: Boolean(planData.flowBuilder),
-        aiBrain:     Boolean(planData.aiBrain),
-        popular:     Boolean(planData.popular),
-        features:    planData.features || [],
+        name:                planData.name,
+        price:               Number(planData.price),
+        connLimit:           Number(planData.connLimit  || 1),
+        msgLimit:            Number(planData.msgLimit   || 1000),
+        maxProducts:         Number(planData.maxProducts ?? 10),
+        hasCampaigns:        Boolean(planData.hasCampaigns),
+        hasAutomations:      Boolean(planData.hasAutomations),
+        hasAdvancedMarketing: Boolean(planData.hasAdvancedMarketing),
+        flowBuilder:         Boolean(planData.flowBuilder),
+        aiBrain:             Boolean(planData.aiBrain),
+        popular:             Boolean(planData.popular),
+        features:            planData.features || [],
       },
     });
 
@@ -338,22 +338,21 @@ export async function updatePlan(req, res) {
     const { id } = req.params;
     const planData = req.body;
 
-    if (!planData.stripePriceId) {
-      return res.status(400).json({ error: 'El stripePriceId es estrictamente obligatorio.' });
-    }
-
     const updated = await prisma.plan.update({
       where: { id },
       data: {
-        name:        planData.name,
-        price:       Number(planData.price),
-        stripePriceId: planData.stripePriceId,
-        connLimit:   Number(planData.connLimit),
-        msgLimit:    Number(planData.msgLimit),
-        flowBuilder: Boolean(planData.flowBuilder),
-        aiBrain:     Boolean(planData.aiBrain),
-        popular:     Boolean(planData.popular),
-        features:    planData.features,
+        name:                planData.name,
+        price:               Number(planData.price),
+        connLimit:           Number(planData.connLimit),
+        msgLimit:            Number(planData.msgLimit),
+        maxProducts:         Number(planData.maxProducts ?? 10),
+        hasCampaigns:        Boolean(planData.hasCampaigns),
+        hasAutomations:      Boolean(planData.hasAutomations),
+        hasAdvancedMarketing: Boolean(planData.hasAdvancedMarketing),
+        flowBuilder:         Boolean(planData.flowBuilder),
+        aiBrain:             Boolean(planData.aiBrain),
+        popular:             Boolean(planData.popular),
+        features:            planData.features,
       },
     });
 

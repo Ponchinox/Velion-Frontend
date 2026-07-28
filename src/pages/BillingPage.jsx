@@ -1,14 +1,21 @@
 import { useState, useEffect } from 'react';
 import { useAuth } from '../context/AuthContext';
 import { apiClient } from '../services/api';
-import { Cardholder, Check, CreditCard, Sparkle, WarningCircle, CircleNotch } from '@phosphor-icons/react';
+import { Cardholder, Check, Sparkle, WarningCircle, CircleNotch, X, Copy, QrCode, ArrowSquareOut } from '@phosphor-icons/react';
+
+// Variables estáticas para fácil modificación
+const YAPE_NUMBER = '953789363';
+const SUPPORT_WHATSAPP = '991535502';
 
 export default function BillingPage() {
   const { user } = useAuth();
   const [plans, setPlans] = useState([]);
   const [isLoading, setIsLoading] = useState(true);
-  const [subscribeLoading, setSubscribeLoading] = useState(null); // Guardar el stripePriceId que está cargando
   const [error, setError] = useState('');
+  
+  // Estado para el modal de Yape
+  const [selectedPlanModal, setSelectedPlanModal] = useState(null);
+  const [copiedNumber, setCopiedNumber] = useState(false);
 
   // Identificar el plan actual
   const currentPlan = user?.plan || 'Básico';
@@ -17,7 +24,6 @@ export default function BillingPage() {
   const loadPlans = async () => {
     setIsLoading(true);
     try {
-      // Hacer la llamada al endpoint público
       const data = await apiClient('/plans');
       setPlans(data || []);
     } catch (err) {
@@ -32,26 +38,27 @@ export default function BillingPage() {
     loadPlans();
   }, []);
 
-  const handleSubscribe = async (stripePriceId) => {
-    setSubscribeLoading(stripePriceId);
-    setError('');
-    try {
-      // Llamar al endpoint pasándole el stripePriceId seleccionado
-      const response = await apiClient('/stripe/create-checkout', {
-        method: 'POST',
-        body: { priceId: stripePriceId }
-      });
-      if (response && response.url) {
-        // Redirigir a Stripe Checkout
-        window.location.href = response.url;
-      } else {
-        throw new Error('No se recibió la URL de pago de Stripe.');
-      }
-    } catch (err) {
-      console.error('Error al iniciar el checkout de Stripe:', err);
-      setError(err.message || 'Error al conectar con la pasarela de pagos.');
-      setSubscribeLoading(null);
-    }
+  const handleOpenModal = (plan) => {
+    setSelectedPlanModal(plan);
+    setCopiedNumber(false);
+  };
+
+  const handleCloseModal = () => {
+    setSelectedPlanModal(null);
+    setCopiedNumber(false);
+  };
+
+  const handleCopyYapeNumber = () => {
+    navigator.clipboard.writeText(YAPE_NUMBER);
+    setCopiedNumber(true);
+    setTimeout(() => setCopiedNumber(false), 2000);
+  };
+
+  // Construir el enlace directo a WhatsApp
+  const getWhatsAppLink = () => {
+    if (!selectedPlanModal) return '#';
+    const message = `Hola, acabo de realizar el pago por Yape de S/ ${selectedPlanModal.price} para activar el Plan ${selectedPlanModal.name}. Adjunto la captura del comprobante.`;
+    return `https://wa.me/51${SUPPORT_WHATSAPP}?text=${encodeURIComponent(message)}`;
   };
 
   return (
@@ -96,7 +103,6 @@ export default function BillingPage() {
         <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-8 pt-4">
           {plans.map((plan) => {
             const isCurrent = currentPlan.toLowerCase() === plan.name.toLowerCase();
-            const isLoadingThis = subscribeLoading === plan.stripePriceId;
 
             return (
               <div
@@ -123,7 +129,7 @@ export default function BillingPage() {
                       Plan {plan.name}
                     </p>
                     <div className="flex items-baseline gap-1 mt-2">
-                      <span className="text-4xl font-extrabold text-hi">${plan.price}</span>
+                      <span className="text-4xl font-extrabold text-hi">S/ {plan.price}</span>
                       <span className="text-sm text-lo font-semibold">/ mensual</span>
                     </div>
                     <p className="text-sm text-lo mt-2">Acceso a todas las características del paquete.</p>
@@ -153,36 +159,109 @@ export default function BillingPage() {
                     </button>
                   ) : (
                     <button
-                      onClick={() => handleSubscribe(plan.stripePriceId)}
-                      disabled={subscribeLoading !== null}
+                      onClick={() => handleOpenModal(plan)}
                       className={`
                         w-full flex items-center justify-center gap-2
                         py-3 px-4 rounded-lg font-semibold text-sm
                         transition-all duration-fast cursor-pointer active:scale-[0.98]
-                        disabled:opacity-60 disabled:cursor-not-allowed
                         ${plan.popular
                           ? 'bg-brand text-white hover:bg-brand-hover shadow-card'
                           : 'bg-app text-mid hover:bg-line border border-line'
                         }
                       `}
                     >
-                      {isLoadingThis ? (
-                        <svg className="animate-spin w-4 h-4 text-current" viewBox="0 0 24 24" fill="none">
-                          <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                          <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-                        </svg>
-                      ) : (
-                        <>
-                          <CreditCard size={18} weight="bold" />
-                          <span>Adquirir Plan {plan.name}</span>
-                        </>
-                      )}
+                      <QrCode size={18} weight="bold" />
+                      <span>Adquirir Plan {plan.name}</span>
                     </button>
                   )}
                 </div>
               </div>
             );
           })}
+        </div>
+      )}
+
+      {/* Modal de Pago por Yape */}
+      {selectedPlanModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-fadeIn">
+          <div 
+            className="bg-card rounded-2xl max-w-md w-full p-6 sm:p-8 border border-line shadow-2xl relative space-y-6 animate-scaleUp"
+            onClick={(e) => e.stopPropagation()}
+          >
+            {/* Botón Cerrar */}
+            <button
+              onClick={handleCloseModal}
+              className="absolute top-4 right-4 p-2 text-lo hover:text-hi hover:bg-app rounded-full transition-colors cursor-pointer"
+            >
+              <X size={20} />
+            </button>
+
+            {/* Header del Modal */}
+            <div className="text-center space-y-2 pt-2">
+              <div className="inline-flex items-center justify-center w-14 h-14 rounded-2xl bg-purple-500/10 text-purple-600 dark:text-purple-400 mb-1 border border-purple-500/20">
+                <QrCode size={32} weight="duotone" />
+              </div>
+              <h2 className="text-2xl font-extrabold text-hi tracking-tight">
+                Activa tu Plan {selectedPlanModal.name}
+              </h2>
+              <p className="text-sm text-lo">
+                Para activar o renovar tu suscripción, por favor realiza el pago por Yape al siguiente número:
+              </p>
+            </div>
+
+            {/* Tarjeta del Número de Yape */}
+            <div className="bg-purple-50 dark:bg-purple-950/40 border border-purple-200 dark:border-purple-800/50 rounded-xl p-4 flex items-center justify-between gap-3">
+              <div>
+                <p className="text-xs font-semibold text-purple-600 dark:text-purple-300 uppercase tracking-wider">
+                  Número Yape
+                </p>
+                <p className="text-2xl font-black text-purple-950 dark:text-purple-100 font-mono mt-0.5">
+                  {YAPE_NUMBER}
+                </p>
+              </div>
+              <button
+                onClick={handleCopyYapeNumber}
+                className="flex items-center gap-1.5 px-3 py-2 bg-purple-600 hover:bg-purple-700 text-white rounded-lg text-xs font-bold transition-all active:scale-95 cursor-pointer shadow-sm"
+              >
+                {copiedNumber ? (
+                  <>
+                    <Check size={16} weight="bold" />
+                    <span>¡Copiado!</span>
+                  </>
+                ) : (
+                  <>
+                    <Copy size={16} weight="bold" />
+                    <span>Copiar</span>
+                  </>
+                )}
+              </button>
+            </div>
+
+            {/* Instrucciones */}
+            <div className="bg-app border border-line rounded-xl p-4 space-y-2 text-sm text-mid">
+              <div className="flex items-center justify-between font-bold text-hi border-b border-line pb-2 mb-1">
+                <span>Monto a Yapear:</span>
+                <span className="text-lg text-brand font-black">S/ {selectedPlanModal.price}</span>
+              </div>
+              <p className="text-xs leading-relaxed text-lo">
+                Una vez realizado el pago de <strong className="text-hi">S/ {selectedPlanModal.price}</strong>, envía una captura de pantalla del comprobante a nuestro soporte por WhatsApp para activar tu cuenta de inmediato.
+              </p>
+              <p className="text-xs font-semibold text-hi pt-1">
+                Soporte: <span className="font-mono text-brand">{SUPPORT_WHATSAPP}</span>
+              </p>
+            </div>
+
+            {/* Botón Enviar comprobante por WhatsApp */}
+            <a
+              href={getWhatsAppLink()}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="w-full bg-emerald-600 hover:bg-emerald-500 text-white font-bold py-3.5 px-6 rounded-xl flex items-center justify-center gap-2.5 shadow-lg shadow-emerald-900/20 transition-all hover:scale-[1.01] active:scale-[0.99] text-sm cursor-pointer"
+            >
+              <span>Enviar comprobante por WhatsApp</span>
+              <ArrowSquareOut size={18} weight="bold" />
+            </a>
+          </div>
         </div>
       )}
     </div>

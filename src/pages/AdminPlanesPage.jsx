@@ -12,6 +12,10 @@ import {
   Trash,
   CheckCircle,
   WarningCircle,
+  Package,
+  Megaphone,
+  Robot,
+  Star,
 } from '@phosphor-icons/react';
 import * as planService from '../services/planService';
 import { useUnsavedChanges } from '../context/UnsavedChangesContext';
@@ -116,9 +120,12 @@ export default function AdminPlanesPage() {
   // State for form fields
   const [formName, setFormName] = useState('');
   const [formPrice, setFormPrice] = useState(0);
-  const [formStripePriceId, setFormStripePriceId] = useState('');
   const [formConnLimit, setFormConnLimit] = useState(1);
   const [formMsgLimit, setFormMsgLimit] = useState(1000);
+  const [formMaxProducts, setFormMaxProducts] = useState(10);
+  const [formHasCampaigns, setFormHasCampaigns] = useState(false);
+  const [formHasAutomations, setFormHasAutomations] = useState(false);
+  const [formHasAdvancedMarketing, setFormHasAdvancedMarketing] = useState(false);
   const [formFlowBuilder, setFormFlowBuilder] = useState(false);
   const [formAiBrain, setFormAiBrain] = useState(false);
   const [formPopular, setFormPopular] = useState(false);
@@ -153,9 +160,12 @@ export default function AdminPlanesPage() {
     setModalMode('edit');
     setFormName(plan.name);
     setFormPrice(plan.price);
-    setFormStripePriceId(plan.stripePriceId || '');
     setFormConnLimit(plan.connLimit);
     setFormMsgLimit(plan.msgLimit);
+    setFormMaxProducts(plan.maxProducts ?? 10);
+    setFormHasCampaigns(plan.hasCampaigns ?? false);
+    setFormHasAutomations(plan.hasAutomations ?? false);
+    setFormHasAdvancedMarketing(plan.hasAdvancedMarketing ?? false);
     setFormFlowBuilder(plan.flowBuilder);
     setFormAiBrain(plan.aiBrain);
     setFormPopular(plan.popular);
@@ -175,9 +185,12 @@ export default function AdminPlanesPage() {
     setModalMode('create');
     setFormName('');
     setFormPrice(29);
-    setFormStripePriceId('');
     setFormConnLimit(1);
     setFormMsgLimit(1000);
+    setFormMaxProducts(10);
+    setFormHasCampaigns(false);
+    setFormHasAutomations(false);
+    setFormHasAdvancedMarketing(false);
     setFormFlowBuilder(false);
     setFormAiBrain(false);
     setFormPopular(false);
@@ -188,18 +201,17 @@ export default function AdminPlanesPage() {
   const handleSave = async (e) => {
     e.preventDefault();
     if (!formName.trim()) return;
-    if (!formStripePriceId.trim()) {
-      showToast('El identificador de precio de Stripe es obligatorio.', 'error');
-      return;
-    }
     setSaving(true);
 
     const payload = {
       name: formName.trim(),
       price: Number(formPrice),
-      stripePriceId: formStripePriceId.trim(),
       connLimit: Number(formConnLimit),
       msgLimit: Number(formMsgLimit),
+      maxProducts: Number(formMaxProducts),
+      hasCampaigns: formHasCampaigns,
+      hasAutomations: formHasAutomations,
+      hasAdvancedMarketing: formHasAdvancedMarketing,
       flowBuilder: formFlowBuilder,
       aiBrain: formAiBrain,
       popular: formPopular,
@@ -209,25 +221,16 @@ export default function AdminPlanesPage() {
     try {
       if (modalMode === 'edit') {
         await planService.updatePlan(selectedPlan.id, payload);
+        showToast('Plan actualizado exitosamente en la base de datos.');
       } else {
         await planService.createPlan(payload);
+        showToast('Plan creado exitosamente en la base de datos.');
       }
-      showToast('Plan guardado exitosamente');
       closeModal();
-      loadPlans();
-    } catch {
-      // Fallback local en modo demo
-      const mockPayload = {
-        ...payload,
-        features: payload.features.map(text => ({ text, included: true }))
-      };
-      if (modalMode === 'edit') {
-        setPlans(prev => prev.map(p => p.id === selectedPlan.id ? { ...p, ...mockPayload } : p));
-      } else {
-        setPlans(prev => [...prev, { id: `p-${Date.now()}`, ...mockPayload }]);
-      }
-      showToast('Modo Local: Cambios guardados temporalmente.', 'success');
-      closeModal();
+      await loadPlans();
+    } catch (err) {
+      console.error('Error al guardar plan:', err);
+      showToast(err.message || 'Error al guardar el plan en la base de datos.', 'error');
     } finally {
       setSaving(false);
     }
@@ -239,11 +242,10 @@ export default function AdminPlanesPage() {
     try {
       await planService.deletePlan(id);
       setPlans(prev => prev.filter(p => p.id !== id));
-      showToast(`Plan ${name} eliminado.`);
-    } catch {
-      // Fallback local
-      setPlans(prev => prev.filter(p => p.id !== id));
-      showToast(`Modo Local: Plan ${name} eliminado.`, 'success');
+      showToast(`Plan "${name}" eliminado exitosamente.`);
+    } catch (err) {
+      console.error('Error al eliminar plan:', err);
+      showToast(err.message || 'Error al eliminar el plan.', 'error');
     }
   };
 
@@ -311,7 +313,7 @@ export default function AdminPlanesPage() {
                   <div className="text-center pb-5 border-b border-line mb-5">
                     <h3 className="text-lg font-bold text-hi">{plan.name}</h3>
                     <div className="mt-4 flex items-baseline justify-center font-mono">
-                      <span className="text-3xl font-extrabold text-hi">${plan.price}</span>
+                      <span className="text-3xl font-extrabold text-hi">S/ {plan.price}</span>
                       <span className="text-sm text-lo ml-1">/ mes</span>
                     </div>
                   </div>
@@ -371,9 +373,9 @@ export default function AdminPlanesPage() {
         >
           <div className="absolute inset-0 bg-hi/20 backdrop-blur-sm" onClick={() => setShowModal(false)} aria-hidden="true" />
 
-          <div className="relative bg-card rounded-xl shadow-card-md border border-line w-full max-w-md flex flex-col overflow-hidden">
+          <div className="relative bg-card rounded-xl shadow-card-md border border-line w-full max-w-lg max-h-[90vh] flex flex-col overflow-hidden my-auto">
             {/* Header */}
-            <div className="flex items-center justify-between px-6 py-4 border-b border-line">
+            <div className="flex items-center justify-between px-6 py-4 border-b border-line flex-shrink-0 bg-card z-10">
               <div className="flex items-center gap-3">
                 <div className="w-8 h-8 rounded-lg bg-brand/10 flex items-center justify-center">
                   <Coins size={16} className="text-brand" aria-hidden="true" />
@@ -396,8 +398,8 @@ export default function AdminPlanesPage() {
             </div>
 
             {/* Formulario */}
-            <form onSubmit={handleSave} onChange={() => setIsFormDirty(true)} className="flex flex-col">
-              <div className="px-6 py-5 space-y-4">
+            <form onSubmit={handleSave} onChange={() => setIsFormDirty(true)} className="flex flex-col flex-1 min-h-0 overflow-hidden">
+              <div className="px-6 py-5 space-y-4 overflow-y-auto flex-1 min-h-0">
                 {/* Plan Name & Price */}
                 <div className="grid grid-cols-2 gap-4">
                   <div>
@@ -416,10 +418,10 @@ export default function AdminPlanesPage() {
                   </div>
                   <div>
                     <label htmlFor="plan-price" className="block text-sm font-semibold text-hi mb-1">
-                      Precio Mensual (USD)
+                      Precio Mensual (S/)
                     </label>
                     <div className="relative">
-                      <span className="absolute left-3 top-1/2 -translate-y-1/2 text-sm text-lo">$</span>
+                      <span className="absolute left-3 top-1/2 -translate-y-1/2 text-sm text-lo font-semibold">S/</span>
                       <input
                         id="plan-price"
                         type="number"
@@ -427,26 +429,10 @@ export default function AdminPlanesPage() {
                         value={formPrice}
                         onChange={(e) => setFormPrice(e.target.value)}
                         placeholder="99"
-                        className="w-full pl-6 pr-3 py-2 rounded-md border border-line bg-card text-sm text-hi font-mono focus:outline-none focus:border-brand"
+                        className="w-full pl-9 pr-3 py-2 rounded-md border border-line bg-card text-sm text-hi font-mono focus:outline-none focus:border-brand"
                       />
                     </div>
                   </div>
-                </div>
-
-                {/* Stripe Price ID (Strictly Required) */}
-                <div>
-                  <label htmlFor="plan-stripe-id" className="block text-sm font-semibold text-hi mb-1">
-                    Stripe Price ID (Obligatorio) <span className="text-danger">*</span>
-                  </label>
-                  <input
-                    id="plan-stripe-id"
-                    type="text"
-                    required
-                    value={formStripePriceId}
-                    onChange={(e) => setFormStripePriceId(e.target.value)}
-                    placeholder="ej. price_1TumDpDy1pBZYZd6IwYnVkya"
-                    className="w-full px-3 py-2 rounded-md border border-line bg-card text-sm text-hi placeholder:text-muted focus:outline-none focus:border-brand font-mono"
-                  />
                 </div>
 
                 {/* Connection Limit */}
@@ -488,6 +474,31 @@ export default function AdminPlanesPage() {
                 </div>
 
                 {/* Módulos Premium */}
+                <div className="space-y-3 pt-2">
+                  <p className="text-xs font-semibold text-lo uppercase tracking-wider">Límites de Features</p>
+
+                  {/* Max Products */}
+                  <div>
+                    <label htmlFor="plan-maxproducts" className="block text-sm font-semibold text-hi mb-1">
+                      Máximo de Productos en Inventario
+                    </label>
+                    <div className="relative">
+                      <Package className="absolute left-3 top-1/2 -translate-y-1/2 text-muted" size={16} />
+                      <input
+                        id="plan-maxproducts"
+                        type="number"
+                        required
+                        min={1}
+                        value={formMaxProducts}
+                        onChange={(e) => setFormMaxProducts(e.target.value)}
+                        placeholder="10"
+                        className="w-full pl-9 pr-3 py-2 rounded-md border border-line bg-card text-sm text-hi font-mono focus:outline-none focus:border-brand"
+                      />
+                    </div>
+                    <p className="text-2xs text-lo mt-1">Usa 999999 para ilimitado.</p>
+                  </div>
+                </div>
+
                 <div className="space-y-3 pt-2">
                   <p className="text-xs font-semibold text-lo uppercase tracking-wider">Módulos Adicionales</p>
 
@@ -534,6 +545,66 @@ export default function AdminPlanesPage() {
                       `}
                     >
                       <span className={`pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow transition duration-200 ${formAiBrain ? 'translate-x-4' : 'translate-x-0'}`} />
+                    </button>
+                  </div>
+
+                  {/* Campañas Masivas */}
+                  <div className="flex items-center justify-between py-1">
+                    <div className="flex items-center gap-2">
+                      <Megaphone size={16} className="text-blue-500" />
+                      <div>
+                        <p className="text-sm font-medium text-hi leading-tight">Campañas Masivas</p>
+                        <p className="text-2xs text-lo mt-0.5 font-medium">Envíos masivos a contactos</p>
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      role="switch"
+                      aria-checked={formHasCampaigns}
+                      onClick={() => { setFormHasCampaigns(!formHasCampaigns); setIsFormDirty(true); }}
+                      className={`relative inline-flex h-5 w-9 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 focus:outline-none ${formHasCampaigns ? 'bg-brand' : 'bg-gray-200'}`}
+                    >
+                      <span className={`pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow transition duration-200 ${formHasCampaigns ? 'translate-x-4' : 'translate-x-0'}`} />
+                    </button>
+                  </div>
+
+                  {/* Automatizaciones */}
+                  <div className="flex items-center justify-between py-1">
+                    <div className="flex items-center gap-2">
+                      <TreeStructure size={16} className="text-indigo-500" />
+                      <div>
+                        <p className="text-sm font-medium text-hi leading-tight">Automatizaciones (Flow Builder)</p>
+                        <p className="text-2xs text-lo mt-0.5 font-medium">Flujos automatizados de respuesta</p>
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      role="switch"
+                      aria-checked={formHasAutomations}
+                      onClick={() => { setFormHasAutomations(!formHasAutomations); setIsFormDirty(true); }}
+                      className={`relative inline-flex h-5 w-9 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 focus:outline-none ${formHasAutomations ? 'bg-brand' : 'bg-gray-200'}`}
+                    >
+                      <span className={`pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow transition duration-200 ${formHasAutomations ? 'translate-x-4' : 'translate-x-0'}`} />
+                    </button>
+                  </div>
+
+                  {/* Marketing Avanzado */}
+                  <div className="flex items-center justify-between py-1">
+                    <div className="flex items-center gap-2">
+                      <Star size={16} className="text-amber-500" />
+                      <div>
+                        <p className="text-sm font-medium text-hi leading-tight">Modo Vendedor Persuasivo</p>
+                        <p className="text-2xs text-lo mt-0.5 font-medium">Estrategias avanzadas de marketing IA</p>
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      role="switch"
+                      aria-checked={formHasAdvancedMarketing}
+                      onClick={() => { setFormHasAdvancedMarketing(!formHasAdvancedMarketing); setIsFormDirty(true); }}
+                      className={`relative inline-flex h-5 w-9 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 focus:outline-none ${formHasAdvancedMarketing ? 'bg-amber-500' : 'bg-gray-200'}`}
+                    >
+                      <span className={`pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow transition duration-200 ${formHasAdvancedMarketing ? 'translate-x-4' : 'translate-x-0'}`} />
                     </button>
                   </div>
 
@@ -606,7 +677,7 @@ export default function AdminPlanesPage() {
               </div>
 
               {/* Footer */}
-              <div className="px-6 py-4 bg-app border-t border-line flex items-center justify-end gap-3">
+              <div className="px-6 py-4 bg-app border-t border-line flex items-center justify-end gap-3 flex-shrink-0 z-10">
                 <button
                   type="button"
                   onClick={closeModal}

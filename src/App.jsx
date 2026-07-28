@@ -109,15 +109,25 @@ const router = createBrowserRouter(
           }
         />
         
-        {/* Nuevas rutas de soporte para el rol de Cliente */}
-        <Route path="campanas"        element={<CampaignsPage />} />
+        {/* Rutas de Cliente — algunas requieren features de plan */}
+        <Route path="campanas" element={
+          <ProtectedRoute requiredPlanFeature="hasCampaigns">
+            <CampaignsPage />
+          </ProtectedRoute>
+        } />
         <Route path="conexiones"      element={<ConexionesPage />} />
         <Route path="contactos"       element={<ContactosPage />} />
         <Route path="mensajes"        element={<ChatPage />} />
-        <Route path="automatizacion"  element={<FlowBuilderPage />} />
+        <Route path="automatizacion" element={
+          <ProtectedRoute requiredPlanFeature="hasAutomations">
+            <FlowBuilderPage />
+          </ProtectedRoute>
+        } />
         <Route path="productos"       element={<Products />} />
+
+        {/* Billing es ahora una sub-vista dentro de Settings */}
         <Route path="billing"         element={<BillingPage />} />
-        
+
         <Route path="settings"   element={<SettingsPage />} />
       </Route>
 

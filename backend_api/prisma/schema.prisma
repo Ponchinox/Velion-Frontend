@@ -157,19 +157,22 @@ model Alert {
 
 // ─── MODELO PLAN (Planes Comerciales del SaaS) ───
 model Plan {
-  id            String   @id @default(uuid())
-  name          String   @unique
-  price         Float
-  stripePriceId String
-  connLimit     Int      @default(1)
-  msgLimit      Int      @default(1000)
-  features      Json     // Array de { text: String, included: Boolean } o Strings
-  flowBuilder   Boolean  @default(false)
-  aiBrain       Boolean  @default(false)
-  popular       Boolean  @default(false)
-  active        Boolean  @default(true)
-  createdAt     DateTime @default(now())
-  updatedAt     DateTime @updatedAt
+  id                   String   @id @default(uuid())
+  name                 String   @unique
+  price                Float
+  connLimit            Int      @default(1)
+  msgLimit             Int      @default(1000)
+  maxProducts          Int      @default(10)
+  hasCampaigns         Boolean  @default(false)
+  hasAutomations       Boolean  @default(false)
+  hasAdvancedMarketing Boolean  @default(false)
+  features             Json     // Array de { text: String, included: Boolean } o Strings
+  flowBuilder          Boolean  @default(false)
+  aiBrain              Boolean  @default(false)
+  popular              Boolean  @default(false)
+  active               Boolean  @default(true)
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
 }
 
 // ─── MODELO SYSTEMCONFIG (Configuración Global del SaaS, persistida clave/valor) ───

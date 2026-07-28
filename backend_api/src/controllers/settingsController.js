@@ -76,6 +76,30 @@ export async function updateSettings(req, res) {
       marketingModeEnabled
     } = req.body;
 
+    // ── Verificación de Plan: Modo Vendedor Persuasivo requiere hasAdvancedMarketing ──
+    if (marketingModeEnabled === true || marketingModeEnabled === 'true') {
+      const tenant = await prisma.tenant.findUnique({
+        where: { id: tenantId },
+        select: { planId: true },
+      });
+
+      if (tenant?.planId) {
+        const plan = await prisma.plan.findUnique({
+          where: { id: tenant.planId },
+          select: { hasAdvancedMarketing: true, name: true },
+        });
+
+        if (plan && plan.hasAdvancedMarketing !== true) {
+          return res.status(403).json({
+            error: `El Modo Vendedor Persuasivo no está incluido en tu plan "${plan.name}". Mejora tu plan para activarlo.`,
+            code: 'PLAN_FEATURE_REQUIRED',
+            requiredFeature: 'hasAdvancedMarketing',
+            currentPlan: plan.name,
+          });
+        }
+      }
+    }
+
     const updated = await prisma.tenant.update({
       where: { id: tenantId },
       data: {
@@ -107,3 +131,4 @@ export async function updateSettings(req, res) {
     return res.status(500).json({ error: 'Error al actualizar los ajustes de la empresa.' });
   }
 }
+

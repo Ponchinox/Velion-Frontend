@@ -125,6 +125,24 @@ export async function loginAccount(req, res) {
 
     const hasPlan = user.role === 'superadmin' ? true : Boolean(user.tenant?.planId);
 
+    // Cargar los feature flags del plan para el cliente (evita peticiones adicionales)
+    let planFeatures = null;
+    if (user.tenant?.planId) {
+      planFeatures = await prisma.plan.findUnique({
+        where: { id: user.tenant.planId },
+        select: {
+          id: true,
+          name: true,
+          maxProducts: true,
+          hasCampaigns: true,
+          hasAutomations: true,
+          hasAdvancedMarketing: true,
+          connLimit: true,
+          msgLimit: true,
+        },
+      });
+    }
+
     return res.json({
       message: 'Sesión iniciada con éxito.',
       token,
@@ -139,6 +157,7 @@ export async function loginAccount(req, res) {
         plan: user.tenant?.plan || null,
         planId: user.tenant?.planId || null,
         hasPlan,
+        planFeatures,
         tenant: user.tenant ? {
           id: user.tenant.id,
           name: user.tenant.name,

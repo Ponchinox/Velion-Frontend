@@ -150,7 +150,7 @@ export default function PlanSelectionPage() {
                     <div>
                       <h3 className="text-xl font-bold text-hi">{p.name}</h3>
                       <div className="mt-3 flex items-baseline gap-1">
-                        <span className="text-4xl font-black text-hi tracking-tight">${p.price}</span>
+                        <span className="text-4xl font-black text-hi tracking-tight">S/ {p.price}</span>
                         <span className="text-sm font-medium text-lo">/mes</span>
                       </div>
                     </div>

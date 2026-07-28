@@ -3,14 +3,19 @@ import { useAuth } from '../context/AuthContext';
 
 /**
  * ProtectedRoute
- * Muestra un spinner mientras Firebase resuelve el estado de sesión.
+ * Muestra un spinner mientras se resuelve el estado de sesión.
  * Redirige a /login si no hay usuario autenticado.
+ * Redirige a /select-plan si el usuario no tiene plan activo.
+ * Redirige a /dashboard si el plan del usuario no incluye el feature requerido.
+ *
+ * @param {string} [requiredPlanFeature] - Campo booleano del plan requerido (ej: 'hasCampaigns')
+ * @param {string[]} [allowedRoles] - Roles permitidos para la ruta
  */
-export default function ProtectedRoute({ children, allowedRoles }) {
+export default function ProtectedRoute({ children, allowedRoles, requiredPlanFeature }) {
   const { user, loading } = useAuth();
   const location = useLocation();
 
-  /* Mientras Firebase verifica la sesión → pantalla de carga */
+  /* Mientras se verifica la sesión → pantalla de carga */
   if (loading) {
     return (
       <div
@@ -53,7 +58,18 @@ export default function ProtectedRoute({ children, allowedRoles }) {
 
   /* Control de Roles (RBAC) */
   if (allowedRoles && !allowedRoles.includes(user.role)) {
-    return <Navigate to="/productos" replace />;
+    return <Navigate to="/dashboard" replace />;
+  }
+
+  /* ── Bloqueo de Feature por Plan (Frontend Guard) ── */
+  if (requiredPlanFeature && !isSuperAdmin) {
+    const planFeatures = user.planFeatures;
+    const hasFeature = planFeatures?.[requiredPlanFeature] === true;
+
+    if (!hasFeature) {
+      // Redirige al dashboard con parámetro para mostrar modal de upgrade
+      return <Navigate to="/dashboard?upgrade=true&feature=${requiredPlanFeature}" replace />;
+    }
   }
 
   return children;

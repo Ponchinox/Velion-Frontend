@@ -10,8 +10,11 @@ import {
   HelpCircle,
   Key,
   ShieldCheck,
-  ArrowLeft
+  ArrowLeft,
+  CreditCard,
+  Lock
 } from 'lucide-react';
+import { useNavigate } from 'react-router-dom';
 import * as settingsService from '../services/settingsService';
 import * as userService from '../services/userService';
 import { useUnsavedChanges } from '../context/UnsavedChangesContext';
@@ -19,7 +22,8 @@ import { useAuth } from '../context/AuthContext';
 
 export default function SettingsPage() {
   const { user, updateUser } = useAuth();
-  const [activeSection, setActiveSection] = useState(null); // null (grid) | 'admin' | 'bot' | 'security' | 'notifications' | 'locale' | 'appearance'
+  const navigate = useNavigate();
+  const [activeSection, setActiveSection] = useState(null); // null (grid) | 'admin' | 'bot' | 'security' | 'billing'
   const [activeSubTab, setActiveSubTab] = useState('general'); // 'general' | 'operations'
   const [isLoading, setIsLoading] = useState(true);
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -277,6 +281,14 @@ export default function SettingsPage() {
         desc: 'Contraseña, 2FA y accesos',
         bgClass: 'bg-red-50',
         iconClass: 'text-red-600'
+      },
+      {
+        id: 'billing',
+        Icon: CreditCard,
+        label: 'Facturación & Plan',
+        desc: 'Tu plan activo, pagos y método Yape',
+        bgClass: 'bg-emerald-50',
+        iconClass: 'text-emerald-600'
       }
     ];
 
@@ -804,9 +816,44 @@ export default function SettingsPage() {
           </form>
         )}
 
+        {/* FORM 4: Facturación & Plan */}
+        {activeSection === 'billing' && (
+          <div className="space-y-6">
+            <div className="pb-3 border-b border-gray-100">
+              <h2 className="text-lg font-bold text-gray-900">Facturación & Plan</h2>
+              <p className="text-sm text-gray-500 mt-0.5">Gestiona tu plan activo y realiza pagos con Yape.</p>
+            </div>
 
+            {/* Plan activo */}
+            <div className="flex items-center justify-between p-4 rounded-xl bg-emerald-50 border border-emerald-200">
+              <div>
+                <p className="text-xs font-semibold text-emerald-600 uppercase tracking-wide">Plan Activo</p>
+                <p className="text-base font-bold text-gray-900 mt-0.5">
+                  {user?.planFeatures?.name || user?.plan || 'Sin Plan'}
+                </p>
+                {user?.planFeatures && (
+                  <p className="text-xs text-gray-500 mt-1">
+                    {user.planFeatures.msgLimit?.toLocaleString()} msg/mes · {user.planFeatures.connLimit} conexión(es) · {user.planFeatures.maxProducts === 999999 ? 'Productos ilimitados' : `Hasta ${user.planFeatures.maxProducts} productos`}
+                  </p>
+                )}
+              </div>
+              <div className="flex items-center justify-center w-10 h-10 rounded-xl bg-emerald-100 text-emerald-600">
+                <CreditCard size={20} />
+              </div>
+            </div>
 
-
+            {/* Botón para ir a la página completa de Facturación */}
+            <div className="flex justify-start pt-2">
+              <button
+                onClick={() => navigate('/billing')}
+                className="inline-flex items-center gap-2 px-5 py-2.5 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-sm font-semibold shadow transition-all cursor-pointer"
+              >
+                <CreditCard size={14} />
+                <span>Ver Planes & Realizar Pago Yape</span>
+              </button>
+            </div>
+          </div>
+        )}
 
       </div>
 
