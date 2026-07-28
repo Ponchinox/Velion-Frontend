@@ -118,7 +118,8 @@ export async function getQrCode(req, res) {
       // Si falla o no existe, continuamos con el flujo normal de generación de QR
     }
 
-    const rawWebhookUrl = process.env.WEBHOOK_URL || 'https://velion-backend-a7vw.onrender.com/api/whatsapp/webhook';
+    const baseUrl = process.env.APP_URL || 'https://velion-backend-a7vw.onrender.com';
+    const rawWebhookUrl = process.env.WEBHOOK_URL || `${baseUrl.replace(/\/$/, '')}/api/whatsapp/webhook`;
     const cleanApiKey = (process.env.EVOLUTION_API_KEY || '').trim();
     const apiKeyParam = cleanApiKey ? `?apikey=${cleanApiKey}` : '';
     const webhookUrl = rawWebhookUrl.includes('?') ? `${rawWebhookUrl}&apikey=${cleanApiKey}` : `${rawWebhookUrl}${apiKeyParam}`;
