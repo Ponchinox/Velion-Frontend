@@ -252,3 +252,6 @@ model RegisteredWhatsAppNumber {
   tenant      Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   createdAt   DateTime @default(now())
 }
+
+// Forzando actualizacion limpia para Render.
+
