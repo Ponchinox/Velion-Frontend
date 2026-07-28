@@ -141,8 +141,9 @@ export default function Sidebar() {
 
   // ─── Grupos de navegación para clientes (con locks condicionales) ───
   const getClientNavGroups = () => {
-    const hasCampaigns = isSuperAdmin || planFeatures?.hasCampaigns === true;
-    const hasAutomations = isSuperAdmin || planFeatures?.hasAutomations === true;
+    // En Modo Soporte el superadmin necesita acceso completo a todas las secciones
+    const hasCampaigns   = isImpersonating || isSuperAdmin || planFeatures?.hasCampaigns === true;
+    const hasAutomations = isImpersonating || isSuperAdmin || planFeatures?.hasAutomations === true;
 
     return [
       {
