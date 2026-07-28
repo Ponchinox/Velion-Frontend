@@ -588,18 +588,19 @@ export default function SettingsPage() {
                     </div>
 
                     <div className="col-span-full">
-                      <div className="flex items-center justify-between mb-1.5">
+                      <div className="flex items-center gap-2 mb-1.5">
                         <label className="block text-sm font-semibold text-gray-700">Identidad e Instrucciones Principales</label>
-                        <button
-                          type="button"
-                          onClick={handleGeneratePromptExample}
-                          className="px-2.5 py-1.5 text-xs font-bold text-blue-600 hover:text-blue-700 bg-blue-50 hover:bg-blue-100 rounded transition-all cursor-pointer"
-                        >
-                          Generar Ejemplo
-                        </button>
+                        <div className="group relative cursor-pointer text-gray-400 hover:text-gray-600 flex items-center">
+                          <HelpCircle size={15} />
+                          <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 hidden group-hover:block w-72 p-2.5 rounded-lg bg-gray-900 text-white shadow-xl text-xs leading-relaxed text-center z-30 pointer-events-none animate-in fade-in duration-150">
+                            Define la personalidad y el tono de tu bot. Escribe aquí cómo debe comportarse, si debe ser formal, amigable o si tiene reglas estrictas de venta.
+                            <div className="absolute top-full left-1/2 -translate-x-1/2 -mt-1 border-4 border-transparent border-t-gray-900" />
+                          </div>
+                        </div>
                       </div>
                       <textarea
                         name="botRole"
+                        maxLength={1500}
                         value={botConfig.botRole || botConfig.customPrompt || ''}
                         onChange={(e) => {
                           setBotConfig(prev => ({
@@ -611,7 +612,7 @@ export default function SettingsPage() {
                         }}
                         rows={5}
                         className="w-full px-4 py-3 rounded-md border border-gray-200 bg-gray-50 text-sm text-gray-900 focus:outline-none focus:border-blue-500 focus:bg-white transition-all resize-none leading-relaxed font-mono"
-                        placeholder="Ej: Eres un asistente de ventas de una ferretería. Sé amable, responde corto y nunca ofrezcas descuentos no autorizados."
+                        placeholder=""
                       />
                     </div>
 
@@ -710,11 +711,12 @@ export default function SettingsPage() {
                     <label className="block text-sm font-semibold text-gray-700 mb-1.5">Horarios de Atención</label>
                     <textarea
                       name="businessHours"
+                      maxLength={300}
                       value={botConfig.businessHours}
                       onChange={handleBotChange}
                       rows={3}
                       className="w-full px-4 py-3 rounded-md border border-gray-200 bg-gray-50 text-sm text-gray-900 focus:outline-none focus:border-blue-500 focus:bg-white transition-all resize-none leading-relaxed col-span-full"
-                      placeholder="Lunes a Viernes de 9:00 AM a 6:00 PM."
+                      placeholder=""
                     />
                   </div>
 
@@ -722,11 +724,12 @@ export default function SettingsPage() {
                     <label className="block text-sm font-semibold text-gray-700 mb-1.5">Políticas de Envío y Devoluciones</label>
                     <textarea
                       name="termsAndPolicies"
+                      maxLength={800}
                       value={botConfig.termsAndPolicies}
                       onChange={handleBotChange}
                       rows={5}
                       className="w-full px-4 py-3 rounded-md border border-gray-200 bg-gray-50 text-sm text-gray-900 focus:outline-none focus:border-blue-500 focus:bg-white transition-all resize-none leading-relaxed col-span-full"
-                      placeholder="Plazo de devolución de 7 días naturales en empaque original sin abrir. Envíos a todo el país en 24 a 48 horas."
+                      placeholder=""
                     />
                   </div>
 
@@ -742,11 +745,12 @@ export default function SettingsPage() {
                     </div>
                     <textarea
                       name="bankAccounts"
+                      maxLength={500}
                       value={botConfig.bankAccounts}
                       onChange={handleBotChange}
                       rows={4}
                       className="w-full px-4 py-3 rounded-md border border-gray-200 bg-gray-50 text-sm text-gray-900 focus:outline-none focus:border-blue-500 focus:bg-white transition-all font-mono resize-none leading-relaxed col-span-full"
-                      placeholder="Ej: Yape/Plin: 999888777 (Juan Pérez). BCP: 191-00000000-0-00"
+                      placeholder=""
                     />
                     <p className="text-xs text-gray-500 mt-1.5 leading-relaxed">
                       Escribe tus cuentas y métodos de pago exactamente como quieres que el cliente los lea. Nuestro bot los enviará tal cual sin modificarlos.

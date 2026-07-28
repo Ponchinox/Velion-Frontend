@@ -617,9 +617,10 @@ export default function Products() {
               id="prod-name"
               type="text"
               required
+              maxLength={100}
               value={name}
               onChange={e => { setName(e.target.value); setIsFormDirty(true); }}
-              placeholder="ej. Zapatillas de Running Pro"
+              placeholder=""
               className="w-full px-3 py-2.5 text-sm bg-app border border-line rounded-lg text-hi placeholder:text-muted focus:outline-none focus:border-brand focus:shadow-input-focus transition-all"
             />
           </div>
@@ -629,9 +630,10 @@ export default function Products() {
             <textarea
               id="prod-desc"
               rows={2}
+              maxLength={600}
               value={description}
               onChange={e => { setDescription(e.target.value); setIsFormDirty(true); }}
-              placeholder="Detalles sobre características, colores o especificaciones"
+              placeholder=""
               className="w-full px-3 py-2.5 text-sm bg-app border border-line rounded-lg text-hi placeholder:text-muted focus:outline-none focus:border-brand focus:shadow-input-focus transition-all resize-none"
             />
           </div>

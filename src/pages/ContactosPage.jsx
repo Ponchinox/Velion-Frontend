@@ -127,33 +127,35 @@ function ContactRow({ contact, index, onDelete, onToggleBot }) {
         )}
       </td>
 
-      <td className="px-5 py-3.5 text-right flex items-center justify-end gap-2">
-        {contact.botPaused ? (
+      <td className="px-5 py-3.5 text-center">
+        <div className="flex items-center justify-center gap-2">
+          {contact.botPaused ? (
+            <button
+              onClick={() => onToggleBot(contact, false)}
+              className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md bg-emerald-50 hover:bg-emerald-100 text-emerald-700 text-xs font-bold transition-all border border-emerald-200 cursor-pointer"
+              title="Reactivar respuestas automáticas de la IA"
+            >
+              <ArrowClockwise size={13} className="text-emerald-700 font-bold" />
+              Reactivar IA
+            </button>
+          ) : (
+            <button
+              onClick={() => onToggleBot(contact, true)}
+              className="inline-flex items-center gap-1 px-2 py-1 rounded-md text-xs font-medium text-slate-500 hover:text-slate-800 hover:bg-slate-100 transition-all cursor-pointer"
+              title="Pausar respuestas de la IA para este contacto"
+            >
+              Pausar IA
+            </button>
+          )}
           <button
-            onClick={() => onToggleBot(contact, false)}
-            className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md bg-emerald-50 hover:bg-emerald-100 text-emerald-700 text-xs font-bold transition-all border border-emerald-200 cursor-pointer"
-            title="Reactivar respuestas automáticas de la IA"
+            onClick={() => onDelete(contact)}
+            className="p-2 rounded-md text-muted hover:text-danger hover:bg-red-50 transition-colors cursor-pointer"
+            title="Eliminar contacto"
+            aria-label={`Eliminar contacto ${contact.name}`}
           >
-            <ArrowClockwise size={13} className="text-emerald-700 font-bold" />
-            Reactivar IA
+            <Trash size={16} />
           </button>
-        ) : (
-          <button
-            onClick={() => onToggleBot(contact, true)}
-            className="inline-flex items-center gap-1 px-2 py-1 rounded-md text-xs font-medium text-slate-500 hover:text-slate-800 hover:bg-slate-100 transition-all cursor-pointer"
-            title="Pausar respuestas de la IA para este contacto"
-          >
-            Pausar IA
-          </button>
-        )}
-        <button
-          onClick={() => onDelete(contact)}
-          className="p-2 rounded-md text-muted hover:text-danger hover:bg-red-50 transition-colors cursor-pointer"
-          title="Eliminar contacto"
-          aria-label={`Eliminar contacto ${contact.name}`}
-        >
-          <Trash size={16} />
-        </button>
+        </div>
       </td>
     </tr>
   );
@@ -248,9 +250,10 @@ function AddContactModal({ onClose, onSave }) {
             id="c-name"
             type="text"
             required
+            maxLength={100}
             value={name}
             onChange={e => setName(e.target.value)}
-            placeholder="ej. Sofía Ramírez"
+            placeholder=""
             className="w-full px-3 py-2.5 text-sm bg-app border border-line rounded-lg text-hi placeholder:text-muted focus:outline-none focus:border-brand focus:shadow-input-focus transition-all"
           />
         </div>
@@ -261,9 +264,10 @@ function AddContactModal({ onClose, onSave }) {
             id="c-phone"
             type="tel"
             required
+            maxLength={20}
             value={phone}
             onChange={e => setPhone(e.target.value)}
-            placeholder="ej. +51 987 654 321"
+            placeholder=""
             className="w-full px-3 py-2.5 text-sm bg-app border border-line rounded-lg text-hi placeholder:text-muted focus:outline-none focus:border-brand focus:shadow-input-focus transition-all font-mono"
           />
         </div>
@@ -523,7 +527,7 @@ export default function ContactosPage() {
                 <thead>
                   <tr className="bg-app border-b border-line">
                     {['Cliente', 'Teléfono', 'Fecha de Registro', 'Última Interacción', 'Acciones'].map(c => (
-                      <th key={c} className="px-5 py-3 text-left text-2xs font-semibold text-lo uppercase tracking-wider">
+                      <th key={c} className={`px-5 py-3 text-2xs font-semibold text-lo uppercase tracking-wider ${c === 'Acciones' ? 'text-center' : 'text-left'}`}>
                         {c}
                       </th>
                     ))}
