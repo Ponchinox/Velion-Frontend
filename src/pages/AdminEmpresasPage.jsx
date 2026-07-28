@@ -163,7 +163,6 @@ function CompanyRow({ company, onToggleStatus, onEditCompany, onImpersonate }) {
 
 /* ─── Tarjeta Móvil ─── */
 function CompanyCard({ company, onToggleStatus, onEditCompany, onImpersonate }) {
-  const cfg = PLAN_CONFIG[company.plan] || PLAN_CONFIG['Básico'];
   return (
     <div className="bg-card border border-line rounded-lg shadow-card p-4 flex flex-col gap-3">
       <div className="flex items-start justify-between gap-3">
@@ -184,9 +183,9 @@ function CompanyCard({ company, onToggleStatus, onEditCompany, onImpersonate }) 
       </div>
       <div className="space-y-2">
         <p className="text-2xs text-lo uppercase tracking-wider font-medium">Conexiones</p>
-        <QuotaBar used={company.connUsed} limit={company.connLimit || cfg.connLimit} />
+        <QuotaBar used={company.connUsed} limit={company.connLimit || 1} />
         <p className="text-2xs text-lo uppercase tracking-wider font-medium pt-1">Mensajes</p>
-        <QuotaBar used={company.msgUsed} limit={company.msgLimit || cfg.msgLimit} />
+        <QuotaBar used={company.msgUsed} limit={company.msgLimit || 1000} />
       </div>
       <div className="flex items-center gap-2 border-t border-line pt-3 flex-wrap">
         <button

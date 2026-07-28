@@ -285,12 +285,17 @@ export async function getPlans(req, res) {
   try {
     const plans = await prisma.plan.findMany({
       where: { active: true },
-      orderBy: { createdAt: 'asc' },
+      orderBy: { price: 'asc' },
     });
     return res.json(plans);
   } catch (error) {
     console.error('Error en getPlans:', error);
-    return res.status(500).json({ error: 'Error al obtener los planes comerciales.' });
+    try {
+      const fallbackPlans = await prisma.plan.findMany({ where: { active: true } });
+      return res.json(fallbackPlans);
+    } catch (err2) {
+      return res.status(500).json({ error: 'Error al obtener los planes comerciales.' });
+    }
   }
 }
 
