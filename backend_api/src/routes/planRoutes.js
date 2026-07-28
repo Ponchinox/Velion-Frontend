@@ -16,7 +16,12 @@ router.get('/', async (req, res) => {
     return res.json(plans);
   } catch (error) {
     console.error('❌ [Plan Routes] Error al obtener planes:', error);
-    return res.status(500).json({ error: 'Error interno al consultar la lista de planes.' });
+    try {
+      const fallback = await prisma.plan.findMany({ where: { active: true } });
+      return res.json(fallback);
+    } catch (err2) {
+      return res.status(500).json({ error: 'Error interno al consultar la lista de planes.' });
+    }
   }
 });
 
