@@ -120,22 +120,22 @@ export default function DashboardPage() {
     }
   };
 
-  // Tarjetas de Métricas dinámicas
+  // Tarjetas de Métricas dinámicas con seguridad nula (failsafe ante despliegues en progreso)
   const metrics = stats ? [
     {
       id: 'metric-companies',
       title: 'Empresas Registradas',
-      value: stats.tenants.total.toString(),
-      change: `${stats.tenants.active} activas`,
+      value: (stats.tenants?.total ?? 0).toString(),
+      change: `${stats.tenants?.active ?? 0} activas`,
       changeType: 'up',
-      description: `${stats.tenants.suspended} suspendidas`,
+      description: `${stats.tenants?.suspended ?? 0} suspendidas`,
       icon: Buildings,
     },
     {
       id: 'metric-users',
       title: 'Usuarios Totales',
-      value: stats.users.total.toLocaleString(),
-      change: `${stats.tenants.total} empresas`,
+      value: (stats.users?.total ?? 0).toLocaleString(),
+      change: `${stats.tenants?.total ?? 0} empresas`,
       changeType: 'up',
       description: 'Administradores y agentes',
       icon: Users,
@@ -143,7 +143,7 @@ export default function DashboardPage() {
     {
       id: 'metric-products',
       title: 'Productos Registrados',
-      value: stats.products.total.toLocaleString(),
+      value: (stats.products?.total ?? 0).toLocaleString(),
       change: 'Inventario Global',
       changeType: 'up',
       description: 'Catálogo de todos los tenants',
@@ -152,10 +152,10 @@ export default function DashboardPage() {
     {
       id: 'metric-chats',
       title: 'Conversaciones Hoy',
-      value: stats.chats.today.toLocaleString(),
-      change: formatDelta(stats.chats.delta),
-      changeType: stats.chats.delta >= 0 ? 'up' : 'down',
-      description: `${stats.chats.total.toLocaleString()} conversaciones en total`,
+      value: ((stats.chats?.today ?? stats.chats?.total ?? 0)).toLocaleString(),
+      change: formatDelta(stats.chats?.delta ?? 0),
+      changeType: (stats.chats?.delta ?? 0) >= 0 ? 'up' : 'down',
+      description: `${(stats.chats?.total ?? 0).toLocaleString()} conversaciones en total`,
       icon: ChatTeardrop,
     },
   ] : [];
@@ -248,27 +248,27 @@ export default function DashboardPage() {
           {/* Mensajes hoy */}
           <div className="bg-card border border-line rounded-xl p-5 shadow-card flex flex-col gap-2">
             <p className="text-xs font-semibold text-lo uppercase tracking-wider">Mensajes Hoy</p>
-            <p className="text-3xl font-bold text-hi font-mono">{stats.messages.today.toLocaleString()}</p>
-            <div className={`flex items-center gap-1 text-xs font-semibold ${stats.messages.delta >= 0 ? 'text-emerald-600' : 'text-danger'}`}>
-              {stats.messages.delta >= 0
+            <p className="text-3xl font-bold text-hi font-mono font-bold">{(stats.messages?.today ?? stats.messages?.total ?? 0).toLocaleString()}</p>
+            <div className={`flex items-center gap-1 text-xs font-semibold ${(stats.messages?.delta ?? 0) >= 0 ? 'text-emerald-600' : 'text-danger'}`}>
+              {(stats.messages?.delta ?? 0) >= 0
                 ? <ArrowUpRight size={14} weight="bold" />
                 : <ArrowDownRight size={14} weight="bold" />}
-              {formatDelta(stats.messages.delta)}
+              {formatDelta(stats.messages?.delta ?? 0)}
             </div>
-            <p className="text-xs text-lo">{stats.messages.total.toLocaleString()} mensajes históricos totales</p>
+            <p className="text-xs text-lo">{(stats.messages?.total ?? 0).toLocaleString()} mensajes históricos totales</p>
           </div>
 
           {/* Conversaciones ayer */}
           <div className="bg-card border border-line rounded-xl p-5 shadow-card flex flex-col gap-2">
             <p className="text-xs font-semibold text-lo uppercase tracking-wider">Conversaciones Ayer</p>
-            <p className="text-3xl font-bold text-hi font-mono">{stats.chats.yesterday.toLocaleString()}</p>
+            <p className="text-3xl font-bold text-hi font-mono">{(stats.chats?.yesterday ?? 0).toLocaleString()}</p>
             <p className="text-xs text-lo">Para comparar con el día de hoy</p>
           </div>
 
           {/* Mensajes ayer */}
           <div className="bg-card border border-line rounded-xl p-5 shadow-card flex flex-col gap-2">
             <p className="text-xs font-semibold text-lo uppercase tracking-wider">Mensajes Ayer</p>
-            <p className="text-3xl font-bold text-hi font-mono">{stats.messages.yesterday.toLocaleString()}</p>
+            <p className="text-3xl font-bold text-hi font-mono">{(stats.messages?.yesterday ?? 0).toLocaleString()}</p>
             <p className="text-xs text-lo">Referencia del día anterior</p>
           </div>
         </div>
