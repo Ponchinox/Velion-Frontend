@@ -290,7 +290,10 @@ export async function deleteTenant(req, res) {
     });
 
     if (!tenant) {
-      return res.status(404).json({ error: 'La empresa especificada no existe.' });
+      return res.json({
+        success: true,
+        message: 'La empresa ya no existía o fue eliminada previamente.',
+      });
     }
 
     // Transacción en cascada para eliminar absolutamente todo rastro de la cuenta
