@@ -86,6 +86,20 @@ async function resolveNotificationPhone(tenantId, tenantDetails) {
   return phone || null;
 }
 
+/**
+ * Sanea un número de teléfono antes de enviarlo a Evolution API.
+ * - Elimina todos los caracteres no numéricos (incl. el +)
+ * - Si el número resultante tiene exactamente 9 dígitos (formato Perú), agrega el prefijo 51
+ */
+function sanitizePhoneForEvo(rawPhone) {
+  if (!rawPhone) return null;
+  const digits = String(rawPhone).replace(/[^0-9]/g, '');
+  if (digits.length === 9) {
+    return `51${digits}`;
+  }
+  return digits;
+}
+
 // Escudo Anti-Spam: Cache en memoria para rate limiting por número
 const spamCache = new Map();
 
@@ -1069,7 +1083,8 @@ El éxito de este modo no consiste en convencer a toda costa, sino en ayudar al 
     }
 
     if (handoffMatches.length > 0) {
-      const destPhone = await resolveNotificationPhone(tenant.id, tenantDetails);
+      const rawDestPhone = await resolveNotificationPhone(tenant.id, tenantDetails);
+      const destPhone = sanitizePhoneForEvo(rawDestPhone);
       if (destPhone) {
         for (const reason of handoffMatches) {
           const alertMessage = `🚨 *ALERTA DE ASESOR REQUERIDO* 🚨\nEl cliente *+${clientNumber}* ha solicitado hablar con un humano.\n*Motivo / Último mensaje:* ${reason}\n¡Por favor, entra al chat y atiéndelo!`;
@@ -1082,9 +1097,9 @@ El éxito de este modo no consiste en convencer a toda costa, sino en ayudar al 
               },
               getEvoHeaders(requestApiKey)
             );
-            console.log(`🚨 [Human Handoff] Alerta enviada a +${destPhone} para cliente +${clientNumber}`);
+            console.log(`🚨 [Human Handoff] Alerta enviada a ${destPhone} para cliente +${clientNumber}`);
           } catch (errHandoff) {
-            console.error(`❌ [Human Handoff] Error al enviar alerta a +${destPhone}:`, errHandoff.response?.data || errHandoff.message);
+            console.error(`❌ [Human Handoff] Error al enviar alerta a ${destPhone}:`, errHandoff.response?.data || errHandoff.message);
           }
         }
       }
@@ -1101,7 +1116,8 @@ El éxito de este modo no consiste en convencer a toda costa, sino en ayudar al 
     }
 
     if (orderSummaries.length > 0 && tenantDetails?.notifySalesWhatsApp === true) {
-      const destPhone = await resolveNotificationPhone(tenant.id, tenantDetails);
+      const rawDestPhone = await resolveNotificationPhone(tenant.id, tenantDetails);
+      const destPhone = sanitizePhoneForEvo(rawDestPhone);
       if (destPhone) {
         for (const summary of orderSummaries) {
           const notificationText = `🚨 *NUEVO PEDIDO CONFIRMADO por IA*\n\n📱 *Cliente:* +${clientNumber} (${customer.name || 'Sin Nombre'})\n📋 *Resumen:* ${summary}\n\n⚡ _Velion Agent Auto-Notification_`;
@@ -1114,9 +1130,9 @@ El éxito de este modo no consiste en convencer a toda costa, sino en ayudar al 
               },
               getEvoHeaders(requestApiKey)
             );
-            console.log(`📲 [Notificación de Venta] Enviada exitosamente a +${destPhone}`);
+            console.log(`📲 [Notificación de Venta] Enviada exitosamente a ${destPhone}`);
           } catch (notifyErr) {
-            console.error(`❌ [Notificación de Venta] Error al enviar a +${destPhone}:`, notifyErr.response?.data || notifyErr.message);
+            console.error(`❌ [Notificación de Venta] Error al enviar a ${destPhone}:`, notifyErr.response?.data || notifyErr.message);
           }
         }
       }
@@ -1146,67 +1162,84 @@ El éxito de este modo no consiste en convencer a toda costa, sino en ayudar al 
       .trim();
 
     if (cleanText) {
-      // Separar el texto en múltiples mensajes independientes utilizando el delimitador [SPLIT]
-      const messageSegments = cleanText
-        .split('[SPLIT]')
-        .map(segment => segment.trim())
-        .filter(segment => segment.length > 0);
-
       const finalCleanNumber = clientNumber.replace(/[^0-9]/g, '');
-      console.log(`📤 [Evolution API] Enviando ${messageSegments.length} segmento(s) de mensaje a ${finalCleanNumber}...`);
+      const isMultiMsg = tenantDetails?.multiMessageMode !== false;
 
-      const evoSendUrl = `${evoUrl}/message/sendText/${instance}`;
+      if (isMultiMsg) {
+        // Modo Conversación Humana ACTIVO: Dividir por [SPLIT] y enviar con pausa entre mensajes
+        const messageSegments = cleanText
+          .split('[SPLIT]')
+          .map(segment => segment.trim())
+          .filter(segment => segment.length > 0);
 
-      for (let i = 0; i < messageSegments.length; i++) {
-        const msgSegment = messageSegments[i];
+        console.log(`📤 [Evolution API] Modo Multi-Mensaje: enviando ${messageSegments.length} segmento(s) a ${finalCleanNumber}...`);
+
+        const evoSendUrl = `${evoUrl}/message/sendText/${instance}`;
+
+        for (let i = 0; i < messageSegments.length; i++) {
+          const msgSegment = messageSegments[i];
+          try {
+            await axios.post(
+              evoSendUrl,
+              { number: finalCleanNumber, text: msgSegment, options: { delay: 0 } },
+              getEvoHeaders(requestApiKey)
+            );
+            console.log(`✅ [Evolution API] Segmento ${i + 1}/${messageSegments.length} enviado: "${msgSegment}"`);
+          } catch (sendErr) {
+            console.error(`❌ [Evolution API] Error al enviar segmento ${i + 1}:`, sendErr.response?.data || sendErr.message);
+          }
+
+          await prisma.message.create({
+            data: { content: msgSegment, senderRole: 'agent', chatId: chat.id, tenantId: tenant.id }
+          });
+
+          if (reqIo) {
+            reqIo.emit('new_whatsapp_message', {
+              chatId: chat.id, remoteJid, text: msgSegment, type: 'outgoing', timestamp: new Date()
+            });
+          }
+
+          // Pausa de 2.5 segundos entre segmentos para simular escritura humana
+          if (i < messageSegments.length - 1) {
+            await new Promise(resolve => setTimeout(resolve, 2500));
+          }
+        }
+      } else {
+        // Modo Conversación Humana DESACTIVADO: Limpiar etiquetas [SPLIT] y enviar 1 solo bloque
+        const singleMessage = cleanText
+          .replace(/\[SPLIT\]/g, ' ')
+          .replace(/\s{2,}/g, ' ')
+          .trim();
+
+        console.log(`📤 [Evolution API] Modo Mensaje Único: enviando respuesta completa a ${finalCleanNumber}...`);
 
         try {
-          const sendResult = await axios.post(
-            evoSendUrl,
-            {
-              number: finalCleanNumber,
-              text: msgSegment,
-              options: {
-                delay: 0
-              }
-            },
+          await axios.post(
+            `${evoUrl}/message/sendText/${instance}`,
+            { number: finalCleanNumber, text: singleMessage, options: { delay: 0 } },
             getEvoHeaders(requestApiKey)
           );
-          console.log(`✅ [Evolution API] Segmento ${i + 1}/${messageSegments.length} enviado a ${finalCleanNumber}: "${msgSegment}"`);
-          console.log(`✅ [Evolution API] Segmento enviado a ${finalCleanNumber}`);
+          console.log(`✅ [Evolution API] Mensaje único enviado a ${finalCleanNumber}: "${singleMessage}"`);
         } catch (sendErr) {
-          console.error(`❌ [Evolution API] Error al enviar segmento ${i + 1} a ${finalCleanNumber}:`, sendErr.response?.data || sendErr.message);
+          console.error(`❌ [Evolution API] Error al enviar mensaje único:`, sendErr.response?.data || sendErr.message);
         }
 
-        // Guardar cada segmento de mensaje saliente en la base de datos
         await prisma.message.create({
-          data: {
-            content: msgSegment,
-            senderRole: 'agent',
-            chatId: chat.id,
-            tenantId: tenant.id
-          }
+          data: { content: singleMessage, senderRole: 'agent', chatId: chat.id, tenantId: tenant.id }
         });
 
-        // Emitir cada segmento saliente vía WebSocket en tiempo real
         if (reqIo) {
           reqIo.emit('new_whatsapp_message', {
             chatId: chat.id,
             remoteJid,
-            text: msgSegment,
+            text: singleMessage,
             type: 'outgoing',
             timestamp: new Date()
           });
         }
-
-        // Simular tiroteo humano de mensajes: Pausa de 2.5 segundos entre cada segmento
-        if (i < messageSegments.length - 1) {
-          await new Promise(resolve => setTimeout(resolve, 2500));
-        }
       }
     }
 
-    const finalCleanNumber = clientNumber.replace(/[^0-9]/g, '');
     for (const url of mediaUrls) {
       if (url && url !== 'Sin imagen') {
         try {
