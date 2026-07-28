@@ -278,7 +278,7 @@ export async function updateTenantPassword(req, res) {
 }
 
 // ==========================================
-// 2. GESTIÓN DE PLANES (PostgreSQL via Prisma)
+// 2. GESTIÓN DE PLANES (PostgreSQL via Prisma - Sin referencias a Stripe)
 // ==========================================
 
 export async function getPlans(req, res) {
