@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import { createPortal } from 'react-dom';
 import { useAuth } from '../context/AuthContext';
 import { apiClient } from '../services/api';
 import { Cardholder, Check, Sparkle, WarningCircle, CircleNotch, X, Copy, QrCode, ArrowSquareOut } from '@phosphor-icons/react';
@@ -182,8 +183,8 @@ export default function BillingPage() {
       )}
 
       {/* Modal de Pago por Yape */}
-      {selectedPlanModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-fadeIn">
+      {selectedPlanModal && createPortal(
+        <div className="fixed inset-0 z-[99999] flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-fadeIn">
           <div 
             className="bg-card rounded-2xl max-w-md w-full p-6 sm:p-8 border border-line shadow-2xl relative space-y-6 animate-scaleUp"
             onClick={(e) => e.stopPropagation()}
@@ -262,7 +263,8 @@ export default function BillingPage() {
               <ArrowSquareOut size={18} weight="bold" />
             </a>
           </div>
-        </div>
+        </div>,
+        document.body
       )}
     </div>
   );
