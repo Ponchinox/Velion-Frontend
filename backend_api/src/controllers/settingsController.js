@@ -39,7 +39,34 @@ export async function getSettings(req, res) {
       return res.status(404).json({ error: 'Tenant no encontrado.' });
     }
 
-    return res.status(200).json(tenant);
+    let hasAdvancedMarketing = false;
+    let planName = tenant.plan || 'Sin Plan';
+
+    if (tenant.planId) {
+      const plan = await prisma.plan.findUnique({
+        where: { id: tenant.planId },
+        select: { hasAdvancedMarketing: true, name: true },
+      });
+      if (plan) {
+        hasAdvancedMarketing = Boolean(plan.hasAdvancedMarketing);
+        planName = plan.name;
+      }
+    } else if (tenant.plan && tenant.plan !== 'Sin Plan') {
+      const plan = await prisma.plan.findFirst({
+        where: { name: tenant.plan },
+        select: { hasAdvancedMarketing: true, name: true },
+      });
+      if (plan) {
+        hasAdvancedMarketing = Boolean(plan.hasAdvancedMarketing);
+        planName = plan.name;
+      }
+    }
+
+    return res.status(200).json({
+      ...tenant,
+      hasAdvancedMarketing,
+      planName,
+    });
   } catch (error) {
     console.error('❌ Error al obtener ajustes:', error);
     return res.status(500).json({ error: 'Error al recuperar los ajustes de la empresa.' });

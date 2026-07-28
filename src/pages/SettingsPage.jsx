@@ -26,8 +26,9 @@ export default function SettingsPage() {
   const [activeSection, setActiveSection] = useState(null); // null (grid) | 'admin' | 'bot' | 'security' | 'billing'
   const [activeSubTab, setActiveSubTab] = useState('general'); // 'general' | 'operations'
   const [isLoading, setIsLoading] = useState(true);
-  const [isSubmitting, setIsSubmitting] = useState(false);
   const [toast, setToast] = useState(null);
+  const [hasAdvancedMarketing, setHasAdvancedMarketing] = useState(false);
+  const [userPlanName, setUserPlanName] = useState('');
 
   // Estado del Cerebro del Bot (Persistido en Backend)
   const [botConfig, setBotConfig] = useState({
@@ -90,6 +91,8 @@ export default function SettingsPage() {
           }
   
           if (tenantData) {
+            setHasAdvancedMarketing(tenantData.hasAdvancedMarketing === true);
+            setUserPlanName(tenantData.planName || tenantData.plan || '');
             setBotConfig({
               logoUrl: tenantData.logoUrl || '',
               companyName: tenantData.companyName || '',
@@ -664,29 +667,54 @@ export default function SettingsPage() {
                     </div>
 
                     {/* Checkbox: Modo Vendedor Persuasivo (Estrategias de Marketing) */}
-                    <div className="col-span-full flex items-center gap-2 pt-1">
-                      <label className="flex items-center gap-2.5 cursor-pointer select-none">
-                        <input
-                          type="checkbox"
-                          name="marketingModeEnabled"
-                          checked={botConfig.marketingModeEnabled === true}
-                          onChange={(e) => {
-                            setBotConfig(prev => ({ ...prev, marketingModeEnabled: e.target.checked }));
-                            setIsFormDirty(true);
-                          }}
-                          className="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500 cursor-pointer"
-                        />
-                        <span className="text-sm font-semibold text-gray-800">
-                          Modo Vendedor Persuasivo (Estrategias de Marketing)
-                        </span>
-                      </label>
-                      <div className="group relative cursor-pointer text-gray-400 hover:text-gray-600 flex items-center">
-                        <HelpCircle size={15} />
-                        <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 hidden group-hover:block w-72 p-2.5 rounded-lg bg-gray-900 text-white shadow-xl text-xs leading-relaxed text-center z-30 pointer-events-none animate-in fade-in duration-150">
-                          Activa estrategias avanzadas de cierre de ventas. El bot aplicará tácticas de persuasión, venta basada en valor y seguimiento inteligente para maximizar tus conversiones.
-                          <div className="absolute top-full left-1/2 -translate-x-1/2 -mt-1 border-4 border-transparent border-t-gray-900" />
+                    <div className={`col-span-full rounded-xl border p-3.5 transition-all mt-1 ${
+                      hasAdvancedMarketing 
+                        ? 'bg-white border-gray-200' 
+                        : 'bg-gray-100/80 border-gray-200/80 opacity-70 cursor-not-allowed select-none'
+                    }`}>
+                      <div className="flex items-center justify-between gap-3">
+                        <label className={`flex items-center gap-2.5 ${hasAdvancedMarketing ? 'cursor-pointer' : 'cursor-not-allowed'}`}>
+                          <input
+                            type="checkbox"
+                            name="marketingModeEnabled"
+                            disabled={!hasAdvancedMarketing}
+                            checked={hasAdvancedMarketing && botConfig.marketingModeEnabled === true}
+                            onChange={(e) => {
+                              if (!hasAdvancedMarketing) return;
+                              setBotConfig(prev => ({ ...prev, marketingModeEnabled: e.target.checked }));
+                              setIsFormDirty(true);
+                            }}
+                            className={`w-4 h-4 rounded border-gray-300 ${
+                              hasAdvancedMarketing 
+                                ? 'text-blue-600 focus:ring-blue-500 cursor-pointer' 
+                                : 'text-gray-400 bg-gray-200 cursor-not-allowed'
+                            }`}
+                          />
+                          <span className={`text-sm font-semibold flex items-center gap-2 flex-wrap ${hasAdvancedMarketing ? 'text-gray-800' : 'text-gray-500'}`}>
+                            Modo Vendedor Persuasivo (Estrategias de Marketing)
+                            {!hasAdvancedMarketing && (
+                              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-3xs font-extrabold bg-amber-100 text-amber-800 border border-amber-300">
+                                <Lock size={10} className="text-amber-800" />
+                                Requiere Plan Pro / Elite
+                              </span>
+                            )}
+                          </span>
+                        </label>
+                        <div className="group relative cursor-pointer text-gray-400 hover:text-gray-600 flex items-center">
+                          <HelpCircle size={15} />
+                          <div className="absolute bottom-full right-0 mb-2 hidden group-hover:block w-72 p-2.5 rounded-lg bg-gray-900 text-white shadow-xl text-xs leading-relaxed text-center z-30 pointer-events-none animate-in fade-in duration-150">
+                            {hasAdvancedMarketing
+                              ? "Activa estrategias avanzadas de cierre de ventas. El bot aplicará tácticas de persuasión, venta basada en valor y seguimiento inteligente para maximizar tus conversiones."
+                              : `Función no disponible en tu plan actual (${userPlanName || 'Básico'}). Requiere una suscripción comercial con Estrategias de Marketing activadas (Plan Pro o Elite).`}
+                            <div className="absolute top-full right-4 -mt-1 border-4 border-transparent border-t-gray-900" />
+                          </div>
                         </div>
                       </div>
+                      {!hasAdvancedMarketing && (
+                        <p className="text-xs text-amber-700/90 mt-2 font-medium pl-6">
+                          🔒 Esta opción está deshabilitada porque tu plan actual no incluye Estrategias de Marketing. Mejora tu suscripción para habilitar la persuasión comercial con IA.
+                        </p>
+                      )}
                     </div>
                   </div>
                 </div>
