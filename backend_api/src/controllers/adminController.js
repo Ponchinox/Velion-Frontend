@@ -182,22 +182,15 @@ export async function createTenant(req, res) {
       return res.status(400).json({ error: 'El correo electrónico ya se encuentra registrado.' });
     }
 
-    // Determinar límites por plan si no se especificaron explícitamente
-    let finalMsgLimit = Number(msgLimit);
-    let finalConnLimit = Number(connLimit);
-
-    if (!finalMsgLimit || !finalConnLimit) {
-      if (plan === 'Pro') {
-        finalMsgLimit = finalMsgLimit || 10000;
-        finalConnLimit = finalConnLimit || 3;
-      } else if (plan === 'Elite') {
-        finalMsgLimit = finalMsgLimit || 50000;
-        finalConnLimit = finalConnLimit || 10;
-      } else {
-        finalMsgLimit = finalMsgLimit || 1000;
-        finalConnLimit = finalConnLimit || 1;
-      }
+    // Buscar información del plan en BD para obtener límites y planId reales
+    let planDb = null;
+    if (plan) {
+      planDb = await prisma.plan.findUnique({ where: { name: plan } });
     }
+
+    const finalMsgLimit  = Number(msgLimit)  || planDb?.msgLimit  || 1000;
+    const finalConnLimit = Number(connLimit) || planDb?.connLimit || 1;
+    const planId         = planDb?.id        || null;
 
     // Contraseña por defecto para el nuevo inquilino: admin123
     const hashedPassword = await bcrypt.hash('admin123', 10);
@@ -208,7 +201,8 @@ export async function createTenant(req, res) {
       const tenant = await tx.tenant.create({
         data: {
           name,
-          plan: plan || 'Básico',
+          plan: planDb?.name || plan || 'Sin Plan',
+          planId: planId,
           msgLimit: finalMsgLimit,
           connLimit: finalConnLimit,
           active: true,

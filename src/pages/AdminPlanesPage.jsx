@@ -20,59 +20,7 @@ import {
 import * as planService from '../services/planService';
 import { useUnsavedChanges } from '../context/UnsavedChangesContext';
 
-const INITIAL_PLANS = [
-  {
-    id: 'p1',
-    name: 'Básico',
-    price: 29,
-    features: [
-      { text: '1 Conexión WhatsApp', included: true },
-      { text: '1,000 Mensajes / mes', included: true },
-      { text: 'Soporte por Email', included: true },
-      { text: 'Acceso a Flow Builder', included: false },
-      { text: 'Cerebro IA (Gemini/Groq)', included: false },
-    ],
-    connLimit: 1,
-    msgLimit: 1000,
-    flowBuilder: false,
-    aiBrain: false,
-    popular: false,
-  },
-  {
-    id: 'p2',
-    name: 'Pro',
-    price: 99,
-    features: [
-      { text: '3 Conexiones WhatsApp', included: true },
-      { text: '10,000 Mensajes / mes', included: true },
-      { text: 'Soporte Prioritario', included: true },
-      { text: 'Acceso a Flow Builder', included: true },
-      { text: 'Cerebro IA (Gemini/Groq)', included: false },
-    ],
-    connLimit: 3,
-    msgLimit: 10000,
-    flowBuilder: true,
-    aiBrain: false,
-    popular: true,
-  },
-  {
-    id: 'p3',
-    name: 'Elite',
-    price: 299,
-    features: [
-      { text: '10 Conexiones WhatsApp', included: true },
-      { text: '50,000 Mensajes / mes', included: true },
-      { text: 'Soporte 24/7 Dedicado', included: true },
-      { text: 'Acceso a Flow Builder', included: true },
-      { text: 'Cerebro IA (Gemini/Groq) ilimitado', included: true },
-    ],
-    connLimit: 10,
-    msgLimit: 50000,
-    flowBuilder: true,
-    aiBrain: true,
-    popular: false,
-  },
-];
+
 
 /* ─── Skeleton de Tarjetas de Precios ─── */
 function CardSkeleton() {
@@ -143,9 +91,8 @@ export default function AdminPlanesPage() {
       const data = await planService.getPlans();
       setPlans(data || []);
     } catch {
-      // Failsafe: Cargar respaldo estático
-      setPlans(INITIAL_PLANS);
-      showToast('Error de red. Cargando planes locales de respaldo.', 'error');
+      setPlans([]);
+      showToast('Error al conectar con el servidor para obtener los planes.', 'error');
     } finally {
       setIsLoading(false);
     }

@@ -24,28 +24,17 @@ import * as tenantService from '../services/tenantService';
 import * as planService from '../services/planService';
 import { useUnsavedChanges } from '../context/UnsavedChangesContext';
 
-const PLAN_CONFIG = {
-  Básico: {
-    cls: 'bg-gray-100 text-lo ring-1 ring-line',
-    dot: 'bg-gray-400',
-    msgLimit: 1000,
-    connLimit: 1,
-  },
-  Pro: {
-    cls: 'bg-violet-50 text-violet-700 ring-1 ring-violet-200',
-    dot: 'bg-violet-500',
-    msgLimit: 10000,
-    connLimit: 3,
-  },
-  Elite: {
-    cls: 'bg-amber-50 text-amber-700 ring-1 ring-amber-200',
-    dot: 'bg-amber-500',
-    msgLimit: 50000,
-    connLimit: 10,
-  },
-};
-
-const PLANS = ['Básico', 'Pro', 'Elite'];
+/* ─── Helpers ─── */
+function getPlanBadgeStyle(planName) {
+  const lower = (planName || '').toLowerCase();
+  if (lower.includes('elite') || lower.includes('empresa') || lower.includes('vip')) {
+    return { cls: 'bg-amber-50 text-amber-700 ring-1 ring-amber-200', dot: 'bg-amber-500' };
+  }
+  if (lower.includes('pro') || lower.includes('avanzad') || lower.includes('premium')) {
+    return { cls: 'bg-violet-50 text-violet-700 ring-1 ring-violet-200', dot: 'bg-violet-500' };
+  }
+  return { cls: 'bg-blue-50 text-blue-700 ring-1 ring-blue-200', dot: 'bg-blue-500' };
+}
 
 
 
@@ -77,11 +66,11 @@ function QuotaBar({ used, limit }) {
 }
 
 function PlanBadge({ plan }) {
-  const cfg = PLAN_CONFIG[plan] ?? PLAN_CONFIG['Básico'];
+  const cfg = getPlanBadgeStyle(plan);
   return (
     <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-2xs font-bold ${cfg.cls}`}>
       <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${cfg.dot}`} />
-      {plan}
+      {plan || 'Sin Plan'}
     </span>
   );
 }
@@ -100,7 +89,6 @@ function StatusBadge({ active }) {
 
 /* ─── Fila Desktop ─── */
 function CompanyRow({ company, onToggleStatus, onEditCompany, onImpersonate }) {
-  const cfg = PLAN_CONFIG[company.plan] || PLAN_CONFIG['Básico'];
   return (
     <tr className="border-b border-line hover:bg-app/50 transition-colors duration-fast group">
       <td className="px-5 py-4">
@@ -120,11 +108,11 @@ function CompanyRow({ company, onToggleStatus, onEditCompany, onImpersonate }) {
       </td>
 
       <td className="px-5 py-4 w-44">
-        <QuotaBar used={company.connUsed} limit={company.connLimit || cfg.connLimit} />
+        <QuotaBar used={company.connUsed} limit={company.connLimit || 1} />
       </td>
 
       <td className="px-5 py-4 w-48">
-        <QuotaBar used={company.msgUsed} limit={company.msgLimit || cfg.msgLimit} />
+        <QuotaBar used={company.msgUsed} limit={company.msgLimit || 1000} />
       </td>
 
       <td className="px-5 py-4">
@@ -230,19 +218,24 @@ function CompanyCard({ company, onToggleStatus, onEditCompany, onImpersonate }) 
 }
 
 /* ─── Modal Registrar Nueva Empresa ─── */
-function NewCompanyModal({ onClose, onSave, setIsDirty }) {
+function NewCompanyModal({ onClose, onSave, setIsDirty, availablePlans = [] }) {
   const [planOpen, setPlanOpen] = useState(false);
   const [plan, setPlan] = useState('');
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
   const [msgLimit, setMsgLimit] = useState(1000);
+  const [connLimit, setConnLimit] = useState(1);
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
-    if (plan) {
-      setMsgLimit(PLAN_CONFIG[plan]?.msgLimit || 1000);
+    if (plan && availablePlans.length > 0) {
+      const found = availablePlans.find(p => p.name === plan);
+      if (found) {
+        setMsgLimit(found.msgLimit || 1000);
+        setConnLimit(found.connLimit || 1);
+      }
     }
-  }, [plan]);
+  }, [plan, availablePlans]);
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -254,7 +247,7 @@ function NewCompanyModal({ onClose, onSave, setIsDirty }) {
         email,
         plan,
         msgLimit: Number(msgLimit),
-        connLimit: PLAN_CONFIG[plan]?.connLimit || 1,
+        connLimit: Number(connLimit),
         active: true,
         connUsed: 0,
         msgUsed: 0,
@@ -266,6 +259,8 @@ function NewCompanyModal({ onClose, onSave, setIsDirty }) {
       setSaving(false);
     }
   };
+
+  const planList = availablePlans.length > 0 ? availablePlans : [];
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4" role="dialog">
@@ -335,16 +330,16 @@ function NewCompanyModal({ onClose, onSave, setIsDirty }) {
               </button>
 
               {planOpen && (
-                <ul className="absolute left-0 right-0 top-full mt-1 z-20 bg-card border border-line rounded-lg shadow-card-md overflow-hidden">
-                  {PLANS.map(p => (
-                    <li key={p}>
+                <ul className="absolute left-0 right-0 top-full mt-1 z-20 bg-card border border-line rounded-lg shadow-card-md overflow-hidden max-h-48 overflow-y-auto">
+                  {planList.map(p => (
+                    <li key={p.id || p.name}>
                       <button
                         type="button"
-                        onClick={() => { setPlan(p); setPlanOpen(false); setIsDirty(true); }}
-                        className={`flex items-center justify-between w-full px-4 py-3 text-sm hover:bg-app cursor-pointer ${plan === p ? 'text-brand font-semibold' : 'text-mid'}`}
+                        onClick={() => { setPlan(p.name); setPlanOpen(false); setIsDirty(true); }}
+                        className={`flex items-center justify-between w-full px-4 py-3 text-sm hover:bg-app cursor-pointer ${plan === p.name ? 'text-brand font-semibold' : 'text-mid'}`}
                       >
-                        <PlanBadge plan={p} />
-                        {plan === p && <Check size={14} className="text-brand flex-shrink-0" />}
+                        <PlanBadge plan={p.name} />
+                        {plan === p.name && <Check size={14} className="text-brand flex-shrink-0" />}
                       </button>
                     </li>
                   ))}
@@ -552,6 +547,7 @@ function TableSkeleton() {
 /* ─── Componente Principal ─── */
 export default function AdminEmpresasPage() {
   const [companies, setCompanies] = useState([]);
+  const [availablePlans, setAvailablePlans] = useState([]);
   const [isLoading, setIsLoading] = useState(true);
   const [errorMsg, setErrorMsg] = useState('');
   const [toast, setToast] = useState(null);
@@ -572,8 +568,12 @@ export default function AdminEmpresasPage() {
     setIsLoading(true);
     setErrorMsg('');
     try {
-      const data = await tenantService.getTenants();
-      setCompanies(data || []);
+      const [tenantsData, plansData] = await Promise.all([
+        tenantService.getTenants().catch(() => []),
+        planService.getPlans().catch(() => []),
+      ]);
+      setCompanies(tenantsData || []);
+      setAvailablePlans(plansData || []);
     } catch {
       setErrorMsg('No se pudieron obtener las empresas registradas.');
       setCompanies([]);
@@ -667,12 +667,15 @@ export default function AdminEmpresasPage() {
     const active = companies.filter(c => c.active).length;
     const mrr = companies
       .filter(c => c.active)
-      .reduce((acc, c) => acc + (c.plan === 'Elite' ? 299 : c.plan === 'Pro' ? 99 : 29), 0);
+      .reduce((acc, c) => {
+        const found = availablePlans.find(p => p.name.toLowerCase() === (c.plan || '').toLowerCase());
+        return acc + (found ? found.price : 0);
+      }, 0);
 
     const nearLimit = companies.filter(c => {
-      const cfg = PLAN_CONFIG[c.plan] || PLAN_CONFIG['Básico'];
-      const cLimit = c.connLimit || cfg.connLimit;
-      const mLimit = c.msgLimit || cfg.msgLimit;
+      const found = availablePlans.find(p => p.name.toLowerCase() === (c.plan || '').toLowerCase());
+      const cLimit = c.connLimit || found?.connLimit || 1;
+      const mLimit = c.msgLimit || found?.msgLimit || 1000;
       return pct(c.connUsed, cLimit) >= 80 || pct(c.msgUsed, mLimit) >= 80;
     }).length;
 
@@ -702,7 +705,7 @@ export default function AdminEmpresasPage() {
         bg:    nearLimit > 0 ? 'bg-amber-50' : 'bg-app',
       },
     ];
-  }, [companies]);
+  }, [companies, availablePlans]);
 
   return (
     <section aria-labelledby="admin-empresas-heading">
@@ -854,6 +857,7 @@ export default function AdminEmpresasPage() {
           onClose={() => { setShowModal(false); setIsFormDirty(false); }}
           onSave={handleCreateTenant}
           setIsDirty={setIsFormDirty}
+          availablePlans={availablePlans}
         />
       )}
 
