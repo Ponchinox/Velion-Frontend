@@ -1010,7 +1010,10 @@ No inventes descuentos, promociones, disponibilidad, urgencia, escasez, testimon
 El éxito de este modo no consiste en convencer a toda costa, sino en ayudar al cliente a tomar una decisión de compra informada, generando confianza mediante respuestas claras, útiles y orientadas al valor.\n`;
     }
 
-    const systemRulesAndInventory = `${splitRule}${orderNotificationRule}${humanHandoffRule}${marketingInstructionRule}${infoInstitucional}`.trim();
+    const systemRulesAndInventory = `${splitRule}${orderNotificationRule}${humanHandoffRule}${marketingInstructionRule}${infoInstitucional}
+
+CATÁLOGO DE PRODUCTOS DISPONIBLES EN LA TIENDA (actualizado en tiempo real desde la base de datos):
+${inventarioTexto}`.trim();
 
     // ─── ENSAMBLAJE FINAL CON INYECCIÓN DE IDENTIDAD E INSTRUCCIONES EN LA CÚSPIDE ───
     const mainInstructions = (tenantDetails?.botRole || tenantDetails?.customPrompt || 'Eres un asistente virtual de ventas amable, atento y amigable.').trim();
