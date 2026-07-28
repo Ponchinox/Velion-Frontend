@@ -20,8 +20,8 @@ import {
   resolveAlert,
   getBackups,
   generateBackup,
-  deleteTenant,
-  updateTenantPassword
+  downloadBackup,
+  deleteTenant
 } from '../controllers/adminController.js';
 import authMiddleware from '../middlewares/authMiddleware.js';
 import adminMiddleware from '../middlewares/adminMiddleware.js';
