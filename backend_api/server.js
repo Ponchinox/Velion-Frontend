@@ -75,7 +75,7 @@ app.use(cors({
     'http://localhost:5173', // Tu página local (para cuando programes)
     'http://localhost:3000'
   ],
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization', 'X-Tenant-Id'],
   credentials: true
 }));
