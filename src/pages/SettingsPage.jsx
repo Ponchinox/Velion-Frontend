@@ -26,6 +26,7 @@ export default function SettingsPage() {
   const [activeSection, setActiveSection] = useState(null); // null (grid) | 'admin' | 'bot' | 'security' | 'billing'
   const [activeSubTab, setActiveSubTab] = useState('general'); // 'general' | 'operations'
   const [isLoading, setIsLoading] = useState(true);
+  const [isSubmitting, setIsSubmitting] = useState(false);
   const [toast, setToast] = useState(null);
   const [hasAdvancedMarketing, setHasAdvancedMarketing] = useState(false);
   const [userPlanName, setUserPlanName] = useState('');
