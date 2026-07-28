@@ -48,3 +48,12 @@ export async function updateTenantPassword(tenantId, password) {
     body: { password },
   });
 }
+
+/**
+ * Elimina una empresa (tenant) y todos sus datos permanentemente del SaaS
+ */
+export async function deleteTenant(tenantId) {
+  return apiClient(`/admin/tenants/${tenantId}`, {
+    method: 'DELETE',
+  });
+}

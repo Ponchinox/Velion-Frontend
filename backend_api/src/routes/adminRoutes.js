@@ -20,7 +20,8 @@ import {
   resolveAlert,
   getBackups,
   generateBackup,
-  downloadBackup
+  deleteTenant,
+  updateTenantPassword
 } from '../controllers/adminController.js';
 import authMiddleware from '../middlewares/authMiddleware.js';
 import adminMiddleware from '../middlewares/adminMiddleware.js';
@@ -53,6 +54,7 @@ router.post('/tenants', createTenant);
 router.patch('/tenants/:id/status', updateTenantStatus);
 router.patch('/tenants/:id/limits', updateTenantLimits);
 router.put('/tenants/:id/password', updateTenantPassword);
+router.delete('/tenants/:id', deleteTenant);
 
 // Plans
 router.get('/plans', getPlans);

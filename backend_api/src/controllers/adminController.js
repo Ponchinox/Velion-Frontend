@@ -277,6 +277,68 @@ export async function updateTenantPassword(req, res) {
   }
 }
 
+/**
+ * Elimina una empresa (Tenant) y TODOS sus registros asociados de forma permanente en cascada.
+ */
+export async function deleteTenant(req, res) {
+  try {
+    const { id } = req.params;
+
+    const tenant = await prisma.tenant.findUnique({
+      where: { id },
+      select: { id: true, name: true },
+    });
+
+    if (!tenant) {
+      return res.status(404).json({ error: 'La empresa especificada no existe.' });
+    }
+
+    // Transacción en cascada para eliminar absolutamente todo rastro de la cuenta
+    await prisma.$transaction(async (tx) => {
+      // 1. Obtener IDs de usuarios del tenant
+      const users = await tx.user.findMany({
+        where: { tenantId: id },
+        select: { id: true },
+      });
+      const userIds = users.map(u => u.id);
+
+      // 2. Eliminar productos vinculados a los usuarios del tenant
+      if (userIds.length > 0) {
+        await tx.product.deleteMany({
+          where: { userId: { in: userIds } },
+        });
+      }
+
+      // 3. Eliminar mensajes, chats, contactos, clientes, campañas, flujos, alertas y números registrados
+      await tx.message.deleteMany({ where: { tenantId: id } });
+      await tx.chat.deleteMany({ where: { tenantId: id } });
+      await tx.contact.deleteMany({ where: { tenantId: id } });
+      await tx.customer.deleteMany({ where: { tenantId: id } });
+      await tx.campaign.deleteMany({ where: { tenantId: id } });
+      await tx.automationFlow.deleteMany({ where: { tenantId: id } });
+      await tx.flow.deleteMany({ where: { tenantId: id } });
+      await tx.alert.deleteMany({ where: { tenantId: id } });
+      await tx.registeredWhatsAppNumber.deleteMany({ where: { tenantId: id } });
+
+      // 4. Eliminar usuarios del tenant
+      await tx.user.deleteMany({ where: { tenantId: id } });
+
+      // 5. Eliminar la empresa (Tenant) físicamente de PostgreSQL
+      await tx.tenant.delete({ where: { id } });
+    });
+
+    console.log(`🗑️ [Admin] Empresa "${tenant.name}" (${id}) y todos sus datos fueron eliminados permanentemente.`);
+
+    return res.json({
+      success: true,
+      message: `Empresa "${tenant.name}" eliminada correctamente de forma permanente.`,
+    });
+  } catch (error) {
+    console.error('Error en deleteTenant:', error);
+    return res.status(500).json({ error: 'Error interno al eliminar la empresa.' });
+  }
+}
+
 // ==========================================
 // 2. GESTIÓN DE PLANES (PostgreSQL via Prisma - Sin referencias a Stripe)
 // ==========================================

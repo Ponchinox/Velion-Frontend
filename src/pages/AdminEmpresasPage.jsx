@@ -19,6 +19,7 @@ import {
   ArrowClockwise,
   SignIn,
   Key,
+  Trash,
 } from '@phosphor-icons/react';
 import * as tenantService from '../services/tenantService';
 import * as planService from '../services/planService';
@@ -88,7 +89,7 @@ function StatusBadge({ active }) {
 }
 
 /* ─── Fila Desktop ─── */
-function CompanyRow({ company, onToggleStatus, onEditCompany, onImpersonate }) {
+function CompanyRow({ company, onToggleStatus, onEditCompany, onImpersonate, onDeleteTenant }) {
   return (
     <tr className="border-b border-line hover:bg-app/50 transition-colors duration-fast group">
       <td className="px-5 py-4">
@@ -128,15 +129,6 @@ function CompanyRow({ company, onToggleStatus, onEditCompany, onImpersonate }) {
           >
             <PencilSimple size={15} />
           </button>
-          {/* 
-          <button
-            onClick={() => {}}
-            className="p-1.5 rounded-md text-muted hover:text-violet-600 hover:bg-violet-50 transition-colors duration-fast cursor-pointer"
-            title="Ver analíticas (En construcción)"
-          >
-            <ChartBar size={15} />
-          </button>
-          */}
           <button
             onClick={() => onImpersonate(company.id, company.name)}
             className="p-1.5 rounded-md text-muted hover:text-emerald-600 hover:bg-emerald-50 transition-colors duration-fast cursor-pointer"
@@ -155,6 +147,13 @@ function CompanyRow({ company, onToggleStatus, onEditCompany, onImpersonate }) {
           >
             <Power size={15} />
           </button>
+          <button
+            onClick={() => onDeleteTenant(company.id, company.name)}
+            className="p-1.5 rounded-md text-muted hover:text-danger hover:bg-red-50 transition-colors duration-fast cursor-pointer"
+            title="Eliminar empresa permanentemente"
+          >
+            <Trash size={15} />
+          </button>
         </div>
       </td>
     </tr>
@@ -162,7 +161,7 @@ function CompanyRow({ company, onToggleStatus, onEditCompany, onImpersonate }) {
 }
 
 /* ─── Tarjeta Móvil ─── */
-function CompanyCard({ company, onToggleStatus, onEditCompany, onImpersonate }) {
+function CompanyCard({ company, onToggleStatus, onEditCompany, onImpersonate, onDeleteTenant }) {
   return (
     <div className="bg-card border border-line rounded-lg shadow-card p-4 flex flex-col gap-3">
       <div className="flex items-start justify-between gap-3">
@@ -202,7 +201,7 @@ function CompanyCard({ company, onToggleStatus, onEditCompany, onImpersonate }) 
         </button>
         <button
           onClick={() => onToggleStatus(company.id, company.active, company.name)}
-          className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md border text-xs font-medium cursor-pointer transition-colors ml-auto ${
+          className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md border text-xs font-medium cursor-pointer transition-colors ${
             company.active
               ? 'border-red-200 text-danger hover:bg-red-50'
               : 'border-emerald-200 text-emerald-700 hover:bg-emerald-50'
@@ -210,6 +209,13 @@ function CompanyCard({ company, onToggleStatus, onEditCompany, onImpersonate }) 
         >
           <Power size={12} />
           {company.active ? 'Suspender' : 'Activar'}
+        </button>
+        <button
+          onClick={() => onDeleteTenant(company.id, company.name)}
+          className="flex items-center gap-1.5 px-3 py-1.5 rounded-md border border-red-200 text-xs font-medium text-danger hover:bg-red-50 cursor-pointer transition-colors ml-auto"
+          title="Eliminar empresa permanentemente"
+        >
+          <Trash size={12} /> Eliminar
         </button>
       </div>
     </div>
@@ -652,6 +658,21 @@ export default function AdminEmpresasPage() {
     }
   };
 
+  const handleDeleteTenant = async (id, name) => {
+    if (!window.confirm(`¿Estás seguro de que deseas eliminar permanentemente la empresa "${name}" y TODOS sus datos (usuarios, productos, chats, mensajes)? Esta acción es irreversible.`)) {
+      return;
+    }
+
+    try {
+      await tenantService.deleteTenant(id);
+      setCompanies(prev => prev.filter(c => c.id !== id));
+      showToast(`Empresa "${name}" y todos sus datos fueron eliminados correctamente.`);
+    } catch (err) {
+      console.error(err);
+      showToast(err.message || 'Error al eliminar la empresa de la base de datos.', 'error');
+    }
+  };
+
   // Filtrado reactivo
   const filtered = useMemo(() => {
     return companies.filter(c =>
@@ -814,6 +835,7 @@ export default function AdminEmpresasPage() {
                         onToggleStatus={handleToggleStatus}
                         onEditCompany={setSelectedCompanyForEdit}
                         onImpersonate={handleImpersonate}
+                        onDeleteTenant={handleDeleteTenant}
                       />
                     ))}
                   </tbody>
@@ -829,6 +851,7 @@ export default function AdminEmpresasPage() {
                     onToggleStatus={handleToggleStatus}
                     onEditCompany={setSelectedCompanyForEdit}
                     onImpersonate={handleImpersonate}
+                    onDeleteTenant={handleDeleteTenant}
                   />
                 ))}
               </div>
