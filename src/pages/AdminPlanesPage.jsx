@@ -212,7 +212,8 @@ export default function AdminPlanesPage() {
       hasCampaigns: formHasCampaigns,
       hasAutomations: formHasAutomations,
       hasAdvancedMarketing: formHasAdvancedMarketing,
-      flowBuilder: formFlowBuilder,
+      // flowBuilder se sincroniza con hasAutomations (campo legacy, se mantiene consistente)
+      flowBuilder: formHasAutomations,
       aiBrain: formAiBrain,
       popular: formPopular,
       features: formFeatures.filter(f => f.trim() !== ''),
@@ -504,29 +505,6 @@ export default function AdminPlanesPage() {
 
                   <div className="flex items-center justify-between py-1">
                     <div className="flex items-center gap-2">
-                      <TreeStructure size={16} className="text-brand" />
-                      <div>
-                        <p className="text-sm font-medium text-hi leading-tight">Habilitar Flow Builder</p>
-                        <p className="text-2xs text-lo mt-0.5 font-medium">Constructor de flujos interactivos</p>
-                      </div>
-                    </div>
-                    <button
-                      type="button"
-                      role="switch"
-                      aria-checked={formFlowBuilder}
-                      onClick={() => { setFormFlowBuilder(!formFlowBuilder); setIsFormDirty(true); }}
-                      className={`
-                        relative inline-flex h-5 w-9 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent
-                        transition-colors duration-200 focus:outline-none
-                        ${formFlowBuilder ? 'bg-brand' : 'bg-gray-200'}
-                      `}
-                    >
-                      <span className={`pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow transition duration-200 ${formFlowBuilder ? 'translate-x-4' : 'translate-x-0'}`} />
-                    </button>
-                  </div>
-
-                  <div className="flex items-center justify-between py-1">
-                    <div className="flex items-center gap-2">
                       <Sparkle size={16} className="text-purple-600" />
                       <div>
                         <p className="text-sm font-medium text-hi leading-tight">Habilitar Cerebro IA</p>
@@ -568,13 +546,13 @@ export default function AdminPlanesPage() {
                     </button>
                   </div>
 
-                  {/* Automatizaciones */}
+                  {/* Flow Builder y Automatizaciones */}
                   <div className="flex items-center justify-between py-1">
                     <div className="flex items-center gap-2">
                       <TreeStructure size={16} className="text-indigo-500" />
                       <div>
-                        <p className="text-sm font-medium text-hi leading-tight">Automatizaciones (Flow Builder)</p>
-                        <p className="text-2xs text-lo mt-0.5 font-medium">Flujos automatizados de respuesta</p>
+                        <p className="text-sm font-medium text-hi leading-tight">Flow Builder y Automatizaciones</p>
+                        <p className="text-2xs text-lo mt-0.5 font-medium">Acceso al constructor visual de flujos y respuestas automáticas</p>
                       </div>
                     </div>
                     <button
