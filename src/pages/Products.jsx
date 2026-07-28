@@ -623,6 +623,9 @@ export default function Products() {
               placeholder=""
               className="w-full px-3 py-2.5 text-sm bg-app border border-line rounded-lg text-hi placeholder:text-muted focus:outline-none focus:border-brand focus:shadow-input-focus transition-all"
             />
+            <div className="text-right mt-0.5">
+              <span className="text-[11px] text-lo font-mono">{(name || '').length} / 100</span>
+            </div>
           </div>
 
           <div>
@@ -636,6 +639,9 @@ export default function Products() {
               placeholder=""
               className="w-full px-3 py-2.5 text-sm bg-app border border-line rounded-lg text-hi placeholder:text-muted focus:outline-none focus:border-brand focus:shadow-input-focus transition-all resize-none"
             />
+            <div className="text-right mt-0.5">
+              <span className="text-[11px] text-lo font-mono">{(description || '').length} / 600</span>
+            </div>
           </div>
 
           <div className="grid grid-cols-2 gap-4">

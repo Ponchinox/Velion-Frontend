@@ -614,6 +614,9 @@ export default function SettingsPage() {
                         className="w-full px-4 py-3 rounded-md border border-gray-200 bg-gray-50 text-sm text-gray-900 focus:outline-none focus:border-blue-500 focus:bg-white transition-all resize-none leading-relaxed font-mono"
                         placeholder=""
                       />
+                      <div className="text-right mt-1">
+                        <span className="text-xs text-gray-400 font-mono">{(botConfig.botRole || botConfig.customPrompt || '').length} / 1500</span>
+                      </div>
                     </div>
 
                     {/* Checkbox Compacto: Modo Conversación Humana */}
@@ -718,6 +721,9 @@ export default function SettingsPage() {
                       className="w-full px-4 py-3 rounded-md border border-gray-200 bg-gray-50 text-sm text-gray-900 focus:outline-none focus:border-blue-500 focus:bg-white transition-all resize-none leading-relaxed col-span-full"
                       placeholder=""
                     />
+                    <div className="text-right mt-1">
+                      <span className="text-xs text-gray-400 font-mono">{(botConfig.businessHours || '').length} / 300</span>
+                    </div>
                   </div>
 
                   <div className="col-span-full">
@@ -731,6 +737,9 @@ export default function SettingsPage() {
                       className="w-full px-4 py-3 rounded-md border border-gray-200 bg-gray-50 text-sm text-gray-900 focus:outline-none focus:border-blue-500 focus:bg-white transition-all resize-none leading-relaxed col-span-full"
                       placeholder=""
                     />
+                    <div className="text-right mt-1">
+                      <span className="text-xs text-gray-400 font-mono">{(botConfig.termsAndPolicies || '').length} / 800</span>
+                    </div>
                   </div>
 
                   <div className="col-span-full">
@@ -752,9 +761,12 @@ export default function SettingsPage() {
                       className="w-full px-4 py-3 rounded-md border border-gray-200 bg-gray-50 text-sm text-gray-900 focus:outline-none focus:border-blue-500 focus:bg-white transition-all font-mono resize-none leading-relaxed col-span-full"
                       placeholder=""
                     />
-                    <p className="text-xs text-gray-500 mt-1.5 leading-relaxed">
-                      Escribe tus cuentas y métodos de pago exactamente como quieres que el cliente los lea. Nuestro bot los enviará tal cual sin modificarlos.
-                    </p>
+                    <div className="flex items-center justify-between mt-1.5">
+                      <p className="text-xs text-gray-500 leading-relaxed">
+                        Escribe tus cuentas y métodos de pago exactamente como quieres que el cliente los lea. Nuestro bot los enviará tal cual sin modificarlos.
+                      </p>
+                      <span className="text-xs text-gray-400 font-mono flex-shrink-0 ml-2">{(botConfig.bankAccounts || '').length} / 500</span>
+                    </div>
                   </div>
                 </div>
               )}

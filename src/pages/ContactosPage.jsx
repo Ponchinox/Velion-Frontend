@@ -256,6 +256,9 @@ function AddContactModal({ onClose, onSave }) {
             placeholder=""
             className="w-full px-3 py-2.5 text-sm bg-app border border-line rounded-lg text-hi placeholder:text-muted focus:outline-none focus:border-brand focus:shadow-input-focus transition-all"
           />
+          <div className="text-right mt-0.5">
+            <span className="text-[11px] text-lo font-mono">{(name || '').length} / 100</span>
+          </div>
         </div>
 
         <div className="space-y-1">
@@ -270,6 +273,9 @@ function AddContactModal({ onClose, onSave }) {
             placeholder=""
             className="w-full px-3 py-2.5 text-sm bg-app border border-line rounded-lg text-hi placeholder:text-muted focus:outline-none focus:border-brand focus:shadow-input-focus transition-all font-mono"
           />
+          <div className="text-right mt-0.5">
+            <span className="text-[11px] text-lo font-mono">{(phone || '').length} / 20</span>
+          </div>
         </div>
 
         {/* Footer */}
