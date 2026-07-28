@@ -116,6 +116,7 @@ export async function updateTenantLimits(req, res) {
       });
       if (planDb) {
         updateData.plan = planDb.name;
+        updateData.planId = planDb.id;   // ← CRÍTICO: sincronizar planId para que el middleware de features funcione
         updateData.connLimit = planDb.connLimit;
         updateData.msgLimit = planDb.msgLimit;
       } else {
