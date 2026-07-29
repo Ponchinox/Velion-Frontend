@@ -118,44 +118,42 @@ function ContactRow({ contact, index, onDelete, onToggleBot }) {
       </td>
 
       <td className="px-5 py-3.5">
+        <span className="text-sm text-lo">{contact.lastInteraction || 'Sin interacción'}</span>
+      </td>
+
+      {/* Columna: Estado (Pausar / Reactivar IA) */}
+      <td className="px-5 py-3.5 text-center">
         {contact.botPaused ? (
-          <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-bold bg-amber-50 text-amber-700 border border-amber-200">
-            Bot Pausado
-          </span>
+          <button
+            onClick={() => onToggleBot(contact, false)}
+            className="inline-flex items-center gap-1.5 px-3 py-1 rounded-md bg-amber-50 hover:bg-amber-100 text-amber-800 text-xs font-bold transition-all border border-amber-300 cursor-pointer shadow-xs"
+            title="Bot Pausado. Haz clic para reactivar respuestas automáticas de la IA"
+          >
+            <span className="w-2 h-2 rounded-full bg-amber-500 animate-pulse" />
+            Reactivar IA
+          </button>
         ) : (
-          <span className="text-sm text-lo">{contact.lastInteraction || 'Sin interacción'}</span>
+          <button
+            onClick={() => onToggleBot(contact, true)}
+            className="inline-flex items-center gap-1.5 px-3 py-1 rounded-md bg-emerald-50 hover:bg-emerald-100 text-emerald-700 text-xs font-semibold transition-all border border-emerald-200 cursor-pointer shadow-xs"
+            title="Bot Activo. Haz clic para pausar respuestas de la IA para este contacto"
+          >
+            <span className="w-2 h-2 rounded-full bg-emerald-500" />
+            Pausar IA
+          </button>
         )}
       </td>
 
+      {/* Columna: Acciones (Eliminar) */}
       <td className="px-5 py-3.5 text-center">
-        <div className="flex items-center justify-center gap-2">
-          {contact.botPaused ? (
-            <button
-              onClick={() => onToggleBot(contact, false)}
-              className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md bg-emerald-50 hover:bg-emerald-100 text-emerald-700 text-xs font-bold transition-all border border-emerald-200 cursor-pointer"
-              title="Reactivar respuestas automáticas de la IA"
-            >
-              <ArrowClockwise size={13} className="text-emerald-700 font-bold" />
-              Reactivar IA
-            </button>
-          ) : (
-            <button
-              onClick={() => onToggleBot(contact, true)}
-              className="inline-flex items-center gap-1 px-2 py-1 rounded-md text-xs font-medium text-slate-500 hover:text-slate-800 hover:bg-slate-100 transition-all cursor-pointer"
-              title="Pausar respuestas de la IA para este contacto"
-            >
-              Pausar IA
-            </button>
-          )}
-          <button
-            onClick={() => onDelete(contact)}
-            className="p-2 rounded-md text-muted hover:text-danger hover:bg-red-50 transition-colors cursor-pointer"
-            title="Eliminar contacto"
-            aria-label={`Eliminar contacto ${contact.name}`}
-          >
-            <Trash size={16} />
-          </button>
-        </div>
+        <button
+          onClick={() => onDelete(contact)}
+          className="p-2 rounded-md text-muted hover:text-danger hover:bg-red-50 transition-colors cursor-pointer"
+          title="Eliminar contacto"
+          aria-label={`Eliminar contacto ${contact.name}`}
+        >
+          <Trash size={16} />
+        </button>
       </td>
     </tr>
   );
@@ -532,8 +530,8 @@ export default function ContactosPage() {
               <table className="w-full border-collapse">
                 <thead>
                   <tr className="bg-app border-b border-line">
-                    {['Cliente', 'Teléfono', 'Fecha de Registro', 'Última Interacción', 'Acciones'].map(c => (
-                      <th key={c} className={`px-5 py-3 text-2xs font-semibold text-lo uppercase tracking-wider ${c === 'Acciones' ? 'text-center' : 'text-left'}`}>
+                    {['Cliente', 'Teléfono', 'Fecha de Registro', 'Última Interacción', 'Estado', 'Acciones'].map(c => (
+                      <th key={c} className={`px-5 py-3 text-2xs font-semibold text-lo uppercase tracking-wider ${['Estado', 'Acciones'].includes(c) ? 'text-center' : 'text-left'}`}>
                         {c}
                       </th>
                     ))}
