@@ -178,19 +178,27 @@ function ContactCard({ contact, index, onDelete, onToggleBot }) {
             <p className="text-xs text-lo font-mono mt-0.5">{contact.phone}</p>
           </div>
         </div>
-        <div className="flex items-center gap-1">
-          {contact.botPaused && (
+        <div className="flex items-center gap-1.5">
+          {contact.botPaused ? (
             <button
               onClick={() => onToggleBot(contact, false)}
-              className="inline-flex items-center gap-1 px-2 py-1 rounded bg-emerald-50 text-emerald-700 text-xs font-bold border border-emerald-200 cursor-pointer"
+              className="inline-flex items-center gap-1 px-2 py-1 rounded bg-amber-50 text-amber-800 text-xs font-bold border border-amber-300 cursor-pointer shadow-xs"
             >
-              <ArrowClockwise size={12} />
+              <span className="w-1.5 h-1.5 rounded-full bg-amber-500 animate-pulse" />
               Reactivar IA
+            </button>
+          ) : (
+            <button
+              onClick={() => onToggleBot(contact, true)}
+              className="inline-flex items-center gap-1 px-2 py-1 rounded bg-emerald-50 text-emerald-700 text-xs font-semibold border border-emerald-200 cursor-pointer shadow-xs"
+            >
+              <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
+              Pausar IA
             </button>
           )}
           <button
             onClick={() => onDelete(contact)}
-            className="p-1 rounded-md text-muted hover:text-danger hover:bg-red-50 transition-colors cursor-pointer"
+            className="p-1.5 rounded-md text-muted hover:text-danger hover:bg-red-50 transition-colors cursor-pointer"
             title="Eliminar contacto"
           >
             <Trash size={16} />
