@@ -109,6 +109,20 @@ const messageBuffers = new Map();
 // Escudo de Facturación: Cache en memoria para rate limiting de llamadas de IA (OpenAI)
 const iaRateLimitCache = new Map();
 
+// Cache en memoria para rastrear mensajes enviados por el sistema (IA / Flujos / Panel)
+// Permite distinguir intervención humana manual desde el celular/WhatsApp Web
+const sentByAiCache = new Set();
+
+export function markMessageAsSentByAi(textOrId) {
+  if (!textOrId) return;
+  const clean = typeof textOrId === 'string' ? textOrId.trim() : '';
+  if (clean) {
+    sentByAiCache.add(clean);
+    // Auto-expirar en 60 segundos por seguridad
+    setTimeout(() => sentByAiCache.delete(clean), 60000);
+  }
+}
+
 /**
  * Obtiene el estado real de la conexión de la instancia desde Evolution API
  */
@@ -394,6 +408,10 @@ export async function sendMessage(req, res) {
       getEvoHeaders()
     );
 
+    const msgId = response.data?.key?.id;
+    if (msgId) markMessageAsSentByAi(msgId);
+    markMessageAsSentByAi(message);
+
     return res.json({
       success: true,
       data: response.data,
@@ -653,17 +671,88 @@ export async function receiveWebhook(req, res) {
       });
     }
 
-    // SI EL MENSAJE ES NUESTRO (ENVIADO DESDE EL CELULAR COMERCIAL O PANEL)
+    // SI EL MENSAJE ES NUESTRO (ENVIADO DESDE EL CELULAR COMERCIAL, PANEL O IA)
     if (key.fromMe) {
-      // Guardar en la base de datos como mensaje del agente
-      await prisma.message.create({
-        data: {
-          content: userMessageText,
-          senderRole: 'agent',
+      const msgId = key.id;
+      const isAiMessage = (msgId && sentByAiCache.has(msgId)) || 
+                          (userMessageText && sentByAiCache.has(userMessageText.trim()));
+
+      if (isAiMessage) {
+        if (msgId) sentByAiCache.delete(msgId);
+        if (userMessageText) sentByAiCache.delete(userMessageText.trim());
+        console.log(`🤖 [Webhook Evolution] Mensaje saliente de IA/Sistema verificado para +${clientNumber}.`);
+      } else {
+        // 🚨 ¡INTERVENCIÓN HUMANA DETECTADA DESDE CELULAR O WHATSAPP WEB!
+        console.log(`👤 [Auto-Pausa Human Handoff] Intervención humana detectada en +${clientNumber}. Pausando bot automáticamente...`);
+
+        // 1. Pausar en Contact (CRM)
+        if (contact && !contact.botPaused) {
+          await prisma.contact.update({
+            where: { id: contact.id },
+            data: { botPaused: true }
+          });
+        }
+
+        // 2. Pausar en Chat (CRM)
+        if (chat && !chat.botPaused) {
+          await prisma.chat.update({
+            where: { id: chat.id },
+            data: { botPaused: true }
+          });
+        }
+
+        // 3. Pausar en Customer (Bot Engine)
+        const cleanPhone = clientNumber.replace(/\D/g, '');
+        if (cleanPhone) {
+          await prisma.customer.updateMany({
+            where: { tenantId: tenant.id, phone: { contains: cleanPhone } },
+            data: { isBotPaused: true }
+          });
+        }
+
+        // 4. Cancelar cualquier buffer de mensajes acumulados pendiente del cliente
+        if (messageBuffers.has(remoteJid)) {
+          const buf = messageBuffers.get(remoteJid);
+          if (buf?.timer) clearTimeout(buf.timer);
+          messageBuffers.delete(remoteJid);
+          console.log(`🧹 [Message Buffer] Buffer cancelado para +${clientNumber} por intervención humana.`);
+        }
+
+        // 5. Emitir eventos por WebSocket en tiempo real para el Dashboard
+        if (req.io) {
+          req.io.emit('contact_updated', {
+            contactId: contact?.id,
+            phone: cleanPhone,
+            botPaused: true,
+            reason: 'HUMAN_INTERVENTION'
+          });
+          req.io.emit('bot_status_changed', {
+            contactId: contact?.id,
+            phone: cleanPhone,
+            botPaused: true
+          });
+        }
+      }
+
+      // Guardar en la base de datos como mensaje del agente si no se ha guardado previamente
+      const existingMessage = await prisma.message.findFirst({
+        where: {
           chatId: chat.id,
-          tenantId: tenant.id
+          content: userMessageText,
+          senderRole: 'agent'
         }
       });
+
+      if (!existingMessage) {
+        await prisma.message.create({
+          data: {
+            content: userMessageText,
+            senderRole: 'agent',
+            chatId: chat.id,
+            tenantId: tenant.id
+          }
+        });
+      }
 
       // Emitir mensaje saliente a través de WebSocket en tiempo real
       if (req.io) {
@@ -700,6 +789,21 @@ export async function receiveWebhook(req, res) {
         type: 'incoming',
         timestamp: new Date()
       });
+    }
+
+    // 2.5 ESCUDO DE AUTO-PAUSA: Si el bot está pausado para este contacto, no acumular ni invocar a la IA
+    const existingCustomerForCheck = await prisma.customer.findUnique({
+      where: {
+        tenantId_phone: {
+          tenantId: tenant.id,
+          phone: remoteJid
+        }
+      }
+    });
+
+    if (contact?.botPaused || existingCustomerForCheck?.isBotPaused) {
+      console.log(`👥 [Auto-Pausa Human Handoff] Bot pausado para +${clientNumber}. Mensaje del cliente guardado en CRM pero la IA no responderá.`);
+      return res.sendStatus(200);
     }
 
     // 3. Sistema de Message Buffer / Debounce: Acumular mensajes si el usuario escribe en ráfaga (espera 4000ms)
@@ -1189,11 +1293,15 @@ ${inventarioTexto}`.trim();
         for (let i = 0; i < messageSegments.length; i++) {
           const msgSegment = messageSegments[i];
           try {
-            await axios.post(
+            const sendRes = await axios.post(
               evoSendUrl,
               { number: finalCleanNumber, text: msgSegment, options: { delay: 0 } },
               getEvoHeaders(requestApiKey)
             );
+            const msgId = sendRes.data?.key?.id;
+            if (msgId) markMessageAsSentByAi(msgId);
+            markMessageAsSentByAi(msgSegment);
+
             console.log(`✅ [Evolution API] Segmento ${i + 1}/${messageSegments.length} enviado: "${msgSegment}"`);
           } catch (sendErr) {
             console.error(`❌ [Evolution API] Error al enviar segmento ${i + 1}:`, sendErr.response?.data || sendErr.message);
@@ -1224,11 +1332,15 @@ ${inventarioTexto}`.trim();
         console.log(`📤 [Evolution API] Modo Mensaje Único: enviando respuesta completa a ${finalCleanNumber}...`);
 
         try {
-          await axios.post(
+          const sendRes = await axios.post(
             `${evoUrl}/message/sendText/${instance}`,
             { number: finalCleanNumber, text: singleMessage, options: { delay: 0 } },
             getEvoHeaders(requestApiKey)
           );
+          const msgId = sendRes.data?.key?.id;
+          if (msgId) markMessageAsSentByAi(msgId);
+          markMessageAsSentByAi(singleMessage);
+
           console.log(`✅ [Evolution API] Mensaje único enviado a ${finalCleanNumber}: "${singleMessage}"`);
         } catch (sendErr) {
           console.error(`❌ [Evolution API] Error al enviar mensaje único:`, sendErr.response?.data || sendErr.message);
