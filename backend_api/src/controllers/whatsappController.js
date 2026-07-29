@@ -1159,11 +1159,20 @@ ${inventarioTexto}`.trim();
     }
 
     if (aiResponse.trim() === '[BAN_USER]') {
-      console.log(`🔨 [Martillo del Ban] Detectado comportamiento troll de +${clientNumber}. Aplicando baneo.`);
-      await prisma.customer.update({
-        where: { id: customer.id },
-        data: { isBanned: true }
-      });
+      console.log(`👥 [Auto-Pausa Human Handoff] Lenguaje inapropiado detectado para +${clientNumber}. Pausando bot...`);
+      if (contact && !contact.botPaused) {
+        await prisma.contact.update({ where: { id: contact.id }, data: { botPaused: true } });
+      }
+      if (chat && !chat.botPaused) {
+        await prisma.chat.update({ where: { id: chat.id }, data: { botPaused: true } });
+      }
+      if (customer && !customer.isBotPaused) {
+        await prisma.customer.update({ where: { id: customer.id }, data: { isBotPaused: true } });
+      }
+      if (reqIo) {
+        reqIo.emit('contact_updated', { contactId: contact?.id, phone: clientNumber, botPaused: true, reason: 'PROFANITY' });
+        reqIo.emit('bot_status_changed', { contactId: contact?.id, phone: clientNumber, botPaused: true });
+      }
       return;
     }
 
@@ -1186,7 +1195,7 @@ ${inventarioTexto}`.trim();
       }
     }
 
-    // ─── DETECCIÓN DE TRANSFERENCIA A HUMANO [HUMAN_HANDOFF: ...] ───
+    // ─── DETECCIÓN DE TRANSFERENCIA A HUMANO [HUMAN_HANDOFF: ...] (AUTO-PAUSA) ───
     const handoffRegex = /\[HUMAN_HANDOFF:\s*([\s\S]+?)\]/g;
     const handoffMatches = [];
     let handoffMatch;
@@ -1197,11 +1206,29 @@ ${inventarioTexto}`.trim();
     }
 
     if (handoffMatches.length > 0) {
+      // 1. Pausar el Bot en PostgreSQL para este contacto (Auto-Pausa)
+      if (contact && !contact.botPaused) {
+        await prisma.contact.update({ where: { id: contact.id }, data: { botPaused: true } });
+      }
+      if (chat && !chat.botPaused) {
+        await prisma.chat.update({ where: { id: chat.id }, data: { botPaused: true } });
+      }
+      if (customer && !customer.isBotPaused) {
+        await prisma.customer.update({ where: { id: customer.id }, data: { isBotPaused: true } });
+      }
+
+      // 2. Emitir eventos por WebSocket en tiempo real para el Dashboard (Live Chat CRM)
+      if (reqIo) {
+        reqIo.emit('contact_updated', { contactId: contact?.id, phone: clientNumber, botPaused: true, reason: 'HUMAN_HANDOFF' });
+        reqIo.emit('bot_status_changed', { contactId: contact?.id, phone: clientNumber, botPaused: true });
+      }
+
+      // 3. Enviar notificación por WhatsApp si el tenant tiene configurado teléfono de alertas
       const rawDestPhone = await resolveNotificationPhone(tenant.id, tenantDetails);
       const destPhone = sanitizePhoneForEvo(rawDestPhone);
       if (destPhone) {
         for (const reason of handoffMatches) {
-          const alertMessage = `🚨 *ALERTA DE ASESOR REQUERIDO* 🚨\nEl cliente *+${clientNumber}* ha solicitado hablar con un humano.\n*Motivo / Último mensaje:* ${reason}\n¡Por favor, entra al chat y atiéndelo!`;
+          const alertMessage = `🚨 *ALERTA DE ASESOR REQUERIDO* 🚨\nEl cliente *+${clientNumber}* requiere atención de un asesor humano.\n*Motivo / Último mensaje:* ${reason}\n¡Por favor, entra al chat y atiéndelo!`;
           try {
             await axios.post(
               `${evoUrl}/message/sendText/${instance}`,
