@@ -121,26 +121,26 @@ function ContactRow({ contact, index, onDelete, onToggleBot }) {
         <span className="text-sm text-lo">{contact.lastInteraction || 'Sin interacción'}</span>
       </td>
 
-      {/* Columna: Estado (Activo / Pausado) */}
+      {/* Columna: Estado (Activo / Pausado - Ancho Fijo 84px Anti-Desplazamiento) */}
       <td className="px-5 py-3.5 text-center">
         {contact.botPaused ? (
           <button
             type="button"
             onClick={() => onToggleBot(contact, false)}
-            className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-amber-50 text-amber-700 hover:bg-amber-100 transition-colors border border-amber-200 cursor-pointer select-none"
+            className="inline-flex items-center justify-center gap-1.5 w-[84px] py-1 rounded-full text-xs font-medium bg-amber-50 text-amber-700 hover:bg-amber-100 transition-colors border border-amber-200 cursor-pointer select-none mx-auto"
             title="Estado: Pausado. Haz clic para reactivar la IA"
           >
-            <span className="w-1.5 h-1.5 rounded-full bg-amber-500 animate-pulse" />
+            <span className="w-1.5 h-1.5 rounded-full bg-amber-500 animate-pulse flex-shrink-0" />
             <span>Pausado</span>
           </button>
         ) : (
           <button
             type="button"
             onClick={() => onToggleBot(contact, true)}
-            className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-emerald-50 text-emerald-700 hover:bg-emerald-100 transition-colors border border-emerald-200 cursor-pointer select-none"
+            className="inline-flex items-center justify-center gap-1.5 w-[84px] py-1 rounded-full text-xs font-medium bg-emerald-50 text-emerald-700 hover:bg-emerald-100 transition-colors border border-emerald-200 cursor-pointer select-none mx-auto"
             title="Estado: Activo. Haz clic para pausar la IA"
           >
-            <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
+            <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 flex-shrink-0" />
             <span>Activo</span>
           </button>
         )}
@@ -178,20 +178,20 @@ function ContactCard({ contact, index, onDelete, onToggleBot }) {
             <button
               type="button"
               onClick={() => onToggleBot(contact, false)}
-              className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-amber-50 text-amber-700 hover:bg-amber-100 transition-colors border border-amber-200 cursor-pointer select-none"
+              className="inline-flex items-center justify-center gap-1.5 w-[84px] py-1 rounded-full text-xs font-medium bg-amber-50 text-amber-700 hover:bg-amber-100 transition-colors border border-amber-200 cursor-pointer select-none"
               title="Estado: Pausado. Haz clic para reactivar la IA"
             >
-              <span className="w-1.5 h-1.5 rounded-full bg-amber-500 animate-pulse" />
+              <span className="w-1.5 h-1.5 rounded-full bg-amber-500 animate-pulse flex-shrink-0" />
               <span>Pausado</span>
             </button>
           ) : (
             <button
               type="button"
               onClick={() => onToggleBot(contact, true)}
-              className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-emerald-50 text-emerald-700 hover:bg-emerald-100 transition-colors border border-emerald-200 cursor-pointer select-none"
+              className="inline-flex items-center justify-center gap-1.5 w-[84px] py-1 rounded-full text-xs font-medium bg-emerald-50 text-emerald-700 hover:bg-emerald-100 transition-colors border border-emerald-200 cursor-pointer select-none"
               title="Estado: Activo. Haz clic para pausar la IA"
             >
-              <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
+              <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 flex-shrink-0" />
               <span>Activo</span>
             </button>
           )}
