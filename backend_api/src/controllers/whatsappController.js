@@ -791,7 +791,7 @@ export async function receiveWebhook(req, res) {
       });
     }
 
-    // 2.5 ESCUDO DE AUTO-PAUSA: Si el bot está pausado para este contacto, no acumular ni invocar a la IA
+    // 2.5 ESCUDO DE AUTO-PAUSA Y AUTO-REACTIVACIÓN POR TIMEOUT (24 HORAS)
     const existingCustomerForCheck = await prisma.customer.findUnique({
       where: {
         tenantId_phone: {
@@ -801,8 +801,73 @@ export async function receiveWebhook(req, res) {
       }
     });
 
-    if (contact?.botPaused || existingCustomerForCheck?.isBotPaused) {
-      console.log(`👥 [Auto-Pausa Human Handoff] Bot pausado para +${clientNumber}. Mensaje del cliente guardado en CRM pero la IA no responderá.`);
+    let isPaused = Boolean(contact?.botPaused || existingCustomerForCheck?.isBotPaused);
+
+    if (isPaused) {
+      // Buscar la interacción previa en el chat (saltando el mensaje entrante recién guardado)
+      const previousMessage = await prisma.message.findFirst({
+        where: { chatId: chat.id },
+        orderBy: { createdAt: 'desc' },
+        skip: 1
+      });
+
+      const lastActivityDate = previousMessage?.createdAt 
+        || chat?.updatedAt 
+        || contact?.updatedAt 
+        || new Date(0);
+
+      const timeDiffMs = Date.now() - new Date(lastActivityDate).getTime();
+      const TWENTY_FOUR_HOURS_MS = 24 * 60 * 60 * 1000; // 86,400,000 milisegundos
+
+      if (timeDiffMs >= TWENTY_FOUR_HOURS_MS) {
+        const hoursPassed = Math.round(timeDiffMs / (1000 * 60 * 60));
+        console.log(`🔄 [Auto-Reactivación 24h] Han pasado ${hoursPassed}h desde la última interacción con +${clientNumber}. Reactivando Bot automáticamente...`);
+
+        // 1. Despausar en PostgreSQL (Contact, Chat, Customer)
+        if (contact) {
+          await prisma.contact.update({
+            where: { id: contact.id },
+            data: { botPaused: false }
+          });
+          contact.botPaused = false;
+        }
+
+        if (chat) {
+          await prisma.chat.update({
+            where: { id: chat.id },
+            data: { botPaused: false }
+          });
+        }
+
+        if (cleanPhone) {
+          await prisma.customer.updateMany({
+            where: { tenantId: tenant.id, phone: { contains: cleanPhone } },
+            data: { isBotPaused: false }
+          });
+        }
+
+        // 2. Emitir eventos por WebSocket en tiempo real para el Dashboard
+        if (req.io) {
+          req.io.emit('contact_updated', {
+            contactId: contact?.id,
+            phone: cleanPhone,
+            botPaused: false,
+            reason: 'AUTO_REACTIVATION_24H'
+          });
+          req.io.emit('bot_status_changed', {
+            contactId: contact?.id,
+            phone: cleanPhone,
+            botPaused: false
+          });
+        }
+
+        // Desactivar bandera para permitir respuesta normal de la IA
+        isPaused = false;
+      }
+    }
+
+    if (isPaused) {
+      console.log(`👥 [Auto-Pausa Human Handoff] Bot pausado para +${clientNumber} (< 24h desde la última interacción). Mensaje del cliente guardado en CRM pero la IA no responderá.`);
       return res.sendStatus(200);
     }
 
