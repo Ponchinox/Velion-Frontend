@@ -619,8 +619,20 @@ export async function receiveWebhook(req, res) {
 
     // --- Persistencia en Chat y Mensajes (Live Chat CRM) ---
     const cleanPhone = clientNumber.replace(/\D/g, '') || clientNumber;
-    const rawPushName = data?.pushName || data?.key?.pushName || req.body?.pushName || null;
-    const contactName = sanitizePushName(rawPushName);
+    const isOutgoing = Boolean(data?.key?.fromMe);
+
+    // REGLA CRÍTICA DE NOMBRES EN CRM:
+    // Si el mensaje es SALIENTE (fromMe: true), el pushName en el evento pertenece al dueño del bot (tenant).
+    // Está ESTRICTAMENTE PROHIBIDO usar el pushName de eventos salientes para nombrar al cliente.
+    // Para mensajes salientes a números nuevos, registramos al contacto temporalmente con su número ("Cliente +51...").
+    // Solo cuando el mensaje es ENTRANTE (!fromMe) extraemos y guardamos el pushName real del cliente.
+    const rawPushName = !isOutgoing
+      ? (data?.pushName || data?.key?.pushName || req.body?.pushName || null)
+      : null;
+
+    const extractedName = sanitizePushName(rawPushName);
+    const fallbackName = `Cliente +${cleanPhone}`;
+    const initialName = (!isOutgoing && extractedName !== 'Cliente Desconocido') ? extractedName : fallbackName;
 
     // Búsqueda ESTRICTA por tenantId y phone exacto (Evita duplicados o cruces de nombres)
     let contact = await prisma.contact.findFirst({
@@ -633,17 +645,17 @@ export async function receiveWebhook(req, res) {
     if (!contact) {
       contact = await prisma.contact.create({
         data: {
-          name: contactName,
+          name: initialName,
           phone: cleanPhone,
           tenantId: tenant.id,
           category: 'Whatsapp'
         }
       });
-    } else if (contact.name === 'Cliente Desconocido' && contactName !== 'Cliente Desconocido') {
-      // Si el contacto existía como desconocido y ahora nos envía un pushName válido, actualizar su nombre
+    } else if (!isOutgoing && extractedName !== 'Cliente Desconocido' && (contact.name === 'Cliente Desconocido' || contact.name.startsWith('Cliente +'))) {
+      // Si el mensaje es ENTRANTE y el cliente envía un pushName válido, actualizamos su nombre real en el CRM
       contact = await prisma.contact.update({
         where: { id: contact.id },
-        data: { name: contactName }
+        data: { name: extractedName }
       });
     }
 
