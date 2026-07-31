@@ -82,33 +82,12 @@ async function callAiProviderCascade(formattedMessages, imageBase64 = null) {
     });
   }
 
-  // 2. Secundario: Groq Cloud (Llama-3.3 70B / Llama-3.2 Vision)
+  // 2. Secundario (Fallback): Groq Cloud (Llama-3.3 70B / Llama-3.2 Vision)
   if (process.env.GROQ_API_KEY && !process.env.GROQ_API_KEY.includes('dummy')) {
     providers.push({
       name: 'Groq Cloud (Llama-3.3-70b)',
       getClient: () => groqClient,
       model: imageBase64 ? 'llama-3.2-11b-vision-preview' : 'llama-3.3-70b-versatile',
-    });
-  }
-
-  // 3. Terciario: OpenAI Directo (si existe OPENAI_API_KEY en .env)
-  if (process.env.OPENAI_API_KEY) {
-    providers.push({
-      name: 'OpenAI Direct API (gpt-4o-mini)',
-      getClient: () => new OpenAI({ apiKey: process.env.OPENAI_API_KEY }),
-      model: 'gpt-4o-mini',
-    });
-  }
-
-  // 4. Cuaternario: Google Gemini API (si existe GEMINI_API_KEY en .env)
-  if (process.env.GEMINI_API_KEY) {
-    providers.push({
-      name: 'Google Gemini API (gemini-1.5-flash)',
-      getClient: () => new OpenAI({
-        apiKey: process.env.GEMINI_API_KEY,
-        baseURL: 'https://generativelanguage.googleapis.com/v1beta/openai/'
-      }),
-      model: 'gemini-1.5-flash',
     });
   }
 
