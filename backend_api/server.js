@@ -80,21 +80,37 @@ app.use(cors({
   credentials: true
 }));
 
-// Rate Limiting Básico (Desactivado temporalmente para producción)
-// const apiLimiter = rateLimit({
-//   windowMs: 15 * 60 * 1000,
-//   max: 100, 
-//   message: { error: 'Demasiadas peticiones desde esta IP, intenta de nuevo en 15 minutos.' },
-//   validate: { xForwardedForHeader: false, trustProxy: false },
-//   skip: (req) => {
-//     // 🔴 CRÍTICO: No bloquear rutas de webhooks bajo ninguna circunstancia
-//     if (req.originalUrl.includes('/api/stripe/webhook') || req.originalUrl.includes('/api/whatsapp/webhook')) {
-//       return true;
-//     }
-//     return false;
-//   }
-// });
-// app.use('/api', apiLimiter);
+// ── Rate Limiting (Protección contra abusos y fuerza bruta) ───────────────
+
+// Limiter General: 300 peticiones por IP cada 15 minutos
+const apiLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,      // 15 minutos
+  max: 300,                       // Máximo 300 peticiones por IP por ventana
+  standardHeaders: true,          // Envía los headers RateLimit-* estándar
+  legacyHeaders: false,           // Desactiva los headers X-RateLimit-* obsoletos
+  message: { error: 'Demasiadas peticiones desde esta IP. Intenta de nuevo en 15 minutos.' },
+  skip: (req) => {
+    // 🔴 CRÍTICO: Excluir rutas de webhook — reciben tráfico masivo de WhatsApp
+    // y no deben ser bloqueadas bajo ninguna circunstancia.
+    if (req.originalUrl.includes('/webhook')) return true;
+    // Excluir también las rutas internas del sistema (bot ↔ backend)
+    if (req.originalUrl.includes('/api/internal')) return true;
+    return false;
+  }
+});
+
+// Limiter Estricto para Autenticación: máximo 20 intentos por IP cada 15 minutos
+// Protege el endpoint de login contra ataques de fuerza bruta.
+const authLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 20,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Demasiados intentos de inicio de sesión. Espera 15 minutos antes de volver a intentarlo.' }
+});
+
+app.use('/api', apiLimiter);
+app.use('/api/auth', authLimiter);
 
 // Rutas de la API
 app.use('/api/auth', authRoutes);

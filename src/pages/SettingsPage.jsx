@@ -681,18 +681,12 @@ export default function SettingsPage() {
                           name="marketingModeEnabled"
                           checked={botConfig.marketingModeEnabled === true}
                           onChange={(e) => {
-                            if (!hasAdvancedMarketing) {
-                              showToast('El Modo Vendedor Persuasivo no está incluido en tu plan actual. Mejora tu plan para activarlo.', 'error');
-                              return;
-                            }
                             setBotConfig(prev => ({ ...prev, marketingModeEnabled: e.target.checked }));
                             setIsFormDirty(true);
                           }}
-                          className={`w-4 h-4 rounded border-gray-300 focus:ring-blue-500 cursor-pointer ${
-                            hasAdvancedMarketing ? 'text-blue-600' : 'text-gray-400 bg-gray-100'
-                          }`}
+                          className="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500 cursor-pointer"
                         />
-                        <span className={`text-sm font-semibold ${hasAdvancedMarketing ? 'text-gray-800' : 'text-gray-500'}`}>
+                        <span className="text-sm font-semibold text-gray-800">
                           Modo Vendedor Persuasivo (Estrategias de Marketing)
                         </span>
                       </label>

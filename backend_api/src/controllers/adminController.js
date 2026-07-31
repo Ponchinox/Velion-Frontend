@@ -388,7 +388,7 @@ export async function createPlan(req, res) {
         maxProducts:         Number(planData.maxProducts ?? 10),
         hasCampaigns:        Boolean(planData.hasCampaigns),
         hasAutomations:      Boolean(planData.hasAutomations),
-        hasAdvancedMarketing: Boolean(planData.hasAdvancedMarketing),
+        hasAdvancedMarketing: planData.hasAdvancedMarketing !== undefined ? Boolean(planData.hasAdvancedMarketing) : true,
         flowBuilder:         Boolean(planData.flowBuilder),
         aiBrain:             Boolean(planData.aiBrain),
         popular:             Boolean(planData.popular),
@@ -961,8 +961,8 @@ export async function generateBackup(req, res) {
     const filename = `backup_${timestamp}.json`;
     const filePath = path.join(backupsDir, filename);
 
-    // Escribir el respaldo en el disco
-    fs.writeFileSync(filePath, JSON.stringify(backupPayload, null, 2), 'utf-8');
+    // Escribir el respaldo en el disco (async para no bloquear el event loop)
+    await fs.promises.writeFile(filePath, JSON.stringify(backupPayload, null, 2), 'utf-8');
 
     return res.status(201).json({
       success: true,

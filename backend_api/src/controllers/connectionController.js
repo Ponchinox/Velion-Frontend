@@ -291,16 +291,8 @@ export async function logoutDevice(req, res) {
       }
     }
 
-    // 3. Limpieza en Base de Datos (Prisma)
-    try {
-      if (prisma.whatsappConnection) {
-        await prisma.whatsappConnection.deleteMany({
-          where: { tenantId }
-        });
-      }
-    } catch (dbError) {
-      console.log(`ℹ️ Limpieza en Prisma finalizada o no requerida:`, dbError.message);
-    }
+    // Nota: prisma.whatsappConnection no existe en el schema actual.
+    // La limpieza de conexiones se gestiona a través de RegisteredWhatsAppNumber.
 
     return res.json({
       status: 'DISCONNECTED',

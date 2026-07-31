@@ -2,8 +2,6 @@ import { createContext, useContext, useEffect, useState } from 'react';
 
 /* ─────────────────────────────────────────────────────────────
    CONTEXTO DE AUTENTICACIÓN
-   Credenciales SuperAdmin Oficial:
-     nehiseroblitas2001@gmail.com / Undertale.926246740 -> rol: 'superadmin'
    La sesión persiste en localStorage bajo la clave "sa_token"
 ───────────────────────────────────────────────────────────── */
 
@@ -40,12 +38,13 @@ export function AuthProvider({ children }) {
   }, []);
 
   /**
-   * signIn — simulador local con soporte para múltiples roles
+   * signIn — no utilizado en el flujo de autenticación real.
+   * La autenticación se realiza directamente con loginUser() desde LoginPage.jsx
+   * después de una llamada exitosa al endpoint POST /api/auth/login.
+   * Este método se mantiene en el contexto solo por compatibilidad de la interfaz.
    */
-  const signIn = async (email, password) => {
-    const err = new Error('Credenciales incorrectas o servidor no disponible.');
-    err.code = 'auth/invalid-credential';
-    throw err;
+  const signIn = async (_email, _password) => {
+    throw new Error('Usa loginUser(userData, token) para registrar una sesión autenticada por el backend.');
   };
 
   /**

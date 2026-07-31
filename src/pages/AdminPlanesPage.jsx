@@ -15,7 +15,6 @@ import {
   Package,
   Megaphone,
   Robot,
-  Star,
 } from '@phosphor-icons/react';
 import * as planService from '../services/planService';
 import { useUnsavedChanges } from '../context/UnsavedChangesContext';
@@ -73,7 +72,6 @@ export default function AdminPlanesPage() {
   const [formMaxProducts, setFormMaxProducts] = useState(10);
   const [formHasCampaigns, setFormHasCampaigns] = useState(false);
   const [formHasAutomations, setFormHasAutomations] = useState(false);
-  const [formHasAdvancedMarketing, setFormHasAdvancedMarketing] = useState(false);
   const [formFlowBuilder, setFormFlowBuilder] = useState(false);
   const [formAiBrain, setFormAiBrain] = useState(false);
   const [formPopular, setFormPopular] = useState(false);
@@ -112,7 +110,6 @@ export default function AdminPlanesPage() {
     setFormMaxProducts(plan.maxProducts ?? 10);
     setFormHasCampaigns(plan.hasCampaigns ?? false);
     setFormHasAutomations(plan.hasAutomations ?? false);
-    setFormHasAdvancedMarketing(plan.hasAdvancedMarketing ?? false);
     setFormFlowBuilder(plan.flowBuilder);
     setFormAiBrain(plan.aiBrain);
     setFormPopular(plan.popular);
@@ -137,7 +134,6 @@ export default function AdminPlanesPage() {
     setFormMaxProducts(10);
     setFormHasCampaigns(false);
     setFormHasAutomations(false);
-    setFormHasAdvancedMarketing(false);
     setFormFlowBuilder(false);
     setFormAiBrain(false);
     setFormPopular(false);
@@ -158,7 +154,7 @@ export default function AdminPlanesPage() {
       maxProducts: Number(formMaxProducts),
       hasCampaigns: formHasCampaigns,
       hasAutomations: formHasAutomations,
-      hasAdvancedMarketing: formHasAdvancedMarketing,
+      hasAdvancedMarketing: true,
       // flowBuilder se sincroniza con hasAutomations (campo legacy, se mantiene consistente)
       flowBuilder: formHasAutomations,
       aiBrain: formAiBrain,
@@ -510,26 +506,6 @@ export default function AdminPlanesPage() {
                       className={`relative inline-flex h-5 w-9 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 focus:outline-none ${formHasAutomations ? 'bg-brand' : 'bg-gray-200'}`}
                     >
                       <span className={`pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow transition duration-200 ${formHasAutomations ? 'translate-x-4' : 'translate-x-0'}`} />
-                    </button>
-                  </div>
-
-                  {/* Marketing Avanzado */}
-                  <div className="flex items-center justify-between py-1">
-                    <div className="flex items-center gap-2">
-                      <Star size={16} className="text-amber-500" />
-                      <div>
-                        <p className="text-sm font-medium text-hi leading-tight">Modo Vendedor Persuasivo</p>
-                        <p className="text-2xs text-lo mt-0.5 font-medium">Estrategias avanzadas de marketing IA</p>
-                      </div>
-                    </div>
-                    <button
-                      type="button"
-                      role="switch"
-                      aria-checked={formHasAdvancedMarketing}
-                      onClick={() => { setFormHasAdvancedMarketing(!formHasAdvancedMarketing); setIsFormDirty(true); }}
-                      className={`relative inline-flex h-5 w-9 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 focus:outline-none ${formHasAdvancedMarketing ? 'bg-amber-500' : 'bg-gray-200'}`}
-                    >
-                      <span className={`pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow transition duration-200 ${formHasAdvancedMarketing ? 'translate-x-4' : 'translate-x-0'}`} />
                     </button>
                   </div>
 

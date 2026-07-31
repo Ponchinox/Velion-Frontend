@@ -1,6 +1,25 @@
 node_modules
-# Keep environment variables out of version control
-.env
 
+# Variables de entorno — nunca subir al repositorio
+.env
+.env.*
+*.env
+
+# Archivos generados por Prisma
 /generated/prisma
+
+# Credenciales y claves de servicios externos
 firebase-key.json
+*.key
+*.pem
+
+# Archivos de debug y scripts temporales de desarrollo
+check_*.js
+debug_*.js
+sync_*.js
+
+# Directorio de backups locales (son efímeros en Render)
+backups/
+
+# Archivos de log
+*.log
