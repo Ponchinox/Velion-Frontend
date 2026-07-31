@@ -92,7 +92,7 @@ export default function SettingsPage() {
           }
   
           if (tenantData) {
-            setHasAdvancedMarketing(tenantData.hasAdvancedMarketing === true);
+            setHasAdvancedMarketing(tenantData.hasAdvancedMarketing === true || user?.role === 'superadmin');
             setUserPlanName(tenantData.planName || tenantData.plan || '');
             setBotConfig({
               logoUrl: tenantData.logoUrl || '',

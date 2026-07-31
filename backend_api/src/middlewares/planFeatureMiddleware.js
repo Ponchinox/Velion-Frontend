@@ -32,22 +32,21 @@ export function planFeatureMiddleware(featureFlag) {
         select: { planId: true, plan: true },
       });
 
-      if (!tenant?.planId) {
-        return res.status(403).json({
-          error: 'Tu cuenta no tiene un plan activo. Por favor adquiere un plan para acceder a esta función.',
-          code: 'NO_ACTIVE_PLAN',
+      let plan = null;
+      if (tenant?.planId) {
+        plan = await prisma.plan.findUnique({
+          where: { id: tenant.planId },
+        });
+      } else if (tenant?.plan && tenant.plan !== 'Sin Plan') {
+        plan = await prisma.plan.findFirst({
+          where: { name: tenant.plan },
         });
       }
 
-      // Cargar el plan con sus campos de feature flags
-      const plan = await prisma.plan.findUnique({
-        where: { id: tenant.planId },
-      });
-
       if (!plan) {
         return res.status(403).json({
-          error: 'Plan no encontrado o inactivo.',
-          code: 'PLAN_NOT_FOUND',
+          error: 'Tu cuenta no tiene un plan activo o el plan no existe. Por favor adquiere un plan para acceder a esta función.',
+          code: 'NO_ACTIVE_PLAN',
         });
       }
 
@@ -99,27 +98,30 @@ export async function productLimitMiddleware(req, res, next) {
       });
     }
 
-    // Obtener el planId del Tenant
+    // Obtener el planId y plan del Tenant
     const tenant = await prisma.tenant.findUnique({
       where: { id: tenantId },
-      select: { planId: true },
+      select: { planId: true, plan: true },
     });
 
-    if (!tenant?.planId) {
-      // Sin plan, permitir continuar con límite conservador
+    let plan = null;
+    if (tenant?.planId) {
+      plan = await prisma.plan.findUnique({
+        where: { id: tenant.planId },
+        select: { maxProducts: true, name: true },
+      });
+    } else if (tenant?.plan && tenant.plan !== 'Sin Plan') {
+      plan = await prisma.plan.findFirst({
+        where: { name: tenant.plan },
+        select: { maxProducts: true, name: true },
+      });
+    }
+
+    if (!plan) {
       return res.status(403).json({
         error: 'Tu cuenta no tiene un plan activo. Por favor adquiere un plan para agregar productos.',
         code: 'NO_ACTIVE_PLAN',
       });
-    }
-
-    const plan = await prisma.plan.findUnique({
-      where: { id: tenant.planId },
-      select: { maxProducts: true, name: true },
-    });
-
-    if (!plan) {
-      return res.status(403).json({ error: 'Plan no encontrado.', code: 'PLAN_NOT_FOUND' });
     }
 
     // Contar productos actuales del usuario

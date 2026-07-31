@@ -141,6 +141,20 @@ export async function loginAccount(req, res) {
           msgLimit: true,
         },
       });
+    } else if (user.tenant?.plan && user.tenant.plan !== 'Sin Plan') {
+      planFeatures = await prisma.plan.findFirst({
+        where: { name: user.tenant.plan },
+        select: {
+          id: true,
+          name: true,
+          maxProducts: true,
+          hasCampaigns: true,
+          hasAutomations: true,
+          hasAdvancedMarketing: true,
+          connLimit: true,
+          msgLimit: true,
+        },
+      });
     }
 
     return res.json({

@@ -62,6 +62,10 @@ export async function getSettings(req, res) {
       }
     }
 
+    if (req.user?.role === 'superadmin') {
+      hasAdvancedMarketing = true;
+    }
+
     return res.status(200).json({
       ...tenant,
       hasAdvancedMarketing,
@@ -104,26 +108,32 @@ export async function updateSettings(req, res) {
     } = req.body;
 
     // ── Verificación de Plan: Modo Vendedor Persuasivo requiere hasAdvancedMarketing ──
-    if (marketingModeEnabled === true || marketingModeEnabled === 'true') {
+    if ((marketingModeEnabled === true || marketingModeEnabled === 'true') && req.user?.role !== 'superadmin') {
       const tenant = await prisma.tenant.findUnique({
         where: { id: tenantId },
-        select: { planId: true },
+        select: { planId: true, plan: true },
       });
 
+      let plan = null;
       if (tenant?.planId) {
-        const plan = await prisma.plan.findUnique({
+        plan = await prisma.plan.findUnique({
           where: { id: tenant.planId },
           select: { hasAdvancedMarketing: true, name: true },
         });
+      } else if (tenant?.plan && tenant.plan !== 'Sin Plan') {
+        plan = await prisma.plan.findFirst({
+          where: { name: tenant.plan },
+          select: { hasAdvancedMarketing: true, name: true },
+        });
+      }
 
-        if (plan && plan.hasAdvancedMarketing !== true) {
-          return res.status(403).json({
-            error: `El Modo Vendedor Persuasivo no está incluido en tu plan "${plan.name}". Mejora tu plan para activarlo.`,
-            code: 'PLAN_FEATURE_REQUIRED',
-            requiredFeature: 'hasAdvancedMarketing',
-            currentPlan: plan.name,
-          });
-        }
+      if (plan && plan.hasAdvancedMarketing !== true) {
+        return res.status(403).json({
+          error: `El Modo Vendedor Persuasivo no está incluido en tu plan "${plan.name}". Mejora tu plan para activarlo.`,
+          code: 'PLAN_FEATURE_REQUIRED',
+          requiredFeature: 'hasAdvancedMarketing',
+          currentPlan: plan.name,
+        });
       }
     }
 

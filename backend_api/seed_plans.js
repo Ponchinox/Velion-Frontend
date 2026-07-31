@@ -34,7 +34,7 @@ const PLANS = [
     maxProducts: 100,
     hasCampaigns: true,
     hasAutomations: true,
-    hasAdvancedMarketing: false,
+    hasAdvancedMarketing: true,
     flowBuilder: true,
     aiBrain: true,
     popular: true,
@@ -45,6 +45,7 @@ const PLANS = [
       'Hasta 100 Productos en Inventario',
       'Campañas Masivas',
       'Automatizaciones con Flow Builder',
+      'Modo Vendedor Persuasivo',
       'IA Brain Avanzada & Agentes',
       'Soporte Prioritario 24/7'
     ]
