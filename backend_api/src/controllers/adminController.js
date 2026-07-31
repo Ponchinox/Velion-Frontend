@@ -43,11 +43,19 @@ export async function getTenants(req, res) {
     startOfMonth.setHours(0, 0, 0, 0);
 
     const tenants = await prisma.tenant.findMany({
+      where: {
+        users: {
+          none: {
+            role: 'superadmin' // Excluir tenants que sean del superadmin
+          }
+        }
+      },
       orderBy: { createdAt: 'desc' },
       include: {
-        users:    { select: { email: true } },
+        users:    { select: { email: true, role: true } },
         chats:    { select: { id: true } },
         messages: { where: { createdAt: { gte: startOfMonth } }, select: { id: true } },
+        registeredNumbers: { select: { id: true } },
       },
     });
 
@@ -58,8 +66,8 @@ export async function getTenants(req, res) {
       email:     t.users[0]?.email || 'sin-propietario@plataforma.com',
       plan:      t.plan,
       active:    t.active,
-      connUsed:  t.chats.length,           // Conversaciones activas como proxy de conexiones
-      msgUsed:   t.messages.length,        // Mensajes enviados en el mes vigente
+      connUsed:  t.registeredNumbers ? t.registeredNumbers.length : 0, // Conexiones reales
+      msgUsed:   t.messages ? t.messages.length : 0,        // Mensajes enviados en el mes vigente
       connLimit: t.connLimit,
       msgLimit:  t.msgLimit,
       createdAt: t.createdAt.toLocaleDateString('es-ES', { month: 'short', year: 'numeric' })

@@ -11,7 +11,7 @@ generator client {
 model Tenant {
   id              String           @id @default(uuid())
   name            String
-  plan            String?          @default("Sin Plan") // "Sin Plan" | "Básico" | "Pro" | "Elite"
+  plan            String?          @default("Sin Plan") // "Sin Plan" | "Pro"
   planId          String?
   active          Boolean          @default(true)
   msgLimit        Int              @default(0)

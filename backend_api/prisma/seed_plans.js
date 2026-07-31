@@ -1,4 +1,4 @@
-﻿import { PrismaClient } from "@prisma/client";
+import { PrismaClient } from "@prisma/client";
 
 const prisma = new PrismaClient();
 
@@ -6,23 +6,6 @@ async function seedPlans() {
   console.log("Sembrando planes por defecto en PostgreSQL...");
 
   const defaultPlans = [
-    {
-      name: "Basico",
-      price: 29,
-      connLimit: 1,
-      msgLimit: 1000,
-      flowBuilder: false,
-      aiBrain: false,
-      popular: false,
-      active: true,
-      features: [
-        { text: "1 Conexion WhatsApp",       included: true  },
-        { text: "1,000 Mensajes / mes",       included: true  },
-        { text: "Soporte por Email",          included: true  },
-        { text: "Acceso a Flow Builder",      included: false },
-        { text: "Cerebro IA (Gemini/Groq)",   included: false }
-      ]
-    },
     {
       name: "Pro",
       price: 99,
@@ -38,23 +21,6 @@ async function seedPlans() {
         { text: "Soporte Prioritario",        included: true  },
         { text: "Acceso a Flow Builder",      included: true  },
         { text: "Cerebro IA (Gemini/Groq)",   included: false }
-      ]
-    },
-    {
-      name: "Elite",
-      price: 299,
-      connLimit: 10,
-      msgLimit: 50000,
-      flowBuilder: true,
-      aiBrain: true,
-      popular: false,
-      active: true,
-      features: [
-        { text: "10 Conexiones WhatsApp",                included: true },
-        { text: "50,000 Mensajes / mes",                 included: true },
-        { text: "Soporte 24/7 Dedicado",                 included: true },
-        { text: "Acceso a Flow Builder",                 included: true },
-        { text: "Cerebro IA (Gemini/Groq) ilimitado",    included: true }
       ]
     }
   ];

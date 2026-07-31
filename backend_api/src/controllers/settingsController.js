@@ -53,12 +53,20 @@ export async function getSettings(req, res) {
       }
     } else if (tenant.plan && tenant.plan !== 'Sin Plan') {
       const plan = await prisma.plan.findFirst({
-        where: { name: tenant.plan },
+        where: { name: { equals: tenant.plan, mode: 'insensitive' } },
         select: { hasAdvancedMarketing: true, name: true },
       });
       if (plan) {
         hasAdvancedMarketing = Boolean(plan.hasAdvancedMarketing);
         planName = plan.name;
+      }
+    }
+
+    // Fallback de seguridad: Si el plan es Pro, Elite o Empresarial
+    if (!hasAdvancedMarketing && tenant.plan) {
+      const norm = tenant.plan.toLowerCase();
+      if (norm.includes('pro') || norm.includes('elite') || norm.includes('empresarial')) {
+        hasAdvancedMarketing = true;
       }
     }
 
@@ -122,12 +130,16 @@ export async function updateSettings(req, res) {
         });
       } else if (tenant?.plan && tenant.plan !== 'Sin Plan') {
         plan = await prisma.plan.findFirst({
-          where: { name: tenant.plan },
+          where: { name: { equals: tenant.plan, mode: 'insensitive' } },
           select: { hasAdvancedMarketing: true, name: true },
         });
       }
 
-      if (plan && plan.hasAdvancedMarketing !== true) {
+      // Permitir si el plan es Pro, Elite o Empresarial
+      const normPlan = (tenant?.plan || '').toLowerCase();
+      const isAllowedPlanName = normPlan.includes('pro') || normPlan.includes('elite') || normPlan.includes('empresarial');
+
+      if (plan && plan.hasAdvancedMarketing !== true && !isAllowedPlanName) {
         return res.status(403).json({
           error: `El Modo Vendedor Persuasivo no está incluido en tu plan "${plan.name}". Mejora tu plan para activarlo.`,
           code: 'PLAN_FEATURE_REQUIRED',

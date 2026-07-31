@@ -6,27 +6,6 @@ import prisma from './src/db.js';
  */
 const PLANS = [
   {
-    name: 'Básico',
-    price: 29,
-    connLimit: 1,
-    msgLimit: 1000,
-    maxProducts: 10,
-    hasCampaigns: false,
-    hasAutomations: false,
-    hasAdvancedMarketing: false,
-    flowBuilder: false,
-    aiBrain: false,
-    popular: false,
-    active: true,
-    features: [
-      '1 Conexión WhatsApp',
-      '1,000 Mensajes / mes',
-      'Hasta 10 Productos en Inventario',
-      'Live Chat en Tiempo Real',
-      'Soporte por WhatsApp'
-    ]
-  },
-  {
     name: 'Pro',
     price: 69,
     connLimit: 3,
@@ -48,30 +27,6 @@ const PLANS = [
       'Modo Vendedor Persuasivo',
       'IA Brain Avanzada & Agentes',
       'Soporte Prioritario 24/7'
-    ]
-  },
-  {
-    name: 'Elite',
-    price: 149,
-    connLimit: 10,
-    msgLimit: 25000,
-    maxProducts: 999999,
-    hasCampaigns: true,
-    hasAutomations: true,
-    hasAdvancedMarketing: true,
-    flowBuilder: true,
-    aiBrain: true,
-    popular: false,
-    active: true,
-    features: [
-      'Hasta 10 Conexiones WhatsApp',
-      '25,000 Mensajes / mes',
-      'Productos Ilimitados',
-      'Campañas Masivas Ilimitadas',
-      'Automatizaciones Avanzadas',
-      'Modo Vendedor Persuasivo',
-      'Cerebro IA Ilimitado & Personalizado',
-      'Soporte VIP Directo'
     ]
   }
 ];
