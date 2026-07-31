@@ -24,6 +24,9 @@ function getEvoInstanceName(tenantId) {
   return `bot_prod_${tenantId.slice(0, 8)}`;
 }
 
+// Map en memoria para evitar notificaciones duplicadas de pedidos (Debounce TTL de 10 min por cliente)
+const orderNotificationDebounceMap = new Map();
+
 /**
  * Helper para verificar si un objeto, array o string de error contiene ciertas palabras clave
  */
@@ -1171,8 +1174,11 @@ Ejemplo: '¡Hola! Claro que sí 😃 [SPLIT] ¿Qué producto buscas hoy? [SPLIT]
 
     let orderNotificationRule = '';
     if (tenantDetails?.notifySalesWhatsApp === true) {
-      orderNotificationRule = `\nINSTRUCCIÓN DE CONFIRMACIÓN DE VENTA/PEDIDO (OBLIGATORIA):
-Cuando el cliente confirme todos los datos de una compra/envío (producto, dirección, método de pago, monto), genera un resumen estandarizado del pedido e inclúyelo al final de tu respuesta entre la etiqueta exacta [ORDER_CONFIRMED: ...] (ej. '[ORDER_CONFIRMED: Producto: Camiseta Anime | Monto: S/ 85 | Dirección: Av. Brasil 123, Lima | Método: Yape]').\n`;
+      orderNotificationRule = `\nINSTRUCCIÓN DE CONFIRMACIÓN DE VENTA/PEDIDO (OBLIGATORIA Y ESTRICTA):
+REGLA ANTI-FALSOS POSITIVOS Y COMPROBANTE DE PAGO:
+SOLO y ÚNICAMENTE puedes generar la confirmación de pedido entre la etiqueta exacta [ORDER_CONFIRMED: ...] cuando el cliente afirme EXPLÍCITAMENTE que YA realizó el pago (ej. 'ya pagué', 'listo, transferido', 'ya eché el yape', 'ya te deposité') o cuando envíe un comprobante (imagen/foto/captura del pago). 
+Una promesa de pago futura ('lo haré luego', 'pásame el número', 'mañana te yapeo', 'en un momento transfiero') ESTÁ ESTRICTAMENTE PROHIBIDO registrarla como venta confirmada.
+Ejemplo correcto únicamente cuando YA pagó o envió comprobante: '[ORDER_CONFIRMED: Producto: Camiseta Anime | Monto: S/ 85 | Dirección: Av. Brasil 123, Lima | Método: Yape]'.\n`;
     }
 
     const humanHandoffRule = `\nREGLA DE TRANSFERENCIA A HUMANO (FILTRO INTELIGENTE - OBLIGATORIO):
@@ -1331,23 +1337,33 @@ ${inventarioTexto}`.trim();
     }
 
     if (orderSummaries.length > 0 && tenantDetails?.notifySalesWhatsApp === true) {
-      const rawDestPhone = await resolveNotificationPhone(tenant.id, tenantDetails);
-      const destPhone = sanitizePhoneForEvo(rawDestPhone);
-      if (destPhone) {
-        for (const summary of orderSummaries) {
-          const notificationText = `🚨 *NUEVO PEDIDO CONFIRMADO por IA*\n\n📱 *Cliente:* +${clientNumber} (${customer.name || 'Sin Nombre'})\n📋 *Resumen:* ${summary}\n\n⚡ _Velion Agent Auto-Notification_`;
-          try {
-            await axios.post(
-              `${evoUrl}/message/sendText/${instance}`,
-              {
-                number: destPhone,
-                text: notificationText,
-              },
-              getEvoHeaders(requestApiKey)
-            );
-            console.log(`📲 [Notificación de Venta] Enviada exitosamente a ${destPhone}`);
-          } catch (notifyErr) {
-            console.error(`❌ [Notificación de Venta] Error al enviar a ${destPhone}:`, notifyErr.response?.data || notifyErr.message);
+      const cacheKey = `${tenant.id}:${clientNumber}`;
+      const now = Date.now();
+      const lastNotifiedAt = orderNotificationDebounceMap.get(cacheKey) || 0;
+      const DEBOUNCE_MS = 10 * 60 * 1000; // 10 minutos de protección contra notificaciones duplicadas
+
+      if (now - lastNotifiedAt < DEBOUNCE_MS) {
+        console.log(`⚠️ [Notificación de Venta] Notificación omitida por duplicado reciente (Debounce < 10 min) para +${clientNumber}`);
+      } else {
+        const rawDestPhone = await resolveNotificationPhone(tenant.id, tenantDetails);
+        const destPhone = sanitizePhoneForEvo(rawDestPhone);
+        if (destPhone) {
+          orderNotificationDebounceMap.set(cacheKey, now);
+          for (const summary of orderSummaries) {
+            const notificationText = `🚨 *NUEVO PEDIDO CONFIRMADO por IA*\n\n📱 *Cliente:* +${clientNumber} (${customer.name || 'Sin Nombre'})\n📋 *Resumen:* ${summary}\n\n⚡ _Velion Agent Auto-Notification_`;
+            try {
+              await axios.post(
+                `${evoUrl}/message/sendText/${instance}`,
+                {
+                  number: destPhone,
+                  text: notificationText,
+                },
+                getEvoHeaders(requestApiKey)
+              );
+              console.log(`📲 [Notificación de Venta] Enviada exitosamente a ${destPhone}`);
+            } catch (notifyErr) {
+              console.error(`❌ [Notificación de Venta] Error al enviar a ${destPhone}:`, notifyErr.response?.data || notifyErr.message);
+            }
           }
         }
       }
