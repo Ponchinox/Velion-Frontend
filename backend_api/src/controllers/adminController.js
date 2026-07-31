@@ -429,6 +429,25 @@ export async function updatePlan(req, res) {
       },
     });
 
+    try {
+      await prisma.tenant.updateMany({
+        where: {
+          OR: [
+            { planId: id },
+            { plan: { equals: planData.name, mode: 'insensitive' } }
+          ]
+        },
+        data: {
+          planId: id,
+          plan: updated.name,
+          msgLimit: Number(planData.msgLimit),
+          connLimit: Number(planData.connLimit)
+        }
+      });
+    } catch (syncErr) {
+      console.error('Error al sincronizar tenants con el plan actualizado:', syncErr);
+    }
+
     return res.json(updated);
   } catch (error) {
     console.error('Error en updatePlan:', error);

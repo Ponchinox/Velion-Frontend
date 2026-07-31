@@ -675,24 +675,24 @@ export default function SettingsPage() {
 
                     {/* Checkbox: Modo Vendedor Persuasivo (Estrategias de Marketing) */}
                     <div className="col-span-full flex items-center gap-2 pt-1">
-                      <label className={`flex items-center gap-2.5 select-none ${hasAdvancedMarketing ? 'cursor-pointer' : 'cursor-not-allowed opacity-50'}`}>
+                      <label className="flex items-center gap-2.5 cursor-pointer select-none">
                         <input
                           type="checkbox"
                           name="marketingModeEnabled"
-                          disabled={!hasAdvancedMarketing}
-                          checked={hasAdvancedMarketing && botConfig.marketingModeEnabled === true}
+                          checked={botConfig.marketingModeEnabled === true}
                           onChange={(e) => {
-                            if (!hasAdvancedMarketing) return;
+                            if (!hasAdvancedMarketing) {
+                              showToast('El Modo Vendedor Persuasivo no está incluido en tu plan actual. Mejora tu plan para activarlo.', 'error');
+                              return;
+                            }
                             setBotConfig(prev => ({ ...prev, marketingModeEnabled: e.target.checked }));
                             setIsFormDirty(true);
                           }}
-                          className={`w-4 h-4 rounded border-gray-300 ${
-                            hasAdvancedMarketing 
-                              ? 'text-blue-600 focus:ring-blue-500 cursor-pointer' 
-                              : 'text-gray-400 bg-gray-200 cursor-not-allowed'
+                          className={`w-4 h-4 rounded border-gray-300 focus:ring-blue-500 cursor-pointer ${
+                            hasAdvancedMarketing ? 'text-blue-600' : 'text-gray-400 bg-gray-100'
                           }`}
                         />
-                        <span className={`text-sm font-semibold ${hasAdvancedMarketing ? 'text-gray-800' : 'text-gray-400'}`}>
+                        <span className={`text-sm font-semibold ${hasAdvancedMarketing ? 'text-gray-800' : 'text-gray-500'}`}>
                           Modo Vendedor Persuasivo (Estrategias de Marketing)
                         </span>
                       </label>
