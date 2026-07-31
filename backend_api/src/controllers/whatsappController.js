@@ -619,7 +619,8 @@ export async function receiveWebhook(req, res) {
 
     // --- Persistencia en Chat y Mensajes (Live Chat CRM) ---
     const cleanPhone = clientNumber.replace(/\D/g, '') || clientNumber;
-    const isOutgoing = Boolean(data?.key?.fromMe);
+    const sendBy = data?.sendBy || req.body?.sendBy;
+    const isOutgoing = Boolean(data?.key?.fromMe) || sendBy === 'api' || sendBy === 'me';
 
     // REGLA CRÍTICA DE NOMBRES EN CRM:
     // Si el mensaje es SALIENTE (fromMe: true), el pushName en el evento pertenece al dueño del bot (tenant).
@@ -958,7 +959,7 @@ async function processBufferedMessage(remoteJid) {
         data: {
           phone: remoteJid,
           tenantId: tenant.id,
-          name: data?.pushName || 'Cliente'
+          name: contact?.name || 'Cliente'
         }
       });
       console.log(`👤 [CRM] Nuevo cliente registrado en base de datos: +${clientNumber}`);
