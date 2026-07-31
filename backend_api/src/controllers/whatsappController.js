@@ -965,10 +965,22 @@ async function processBufferedMessage(remoteJid) {
       console.log(`👤 [CRM] Nuevo cliente registrado en base de datos: +${clientNumber}`);
     }
 
-    // El Martillo del Ban: Si el usuario está baneado, ignorar de inmediato
+    // ─── DESACTIVACIÓN DE BANEO PERMANENTE -> CONVERSIÓN A HUMAN HANDOFF (PAUSA) ───
+    // Si un cliente figuraba con baneo antiguo (isBanned: true), convertimos ese estado a Pausa de Bot (Human Handoff)
     if (customer.isBanned) {
-      console.log(`🔨 [Martillo del Ban] Mensaje de +${clientNumber} ignorado debido a baneo activo.`);
-      return;
+      console.log(`👥 [Human Handoff] Desactivando baneo permanente antiguo para +${clientNumber} y pausando bot para atención humana...`);
+      await prisma.customer.update({
+        where: { id: customer.id },
+        data: { isBanned: false, isBotPaused: true }
+      });
+      if (contact && !contact.botPaused) {
+        await prisma.contact.update({ where: { id: contact.id }, data: { botPaused: true } });
+      }
+      if (chat && !chat.botPaused) {
+        await prisma.chat.update({ where: { id: chat.id }, data: { botPaused: true } });
+      }
+      customer.isBanned = false;
+      customer.isBotPaused = true;
     }
 
     // --- SEGURO DE ATENCIÓN HUMANA (HUMAN HANDOFF) ---
