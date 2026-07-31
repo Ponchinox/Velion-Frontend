@@ -940,6 +940,7 @@ async function processBufferedMessage(remoteJid) {
   } = buffer;
 
   console.log(`🤖 [Message Buffer] Procesando ráfaga acumulada para +${clientNumber} (${userMessageText.length} caracteres): "${userMessageText.replace(/\n/g, ' ')}"`);
+  const finalCleanNumber = String(clientNumber || '').replace(/[^0-9]/g, '');
 
   try {
     const evoUrl = process.env.EVOLUTION_API_URL || 'http://localhost:8080';
@@ -1106,7 +1107,12 @@ Si un cliente hace preguntas que no tienen relación con la tienda (por ejemplo:
 
 Mantén siempre un tono profesional, amable, natural y cercano. Escribe como una persona del equipo de atención al cliente, nunca menciones que eres una inteligencia artificial, un modelo de lenguaje o ChatGPT, salvo que la configuración de la tienda lo indique explícitamente.
 
-Responde de forma breve y clara. Evita mensajes largos o innecesarios. Da únicamente la información necesaria para responder la consulta. Si el cliente necesita más detalles, proporcionalos paso a paso.
+REGLAS DE FORMATO Y CONCISIÓN (ESTRICTAS Y OBLIGATORIAS):
+1. Tus respuestas deben ser EXTREMADAMENTE concisas, persuasivas y directas.
+2. ESTRICTAMENTE divide tu respuesta en párrafos cortos (máximo 2 a 3 líneas por párrafo).
+3. Usa viñetas o listas cuando menciones varios productos o características.
+4. Bajo ninguna circunstancia envíes muros de texto largos.
+5. No pidas disculpas por no poder enviar imágenes. Tu sistema sí puede enviarlas mediante el backend. Solo responde de forma natural confirmando el envío de las fotos.
 
 REGLA DE CIERRE DE CONVERSACIÓN (OBLIGATORIA Y ESTRICTA):
 Si el usuario responde con un simple agradecimiento ('gracias', 'ok', 'listo', 'muchas gracias', 'perfecto') o se despide cerrando la venta, DEBES responder con una despedida final muy breve (máximo 5 palabras, ej: '¡De nada, vuelve pronto!'). BAJO NINGUNA CIRCUNSTANCIA debes hacer preguntas de seguimiento, ni decir '¿En qué más puedo ayudarte?' en estos casos. Cierra la conversación de forma seca pero amable para evitar bucles infinitos.
@@ -1385,7 +1391,6 @@ ${inventarioTexto}`.trim();
       .trim();
 
     if (cleanText) {
-      const finalCleanNumber = clientNumber.replace(/[^0-9]/g, '');
       const isMultiMsg = tenantDetails?.multiMessageMode !== false;
 
       if (isMultiMsg) {
