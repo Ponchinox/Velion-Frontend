@@ -1,4 +1,4 @@
-import OpenAI from 'openai';
+import { generateAIResponse } from './aiService.js';
 import prisma from '../db.js';
 import axios from 'axios';
 
@@ -118,20 +118,12 @@ export async function processCampaign(campaignId, targetContacts, instance) {
 
       let personalizedMessage = campaign.baseMessage;
 
-      // Generar variación de texto personalizada con IA (Anti-Ban)
+      // Generar variación de texto personalizada con IA (Anti-Ban con Failover Cascade)
       try {
-        const prompt = `Reescribe este mensaje promocional de forma natural, manteniendo la intención exacta pero variando ligeramente el saludo y las palabras. Usa el nombre del cliente si es posible: ${contact.name}. Mensaje base: ${campaign.baseMessage}`;
+        const sysPrompt = 'Eres un redactor de marketing persuasivo y natural. Responde únicamente con el mensaje reescrito final, sin comentarios, saludos adicionales ni etiquetas.';
+        const userPrompt = `Reescribe este mensaje promocional de forma natural, manteniendo la intención exacta pero variando ligeramente el saludo y las palabras. Usa el nombre del cliente si es posible: ${contact.name}. Mensaje base: ${campaign.baseMessage}`;
         
-        const response = await client.chat.completions.create({
-          model: 'gpt-4o-mini',
-          messages: [
-            { role: 'system', content: 'Eres un redactor de marketing persuasivo y natural. Responde únicamente con el mensaje reescrito final, sin comentarios, saludos adicionales ni etiquetas.' },
-            { role: 'user', content: prompt }
-          ],
-          temperature: 0.8
-        });
-
-        const rewrittenText = response.choices[0]?.message?.content?.trim();
+        const rewrittenText = await generateAIResponse(sysPrompt, [{ role: 'user', content: userPrompt }]);
         if (rewrittenText) {
           personalizedMessage = rewrittenText;
         }

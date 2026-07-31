@@ -67,7 +67,98 @@ const userMemories = new Map();
 const MAX_HISTORIAL = 10;
 
 /**
- * Genera una respuesta de IA utilizando el modelo gpt-4o-mini (GitHub Models)
+ * Cascadas de resiliencia (Fallback Chain / Auto-Failover)
+ * Si el proveedor primario falla (ej. Error 429 Límite de Cuota o Caída), conmuta automáticamente al siguiente.
+ */
+async function callAiProviderCascade(formattedMessages, imageBase64 = null) {
+  const providers = [];
+
+  // 1. Primario: GitHub Models (gpt-4o-mini)
+  if (process.env.GITHUB_TOKEN) {
+    providers.push({
+      name: 'GitHub Models (gpt-4o-mini)',
+      getClient: () => getOpenAIClient(),
+      model: 'gpt-4o-mini',
+    });
+  }
+
+  // 2. Secundario: Groq Cloud (Llama-3.3 70B / Llama-3.2 Vision)
+  if (process.env.GROQ_API_KEY && !process.env.GROQ_API_KEY.includes('dummy')) {
+    providers.push({
+      name: 'Groq Cloud (Llama-3.3-70b)',
+      getClient: () => groqClient,
+      model: imageBase64 ? 'llama-3.2-11b-vision-preview' : 'llama-3.3-70b-versatile',
+    });
+  }
+
+  // 3. Terciario: OpenAI Directo (si existe OPENAI_API_KEY en .env)
+  if (process.env.OPENAI_API_KEY) {
+    providers.push({
+      name: 'OpenAI Direct API (gpt-4o-mini)',
+      getClient: () => new OpenAI({ apiKey: process.env.OPENAI_API_KEY }),
+      model: 'gpt-4o-mini',
+    });
+  }
+
+  // 4. Cuaternario: Google Gemini API (si existe GEMINI_API_KEY en .env)
+  if (process.env.GEMINI_API_KEY) {
+    providers.push({
+      name: 'Google Gemini API (gemini-1.5-flash)',
+      getClient: () => new OpenAI({
+        apiKey: process.env.GEMINI_API_KEY,
+        baseURL: 'https://generativelanguage.googleapis.com/v1beta/openai/'
+      }),
+      model: 'gemini-1.5-flash',
+    });
+  }
+
+  if (providers.length === 0) {
+    throw new Error('No hay proveedores de IA configurados en el archivo de entorno (.env).');
+  }
+
+  let lastError = null;
+
+  for (const provider of providers) {
+    try {
+      console.log(`🤖 [AI Failover Cascade] Ejecutando petición con proveedor: ${provider.name}...`);
+      const client = provider.getClient();
+
+      // Ajustar formato de mensaje si el proveedor no soporta arrays multimodales en texto plano
+      let messagesForProvider = formattedMessages;
+      if (provider.name.includes('Groq') && !imageBase64) {
+        messagesForProvider = formattedMessages.map(msg => {
+          if (Array.isArray(msg.content)) {
+            const textPart = msg.content.find(p => p.type === 'text');
+            return { role: msg.role, content: textPart ? textPart.text : 'Analiza esta información' };
+          }
+          return msg;
+        });
+      }
+
+      const response = await client.chat.completions.create({
+        model: provider.model,
+        messages: messagesForProvider,
+        temperature: 0.7,
+        max_tokens: 512,
+      });
+
+      const aiText = response.choices[0]?.message?.content?.trim() || '';
+      if (aiText) {
+        console.log(`✅ [AI Failover Cascade] Respuesta obtenida exitosamente desde: ${provider.name}`);
+        return aiText;
+      }
+    } catch (err) {
+      console.warn(`⚠️ [AI Failover Cascade] Proveedor '${provider.name}' falló (${err.message}). Conmutando al siguiente modelo de respaldo...`);
+      lastError = err;
+      await handleAiError(err, provider.name);
+    }
+  }
+
+  throw lastError || new Error('Todos los modelos de IA en la cascada de fallos fallaron.');
+}
+
+/**
+ * Genera una respuesta de IA utilizando cascada de resiliencia (Failover automático)
  * @param {string} prompt - Prompt de sistema o instrucciones base
  * @param {Array} context - Historial o contexto de la conversación [{ role, content }]
  * @param {string} imageBase64 - Imagen en Base64 para el flujo de visión (opcional)
@@ -77,8 +168,6 @@ const MAX_HISTORIAL = 10;
  */
 export async function generateAIResponse(prompt, context = [], imageBase64 = null, remoteJid = null, customerPreferences = null) {
   try {
-    const client = getOpenAIClient();
-
     const visionRules = `
 PERSONALIDAD:
 Eres un asistente de ventas amable, atento y al grano. Usa emojis de forma natural cuando sea apropiado.
@@ -162,18 +251,11 @@ Si el cliente revela información personal útil para futuras ventas (ej. su nom
       formattedMessages.push(...fullContext);
     }
 
-    const response = await client.chat.completions.create({
-      model: 'gpt-4o-mini',
-      messages: formattedMessages,
-      temperature: 0.7,
-      max_tokens: 512,
-    });
-
-    const aiText = response.choices[0]?.message?.content?.trim() || '';
+    // Ejecutar llamada a la cascada de proveedores (Failover automático)
+    const aiText = await callAiProviderCascade(formattedMessages, imageBase64);
 
     // Guardar en el historial de forma optimizada (dieta de tokens sin Base64)
     if (remoteJid && aiText) {
-      // Obtener el texto del mensaje del usuario actual (el que viene en `context`)
       const lastUserMsg = context.find(m => m.role === 'user') || { content: '' };
       let savedUserContent = '';
       if (typeof lastUserMsg.content === 'string') {
@@ -183,7 +265,6 @@ Si el cliente revela información personal útil para futuras ventas (ej. su nom
         savedUserContent = textPart ? textPart.text : 'Analiza esta imagen';
       }
 
-      // Si había Base64 adjunto, encapsular el contenido en texto plano para el historial
       if (imageBase64) {
         savedUserContent = `[El usuario envió multimedia con el texto: "${savedUserContent}"]`;
       }
@@ -192,7 +273,6 @@ Si el cliente revela información personal útil para futuras ventas (ej. su nom
       userHistory.push({ role: 'user', content: savedUserContent });
       userHistory.push({ role: 'assistant', content: aiText });
 
-      // Dieta FIFO (mantener un máximo de 10 elementos)
       while (userHistory.length > MAX_HISTORIAL) {
         userHistory.shift();
       }
@@ -202,11 +282,11 @@ Si el cliente revela información personal útil para futuras ventas (ej. su nom
 
     return aiText;
   } catch (error) {
-    console.error('Error en generateAIResponse:', error);
-    await handleAiError(error, 'GitHub Models');
-    throw new Error('Fallo al procesar la respuesta de la IA.');
+    console.error('❌ Error final en generateAIResponse tras agotar cascada:', error);
+    throw new Error('Fallo al procesar la respuesta de la IA en todos los proveedores.');
   }
 }
+
 
 export async function transcribeAudio(base64Audio) {
   let tempFilePath = null;
