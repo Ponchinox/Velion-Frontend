@@ -1,6 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
 import {
-  Package,
   Plus,
   X,
   UploadSimple,
@@ -360,8 +359,7 @@ export default function Products() {
       {/* Header */}
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 border-b border-line pb-6 mb-6">
         <div>
-          <h1 id="inventario-heading" className="text-2xl font-extrabold text-hi tracking-tight flex items-center gap-2.5">
-            <Package size={28} className="text-brand" weight="bold" />
+          <h1 id="inventario-heading" className="text-2xl font-extrabold text-hi tracking-tight">
             Catálogo de Productos
           </h1>
           <p className="text-sm text-lo mt-1">

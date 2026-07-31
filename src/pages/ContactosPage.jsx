@@ -2,7 +2,6 @@ import { useState, useMemo, useEffect, useCallback, useRef } from 'react';
 import {
   MagnifyingGlass,
   FileCsv,
-  UserPlus,
   Plus,
   DotsThreeVertical,
   Tag,
@@ -433,8 +432,7 @@ export default function ContactosPage() {
       {/* ── Header ── */}
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 border-b border-line pb-6 mb-6">
         <div>
-          <h1 id="contactos-heading" className="text-2xl font-extrabold text-hi tracking-tight flex items-center gap-2.5">
-            <UserPlus size={28} className="text-brand" weight="bold" />
+          <h1 id="contactos-heading" className="text-2xl font-extrabold text-hi tracking-tight">
             Directorio de Contactos
           </h1>
           <p className="text-sm text-lo mt-1">
