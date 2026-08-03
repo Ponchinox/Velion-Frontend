@@ -8,7 +8,7 @@ import { validateAndRegisterWhatsAppConnection } from '../services/antiFraudServ
  * Helper para generar los headers de autenticación del Evolution API
  */
 function getEvoHeaders(customApiKey) {
-  const key = (customApiKey || process.env.EVOLUTION_API_KEY || 'A59F9002-9FFF-41CF-8EA6-58AEEB06ED7B').trim();
+  const key = (customApiKey || process.env.EVOLUTION_API_KEY || '').trim();
   return {
     headers: {
       apikey: key,

@@ -1,3 +1,4 @@
+import OpenAI from 'openai';
 import { generateAIResponse } from './aiService.js';
 import prisma from '../db.js';
 import axios from 'axios';
@@ -9,12 +10,13 @@ let openaiClient = null;
  */
 function getOpenAIClient() {
   if (!openaiClient) {
-    if (!process.env.GITHUB_TOKEN) {
-      throw new Error('Falta la variable de entorno GITHUB_TOKEN para inicializar GPT-4o-mini.');
+    const githubToken = process.env.GITHUB_MODELS_KEY || process.env.GITHUB_TOKEN;
+    if (!githubToken) {
+      throw new Error('Falta la variable de entorno GITHUB_MODELS_KEY o GITHUB_TOKEN para inicializar GPT-4o-mini.');
     }
     openaiClient = new OpenAI({
       baseURL: 'https://models.inference.ai.azure.com',
-      apiKey: process.env.GITHUB_TOKEN,
+      apiKey: githubToken,
     });
   }
   return openaiClient;
@@ -39,7 +41,7 @@ export async function processCampaign(campaignId, targetContacts, instance) {
 
     const client = getOpenAIClient();
     const evoUrl = process.env.EVOLUTION_API_URL || 'http://localhost:8080';
-    const evoKey = process.env.EVOLUTION_API_KEY || 'A59F9002-9FFF-41CF-8EA6-58AEEB06ED7B';
+    const evoKey = process.env.EVOLUTION_API_KEY || '';
 
     const tenant = await prisma.tenant.findUnique({
       where: { id: campaign.tenantId }

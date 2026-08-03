@@ -123,7 +123,7 @@ export async function sendMessage(req, res) {
     // Enviar mensaje real a Evolution API
     const remoteJid = chat.contact.phone;
     const evoUrl = process.env.EVOLUTION_API_URL || 'http://localhost:8080';
-    const evoKey = process.env.EVOLUTION_API_KEY || 'A59F9002-9FFF-41CF-8EA6-58AEEB06ED7B';
+    const evoKey = process.env.EVOLUTION_API_KEY || '';
     const instance = 'bot_prod_' + tenantId.slice(0, 8);
 
     try {
@@ -206,7 +206,7 @@ export async function sendDirectMessage(req, res) {
 
     const number = remoteJid || chat.contact.phone;
     const evoUrl = process.env.EVOLUTION_API_URL || 'http://localhost:8080';
-    const evoKey = process.env.EVOLUTION_API_KEY || 'A59F9002-9FFF-41CF-8EA6-58AEEB06ED7B';
+    const evoKey = process.env.EVOLUTION_API_KEY || '';
     const instance = 'bot_prod_' + tenantId.slice(0, 8);
 
     let messageContent = text;

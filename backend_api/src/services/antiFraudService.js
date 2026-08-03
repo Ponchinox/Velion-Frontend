@@ -4,7 +4,7 @@ import prisma from '../db.js';
 function getEvoHeaders() {
   return {
     headers: {
-      apikey: process.env.EVOLUTION_API_KEY || 'A59F9002-9FFF-41CF-8EA6-58AEEB06ED7B',
+      apikey: process.env.EVOLUTION_API_KEY || '',
       'Content-Type': 'application/json',
     },
   };

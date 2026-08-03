@@ -54,7 +54,7 @@ async function saveAndEmitOutgoingMessage(customer, text, instance) {
  */
 async function sendFlowMessage(customer, text, instance) {
   const evoUrl = process.env.EVOLUTION_API_URL || 'http://localhost:8080';
-  const evoKey = process.env.EVOLUTION_API_KEY || 'A59F9002-9FFF-41CF-8EA6-58AEEB06ED7B';
+  const evoKey = process.env.EVOLUTION_API_KEY || '';
   const clientNumber = customer.phone.split('@')[0].replace(/\D/g, '');
 
   try {
@@ -86,7 +86,7 @@ async function sendFlowMessage(customer, text, instance) {
  */
 async function sendFlowMedia(customer, mediaUrl, caption, instance) {
   const evoUrl = process.env.EVOLUTION_API_URL || 'http://localhost:8080';
-  const evoKey = process.env.EVOLUTION_API_KEY || 'A59F9002-9FFF-41CF-8EA6-58AEEB06ED7B';
+  const evoKey = process.env.EVOLUTION_API_KEY || '';
   const clientNumber = customer.phone.split('@')[0].replace(/\D/g, '');
 
   if (!mediaUrl) {

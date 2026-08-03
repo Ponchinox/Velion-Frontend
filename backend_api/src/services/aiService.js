@@ -45,12 +45,13 @@ let openaiClient = null;
  */
 function getOpenAIClient() {
   if (!openaiClient) {
-    if (!process.env.GITHUB_TOKEN) {
-      throw new Error('Falta la variable de entorno GITHUB_TOKEN para inicializar GPT-4o-mini.');
+    const githubToken = process.env.GITHUB_MODELS_KEY || process.env.GITHUB_TOKEN;
+    if (!githubToken) {
+      throw new Error('Falta la variable de entorno GITHUB_MODELS_KEY o GITHUB_TOKEN para inicializar GPT-4o-mini.');
     }
     openaiClient = new OpenAI({
       baseURL: 'https://models.inference.ai.azure.com',
-      apiKey: process.env.GITHUB_TOKEN,
+      apiKey: githubToken,
     });
   }
   return openaiClient;
@@ -58,7 +59,7 @@ function getOpenAIClient() {
 
 // Cliente OpenAI dedicado para Groq (Visión / Transcripciones)
 const groqClient = new OpenAI({
-  apiKey: process.env.GROQ_API_KEY || 'gsk_dummy_key',
+  apiKey: process.env.GROQ_API_KEY || '',
   baseURL: 'https://api.groq.com/openai/v1',
 });
 
@@ -72,9 +73,10 @@ const MAX_HISTORIAL = 10;
  */
 async function callAiProviderCascade(formattedMessages, imageBase64 = null) {
   const providers = [];
+  const githubToken = process.env.GITHUB_MODELS_KEY || process.env.GITHUB_TOKEN;
 
   // 1. Primario: GitHub Models (gpt-4o-mini)
-  if (process.env.GITHUB_TOKEN) {
+  if (githubToken) {
     providers.push({
       name: 'GitHub Models (gpt-4o-mini)',
       getClient: () => getOpenAIClient(),
@@ -83,7 +85,7 @@ async function callAiProviderCascade(formattedMessages, imageBase64 = null) {
   }
 
   // 2. Secundario (Fallback): Groq Cloud (Llama-3.3 70B / Llama-3.2 Vision)
-  if (process.env.GROQ_API_KEY && !process.env.GROQ_API_KEY.includes('dummy')) {
+  if (process.env.GROQ_API_KEY) {
     providers.push({
       name: 'Groq Cloud (Llama-3.3-70b)',
       getClient: () => groqClient,
