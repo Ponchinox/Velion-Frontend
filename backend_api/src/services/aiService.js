@@ -38,10 +38,33 @@ async function handleAiError(error, providerName = 'GitHub/Groq') {
   }
 }
 
+let openRouterClient = null;
+
+/**
+ * Inicializa y retorna el cliente de OpenRouter de forma perezosa
+ */
+function getOpenRouterClient() {
+  if (!openRouterClient) {
+    const apiKey = process.env.OPENROUTER_API_KEY || process.env.OPENAI_API_KEY;
+    if (!apiKey) {
+      throw new Error('Falta la variable de entorno OPENROUTER_API_KEY u OPENAI_API_KEY para inicializar OpenRouter.');
+    }
+    openRouterClient = new OpenAI({
+      baseURL: 'https://openrouter.ai/api/v1',
+      apiKey: apiKey,
+      defaultHeaders: {
+        'HTTP-Referer': 'https://velionsaas.com',
+        'X-Title': 'Velion SaaS',
+      }
+    });
+  }
+  return openRouterClient;
+}
+
 let openaiClient = null;
 
 /**
- * Inicializa y retorna el cliente de OpenAI de forma perezosa
+ * Inicializa y retorna el cliente de OpenAI / GitHub Models de forma perezosa
  */
 function getOpenAIClient() {
   if (!openaiClient) {
@@ -73,9 +96,24 @@ const MAX_HISTORIAL = 10;
  */
 async function callAiProviderCascade(formattedMessages, imageBase64 = null) {
   const providers = [];
+  const openRouterKey = process.env.OPENROUTER_API_KEY || process.env.OPENAI_API_KEY;
   const githubToken = process.env.GITHUB_MODELS_KEY || process.env.GITHUB_TOKEN;
 
-  // 1. Primario: GitHub Models (gpt-4o-mini)
+  // 1. Primario y secundario: OpenRouter (DeepSeek Chat Free -> Llama 3.3 70B Free)
+  if (openRouterKey) {
+    providers.push({
+      name: 'OpenRouter (DeepSeek Chat)',
+      getClient: () => getOpenRouterClient(),
+      model: 'deepseek/deepseek-chat:free',
+    });
+    providers.push({
+      name: 'OpenRouter Fallback (Llama-3.3 70B)',
+      getClient: () => getOpenRouterClient(),
+      model: 'meta-llama/llama-3.3-70b-instruct:free',
+    });
+  }
+
+  // 2. Terciario: GitHub Models (gpt-4o-mini)
   if (githubToken) {
     providers.push({
       name: 'GitHub Models (gpt-4o-mini)',
@@ -84,7 +122,7 @@ async function callAiProviderCascade(formattedMessages, imageBase64 = null) {
     });
   }
 
-  // 2. Secundario (Fallback): Groq Cloud (Llama-3.3 70B / Llama-3.2 Vision)
+  // 3. Cuaternario: Groq Cloud (Llama-3.3 70B / Llama-3.2 Vision)
   if (process.env.GROQ_API_KEY) {
     providers.push({
       name: 'Groq Cloud (Llama-3.3-70b)',
