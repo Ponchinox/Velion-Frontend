@@ -99,35 +99,35 @@ async function callAiProviderCascade(formattedMessages, imageBase64 = null) {
   const openRouterKey = process.env.OPENROUTER_API_KEY || process.env.OPENAI_API_KEY;
   const githubToken = process.env.GITHUB_MODELS_KEY || process.env.GITHUB_TOKEN;
 
-  // 1. Primario y secundario: OpenRouter (DeepSeek Chat Free -> Llama 3.3 70B Free)
+  // #1: OpenRouter (Modelo principal "openrouter/free" -> Fallback "openai/gpt-oss-120b:free")
   if (openRouterKey) {
     providers.push({
-      name: 'OpenRouter (DeepSeek Chat)',
+      name: 'OpenRouter (Auto Free)',
       getClient: () => getOpenRouterClient(),
-      model: 'deepseek/deepseek-chat:free',
+      model: 'openrouter/free',
     });
     providers.push({
-      name: 'OpenRouter Fallback (Llama-3.3 70B)',
+      name: 'OpenRouter (GPT OSS 120B Free)',
       getClient: () => getOpenRouterClient(),
-      model: 'meta-llama/llama-3.3-70b-instruct:free',
+      model: 'openai/gpt-oss-120b:free',
     });
   }
 
-  // 2. Terciario: GitHub Models (gpt-4o-mini)
-  if (githubToken) {
-    providers.push({
-      name: 'GitHub Models (gpt-4o-mini)',
-      getClient: () => getOpenAIClient(),
-      model: 'gpt-4o-mini',
-    });
-  }
-
-  // 3. Cuaternario: Groq Cloud (Llama-3.3 70B / Llama-3.2 Vision)
+  // #2: Groq Cloud (Llama-3.3-70b) como respaldo secundario si falla la red
   if (process.env.GROQ_API_KEY) {
     providers.push({
       name: 'Groq Cloud (Llama-3.3-70b)',
       getClient: () => groqClient,
       model: imageBase64 ? 'llama-3.2-11b-vision-preview' : 'llama-3.3-70b-versatile',
+    });
+  }
+
+  // #3: GitHub Models (gpt-4o-mini) como respaldo adicional
+  if (githubToken) {
+    providers.push({
+      name: 'GitHub Models (gpt-4o-mini)',
+      getClient: () => getOpenAIClient(),
+      model: 'gpt-4o-mini',
     });
   }
 
