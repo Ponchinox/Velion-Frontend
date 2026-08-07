@@ -1220,7 +1220,7 @@ Las instrucciones específicas de la tienda tienen prioridad sobre este mensaje 
       infoInstitucional += detallesExt;
     }
 
-    const isMultiMessageActive = tenantDetails?.multiMessageMode !== false; // Activo por defecto (true)
+    const isMultiMessageActive = tenantDetails?.multiMessageMode === true; 
     let splitRule = '';
     if (isMultiMessageActive) {
       splitRule = `\nREGLA CRÍTICA DEL SISTEMA (OBLIGATORIA): 

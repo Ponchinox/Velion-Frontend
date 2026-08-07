@@ -88,6 +88,7 @@ const apiLimiter = rateLimit({
   max: 300,                       // Máximo 300 peticiones por IP por ventana
   standardHeaders: true,          // Envía los headers RateLimit-* estándar
   legacyHeaders: false,           // Desactiva los headers X-RateLimit-* obsoletos
+  validate: { trustProxy: false }, // Deshabilita la validación de trustProxy (Render usa proxy propio)
   message: { error: 'Demasiadas peticiones desde esta IP. Intenta de nuevo en 15 minutos.' },
   skip: (req) => {
     // 🔴 CRÍTICO: Excluir rutas de webhook — reciben tráfico masivo de WhatsApp
@@ -106,6 +107,7 @@ const authLimiter = rateLimit({
   max: 20,
   standardHeaders: true,
   legacyHeaders: false,
+  validate: { trustProxy: false }, // Deshabilita la validación de trustProxy (Render usa proxy propio)
   message: { error: 'Demasiados intentos de inicio de sesión. Espera 15 minutos antes de volver a intentarlo.' }
 });
 
