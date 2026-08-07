@@ -101,11 +101,13 @@ async function callAiProviderCascade(formattedMessages, imageBase64 = null) {
 
   // #1: Groq Cloud — Proveedor PRIMARIO (confiable, sin límites de 404 de cuota gratuita de terceros)
   // Se posiciona primero para evitar la demora acumulada de múltiples 404s de OpenRouter free tier.
+  // MODELO VISUAL: llama-3.2-11b-vision-instruct (reemplaza al deprecado llama-3.2-11b-vision-preview)
+  // Si el de 11b tampoco estuviera disponible, usar: llama-3.2-90b-vision-preview
   if (process.env.GROQ_API_KEY) {
     providers.push({
       name: 'Groq Cloud (Llama-3.3-70b)',
       getClient: () => groqClient,
-      model: imageBase64 ? 'llama-3.2-11b-vision-preview' : 'llama-3.3-70b-versatile',
+      model: imageBase64 ? 'llama-3.2-11b-vision-instruct' : 'llama-3.3-70b-versatile',
     });
   }
 
@@ -185,11 +187,18 @@ async function callAiProviderCascade(formattedMessages, imageBase64 = null) {
         return aiText;
       }
     } catch (err) {
-      // Detección rápida de errores 404/503 de OpenRouter (cuota agotada en modelos free)
+      // Detección rápida de errores conocidos para skip inmediato sin crashear la cascada:
+      // - 404/503: modelo free sin cuota (OpenRouter)
+      // - 400 + 'decommissioned': modelo dado de baja por el proveedor (ej. Groq vision-preview)
       const errStatus = err?.status || err?.response?.status;
       const errMsg = err?.message || String(err);
-      if (errStatus === 404 || errStatus === 503 || errMsg.includes('404') || errMsg.includes('No endpoints')) {
-        console.warn(`⚡ [AI Failover Cascade] Proveedor '${provider.name}' devolvió ${errStatus || 'error de disponibilidad'} (modelo free sin cuota). Saltando al siguiente...`);
+      const isDeprecated = errStatus === 400 && (errMsg.includes('decommissioned') || errMsg.includes('no longer supported') || errMsg.includes('deprecated'));
+      const isQuotaError = errStatus === 404 || errStatus === 503 || errMsg.includes('404') || errMsg.includes('No endpoints');
+
+      if (isDeprecated) {
+        console.warn(`🚨 [AI Failover Cascade] Proveedor '${provider.name}' usa un modelo DEPRECADO (${errMsg.slice(0, 120)}). Saltando al siguiente...`);
+      } else if (isQuotaError) {
+        console.warn(`⚡ [AI Failover Cascade] Proveedor '${provider.name}' devolveró ${errStatus || 'error de disponibilidad'} (modelo free sin cuota). Saltando al siguiente...`);
       } else {
         console.warn(`⚠️ [AI Failover Cascade] Proveedor '${provider.name}' falló (${errMsg}). Conmutando al siguiente modelo de respaldo...`);
       }
