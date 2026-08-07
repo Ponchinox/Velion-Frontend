@@ -99,12 +99,20 @@ async function callAiProviderCascade(formattedMessages, imageBase64 = null) {
   const openRouterKey = process.env.OPENROUTER_API_KEY || process.env.OPENAI_API_KEY;
   const githubToken = process.env.GITHUB_MODELS_KEY || process.env.GITHUB_TOKEN;
 
-  // #1: OpenRouter (Modelo principal "openrouter/free" -> Fallback "openai/gpt-oss-120b:free")
+  // #1: OpenRouter – modelos conversacionales puros (sin Chain-of-Thought)
+  // NOTA: Se usa deepseek/deepseek-chat:free en lugar de openrouter/free para evitar que el
+  // enrutador automático seleccione modelos de razonamiento (ej. DeepSeek-R1) que filtran
+  // su cadena de pensamiento (<think>...</think>) en las respuestas al usuario.
   if (openRouterKey) {
     providers.push({
-      name: 'OpenRouter (Auto Free)',
+      name: 'OpenRouter (DeepSeek Chat Free)',
       getClient: () => getOpenRouterClient(),
-      model: 'openrouter/free',
+      model: 'deepseek/deepseek-chat:free',
+    });
+    providers.push({
+      name: 'OpenRouter (DeepSeek Chat V3 Free)',
+      getClient: () => getOpenRouterClient(),
+      model: 'deepseek/deepseek-chat-v3-0324:free',
     });
     providers.push({
       name: 'OpenRouter (GPT OSS 120B Free)',
@@ -161,7 +169,14 @@ async function callAiProviderCascade(formattedMessages, imageBase64 = null) {
         max_tokens: 512,
       });
 
-      const aiText = response.choices[0]?.message?.content?.trim() || '';
+      const rawAiText = response.choices[0]?.message?.content?.trim() || '';
+      // ─── FILTRO ANTI-CHAIN-OF-THOUGHT ───
+      // Elimina bloques <think>...</think> residuales que algunos modelos de razonamiento
+      // pueden filtrar en el output aunque sean supuestamente conversacionales.
+      const aiText = rawAiText
+        .replace(/<think>[\s\S]*?<\/think>/gi, '')
+        .replace(/^\s*\.{3,}\s*/m, '')
+        .trim();
       if (aiText) {
         console.log(`✅ [AI Failover Cascade] Respuesta obtenida exitosamente desde: ${provider.name}`);
         return aiText;
