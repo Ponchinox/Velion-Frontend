@@ -1300,7 +1300,7 @@ ${inventarioTexto}`.trim();
         if (queryStr.startsWith('http')) {
           mediaUrls.push(queryStr);
         } else {
-          const matchedProd = productos.find(p => p.name.toLowerCase().includes(queryStr.toLowerCase()));
+          const matchedProd = products.find(p => p.name.toLowerCase().includes(queryStr.toLowerCase()));
           if (matchedProd && matchedProd.imageUrl && matchedProd.imageUrl !== 'Sin imagen') {
             mediaUrls.push(matchedProd.imageUrl);
           }

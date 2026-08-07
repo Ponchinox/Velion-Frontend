@@ -99,10 +99,22 @@ async function callAiProviderCascade(formattedMessages, imageBase64 = null) {
   const openRouterKey = process.env.OPENROUTER_API_KEY || process.env.OPENAI_API_KEY;
   const githubToken = process.env.GITHUB_MODELS_KEY || process.env.GITHUB_TOKEN;
 
-  // #1: OpenRouter – modelos conversacionales puros (sin Chain-of-Thought)
+  // #1: Groq Cloud — Proveedor PRIMARIO (confiable, sin límites de 404 de cuota gratuita de terceros)
+  // Se posiciona primero para evitar la demora acumulada de múltiples 404s de OpenRouter free tier.
+  if (process.env.GROQ_API_KEY) {
+    providers.push({
+      name: 'Groq Cloud (Llama-3.3-70b)',
+      getClient: () => groqClient,
+      model: imageBase64 ? 'llama-3.2-11b-vision-preview' : 'llama-3.3-70b-versatile',
+    });
+  }
+
+  // #2: OpenRouter — Modelos conversacionales puros (sin Chain-of-Thought)
   // NOTA: Se usa deepseek/deepseek-chat:free en lugar de openrouter/free para evitar que el
   // enrutador automático seleccione modelos de razonamiento (ej. DeepSeek-R1) que filtran
   // su cadena de pensamiento (<think>...</think>) en las respuestas al usuario.
+  // ADVERTENCIA: Los modelos :free de OpenRouter pueden devolver 404 por límite de cuota.
+  // La detección rápida de 404 en el loop los saltará sin demora al siguiente slot.
   if (openRouterKey) {
     providers.push({
       name: 'OpenRouter (DeepSeek Chat Free)',
@@ -121,16 +133,7 @@ async function callAiProviderCascade(formattedMessages, imageBase64 = null) {
     });
   }
 
-  // #2: Groq Cloud (Llama-3.3-70b) como respaldo secundario si falla la red
-  if (process.env.GROQ_API_KEY) {
-    providers.push({
-      name: 'Groq Cloud (Llama-3.3-70b)',
-      getClient: () => groqClient,
-      model: imageBase64 ? 'llama-3.2-11b-vision-preview' : 'llama-3.3-70b-versatile',
-    });
-  }
-
-  // #3: GitHub Models (gpt-4o-mini) como respaldo adicional
+  // #3: GitHub Models (gpt-4o-mini) como respaldo adicional de último recurso
   if (githubToken) {
     providers.push({
       name: 'GitHub Models (gpt-4o-mini)',
@@ -182,7 +185,14 @@ async function callAiProviderCascade(formattedMessages, imageBase64 = null) {
         return aiText;
       }
     } catch (err) {
-      console.warn(`⚠️ [AI Failover Cascade] Proveedor '${provider.name}' falló (${err.message}). Conmutando al siguiente modelo de respaldo...`);
+      // Detección rápida de errores 404/503 de OpenRouter (cuota agotada en modelos free)
+      const errStatus = err?.status || err?.response?.status;
+      const errMsg = err?.message || String(err);
+      if (errStatus === 404 || errStatus === 503 || errMsg.includes('404') || errMsg.includes('No endpoints')) {
+        console.warn(`⚡ [AI Failover Cascade] Proveedor '${provider.name}' devolvió ${errStatus || 'error de disponibilidad'} (modelo free sin cuota). Saltando al siguiente...`);
+      } else {
+        console.warn(`⚠️ [AI Failover Cascade] Proveedor '${provider.name}' falló (${errMsg}). Conmutando al siguiente modelo de respaldo...`);
+      }
       lastError = err;
       await handleAiError(err, provider.name);
     }
