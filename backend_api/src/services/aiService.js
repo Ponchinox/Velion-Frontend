@@ -1,3 +1,4 @@
+import { GoogleGenerativeAI } from '@google/generative-ai';
 import OpenAI from 'openai';
 import axios from 'axios';
 import FormData from 'form-data';
@@ -12,10 +13,10 @@ ffmpeg.setFfmpegPath(ffmpegPath);
 /**
  * Registra una alerta de caída global si se detecta un error HTTP 429 (Límite Excedido)
  */
-async function handleAiError(error, providerName = 'GitHub/Groq') {
+async function handleAiError(error, providerName = 'Google Gemini') {
   const status = error?.status || error?.response?.status;
   const message = error?.message || String(error);
-  const is429 = status === 429 || message.includes('429') || message.toLowerCase().includes('quota') || message.toLowerCase().includes('rate limit');
+  const is429 = status === 429 || message.includes('429') || message.toLowerCase().includes('quota') || message.toLowerCase().includes('rate limit') || message.toLowerCase().includes('resource_exhausted');
 
   if (is429) {
     console.error(`🚨 [ALERTA GLOBAL IA] Error 429 Límite de Cuota Excedido en ${providerName}:`, message);
@@ -36,6 +37,22 @@ async function handleAiError(error, providerName = 'GitHub/Groq') {
       console.error('Error registrando alerta de caída de IA en DB:', dbErr);
     }
   }
+}
+
+let genAI = null;
+
+/**
+ * Inicializa y retorna el cliente de Google Gemini de forma perezosa
+ */
+function getGeminiClient() {
+  const apiKey = process.env.GEMINI_API_KEY;
+  if (!apiKey) {
+    throw new Error('Falta la variable de entorno GEMINI_API_KEY para inicializar Google Gemini.');
+  }
+  if (!genAI) {
+    genAI = new GoogleGenerativeAI(apiKey);
+  }
+  return genAI;
 }
 
 let openRouterClient = null;
@@ -61,26 +78,7 @@ function getOpenRouterClient() {
   return openRouterClient;
 }
 
-let openaiClient = null;
-
-/**
- * Inicializa y retorna el cliente de OpenAI / GitHub Models de forma perezosa
- */
-function getOpenAIClient() {
-  if (!openaiClient) {
-    const githubToken = process.env.GITHUB_MODELS_KEY || process.env.GITHUB_TOKEN;
-    if (!githubToken) {
-      throw new Error('Falta la variable de entorno GITHUB_MODELS_KEY o GITHUB_TOKEN para inicializar GPT-4o-mini.');
-    }
-    openaiClient = new OpenAI({
-      baseURL: 'https://models.inference.ai.azure.com',
-      apiKey: githubToken,
-    });
-  }
-  return openaiClient;
-}
-
-// Cliente OpenAI dedicado para Groq (Visión / Transcripciones)
+// Cliente OpenAI dedicado para Groq Whisper (Transcripciones de Audio)
 const groqClient = new OpenAI({
   apiKey: process.env.GROQ_API_KEY || '',
   baseURL: 'https://api.groq.com/openai/v1',
@@ -91,122 +89,207 @@ const userMemories = new Map();
 const MAX_HISTORIAL = 10;
 
 /**
- * Cascadas de resiliencia (Fallback Chain / Auto-Failover)
- * Si el proveedor primario falla (ej. Error 429 Límite de Cuota o Caída), conmuta automáticamente al siguiente.
+ * Extrae y limpia el string Base64 y su MIME type
  */
-async function callAiProviderCascade(formattedMessages, imageBase64 = null) {
-  const providers = [];
-  const openRouterKey = process.env.OPENROUTER_API_KEY || process.env.OPENAI_API_KEY;
-  const githubToken = process.env.GITHUB_MODELS_KEY || process.env.GITHUB_TOKEN;
+function extractMimeAndBase64(rawBase64) {
+  let clean = (rawBase64 || '').replace(/\s/g, '');
+  let mimeType = 'image/jpeg';
 
-  // #1: Groq Cloud — Proveedor PRIMARIO (confiable, sin límites de 404 de cuota gratuita de terceros)
-  // Se posiciona primero para evitar la demora acumulada de múltiples 404s de OpenRouter free tier.
-  // MODELO VISUAL: llama-3.2-90b-vision-preview (activo y disponible en API pública de Groq)
-  if (process.env.GROQ_API_KEY) {
-    providers.push({
-      name: 'Groq Cloud (Llama-3.3-70b)',
-      getClient: () => groqClient,
-      model: imageBase64 ? 'llama-3.2-90b-vision-preview' : 'llama-3.3-70b-versatile',
-    });
+  if (clean.startsWith('data:')) {
+    const match = clean.match(/^data:([a-zA-Z0-9/+.-]+);base64,(.+)$/);
+    if (match) {
+      mimeType = match[1];
+      clean = match[2];
+    } else if (clean.includes(';base64,')) {
+      const parts = clean.split(';base64,');
+      mimeType = parts[0].replace('data:', '') || 'image/jpeg';
+      clean = parts[1];
+    }
   }
 
-  // #2: OpenRouter — Modelos conversacionales puros (sin Chain-of-Thought)
-  // NOTA: Se usa deepseek/deepseek-chat:free en lugar de openrouter/free para evitar que el
-  // enrutador automático seleccione modelos de razonamiento (ej. DeepSeek-R1) que filtran
-  // su cadena de pensamiento (<think>...</think>) en las respuestas al usuario.
-  // ADVERTENCIA: Los modelos :free de OpenRouter pueden devolver 404 por límite de cuota.
-  // La detección rápida de 404 en el loop los saltará sin demora al siguiente slot.
-  if (openRouterKey) {
-    providers.push({
-      name: 'OpenRouter (DeepSeek Chat Free)',
-      getClient: () => getOpenRouterClient(),
-      model: 'deepseek/deepseek-chat:free',
-    });
-    providers.push({
-      name: 'OpenRouter (DeepSeek Chat V3 Free)',
-      getClient: () => getOpenRouterClient(),
-      model: 'deepseek/deepseek-chat-v3-0324:free',
-    });
-    providers.push({
-      name: 'OpenRouter (GPT OSS 120B Free)',
-      getClient: () => getOpenRouterClient(),
-      model: 'openai/gpt-oss-120b:free',
-    });
+  // Normalizar mimetypes comunes
+  if (mimeType.includes('png')) mimeType = 'image/png';
+  else if (mimeType.includes('webp')) mimeType = 'image/webp';
+  else if (mimeType.includes('gif')) mimeType = 'image/gif';
+  else mimeType = 'image/jpeg';
+
+  return { data: clean, mimeType };
+}
+
+/**
+ * Ejecuta la llamada al motor principal: Google Gemini (gemini-1.5-flash)
+ * Soporta texto e imágenes multimodales de forma nativa en alta velocidad.
+ */
+async function callGemini(systemPrompt, messages, imageBase64 = null) {
+  const client = getGeminiClient();
+  const model = client.getGenerativeModel({
+    model: 'gemini-1.5-flash',
+    systemInstruction: systemPrompt,
+    generationConfig: {
+      temperature: 0.7,
+      maxOutputTokens: 512,
+    },
+  });
+
+  // Estructurar el historial y contenido para el SDK de Google Generative AI
+  const contents = [];
+
+  for (let i = 0; i < messages.length; i++) {
+    const msg = messages[i];
+    // Gemini roles: 'user' o 'model'
+    const isUser = msg.role === 'user';
+    const role = isUser ? 'user' : 'model';
+
+    let textContent = '';
+    if (typeof msg.content === 'string') {
+      textContent = msg.content;
+    } else if (Array.isArray(msg.content)) {
+      const textPart = msg.content.find(p => p.type === 'text');
+      textContent = textPart ? textPart.text : '';
+    }
+
+    const parts = [{ text: textContent || 'Analiza esta información' }];
+
+    // Si es el último mensaje del usuario y hay imagen adjunta, incorporar inlineData
+    if (isUser && imageBase64 && i === messages.length - 1) {
+      const { data, mimeType } = extractMimeAndBase64(imageBase64);
+      parts.push({
+        inlineData: {
+          data,
+          mimeType,
+        },
+      });
+    }
+
+    contents.push({ role, parts });
   }
 
-  // #3: GitHub Models (gpt-4o-mini) como respaldo adicional de último recurso
-  if (githubToken) {
-    providers.push({
-      name: 'GitHub Models (gpt-4o-mini)',
-      getClient: () => getOpenAIClient(),
-      model: 'gpt-4o-mini',
-    });
+  // Si no había ningún mensaje, crear uno por defecto
+  if (contents.length === 0) {
+    const parts = [{ text: 'Hola' }];
+    if (imageBase64) {
+      const { data, mimeType } = extractMimeAndBase64(imageBase64);
+      parts.push({
+        inlineData: {
+          data,
+          mimeType,
+        },
+      });
+    }
+    contents.push({ role: 'user', parts });
   }
 
-  if (providers.length === 0) {
-    throw new Error('No hay proveedores de IA configurados en el archivo de entorno (.env).');
-  }
+  const result = await model.generateContent({ contents });
+  const response = await result.response;
+  const rawAiText = response.text() || '';
+
+  return rawAiText
+    .replace(/<think>[\s\S]*?<\/think>/gi, '')
+    .replace(/^\s*\.{3,}\s*/m, '')
+    .trim();
+}
+
+/**
+ * Ejecuta la llamada de respaldo secundario: OpenRouter (DeepSeek Chat Free)
+ * Usado exclusivamente como fallback de texto si Gemini no está disponible.
+ */
+async function callOpenRouter(systemPrompt, messages) {
+  const client = getOpenRouterClient();
+  const models = [
+    'deepseek/deepseek-chat:free',
+    'deepseek/deepseek-chat-v3-0324:free',
+    'openai/gpt-oss-120b:free'
+  ];
 
   let lastError = null;
 
-  for (const provider of providers) {
+  for (const model of models) {
     try {
-      console.log(`🤖 [AI Failover Cascade] Ejecutando petición con proveedor: ${provider.name}...`);
-      const client = provider.getClient();
-
-      // Ajustar formato de mensaje si el proveedor no soporta arrays multimodales en texto plano
-      let messagesForProvider = formattedMessages;
-      if (provider.name.includes('Groq') && !imageBase64) {
-        messagesForProvider = formattedMessages.map(msg => {
-          if (Array.isArray(msg.content)) {
-            const textPart = msg.content.find(p => p.type === 'text');
-            return { role: msg.role, content: textPart ? textPart.text : 'Analiza esta información' };
-          }
-          return msg;
-        });
-      }
+      console.log(`🤖 [OpenRouter Fallback] Intentando modelo: ${model}...`);
+      const formattedMessages = [
+        { role: 'system', content: systemPrompt },
+        ...messages.map(msg => ({
+          role: msg.role === 'assistant' || msg.role === 'model' ? 'assistant' : 'user',
+          content: typeof msg.content === 'string' ? msg.content : (msg.content?.find?.(p => p.type === 'text')?.text || 'Consulta')
+        }))
+      ];
 
       const response = await client.chat.completions.create({
-        model: provider.model,
-        messages: messagesForProvider,
+        model,
+        messages: formattedMessages,
         temperature: 0.7,
         max_tokens: 512,
       });
 
       const rawAiText = response.choices[0]?.message?.content?.trim() || '';
-      // ─── FILTRO ANTI-CHAIN-OF-THOUGHT ───
-      // Elimina bloques <think>...</think> residuales que algunos modelos de razonamiento
-      // pueden filtrar en el output aunque sean supuestamente conversacionales.
       const aiText = rawAiText
         .replace(/<think>[\s\S]*?<\/think>/gi, '')
         .replace(/^\s*\.{3,}\s*/m, '')
         .trim();
+
       if (aiText) {
-        console.log(`✅ [AI Failover Cascade] Respuesta obtenida exitosamente desde: ${provider.name}`);
+        console.log(`✅ [OpenRouter Fallback] Respuesta obtenida exitosamente desde: ${model}`);
         return aiText;
       }
     } catch (err) {
-      // Detección rápida de errores conocidos para skip inmediato sin crashear la cascada:
-      // - 404/503: modelo free sin cuota (OpenRouter)
-      // - 400 + 'decommissioned': modelo dado de baja por el proveedor (ej. Groq vision-preview)
       const errStatus = err?.status || err?.response?.status;
       const errMsg = err?.message || String(err);
-      const isDeprecated = errStatus === 400 && (errMsg.includes('decommissioned') || errMsg.includes('no longer supported') || errMsg.includes('deprecated'));
-      const isQuotaError = errStatus === 404 || errStatus === 503 || errMsg.includes('404') || errMsg.includes('No endpoints');
-
-      if (isDeprecated) {
-        console.warn(`🚨 [AI Failover Cascade] Proveedor '${provider.name}' usa un modelo DEPRECADO (${errMsg.slice(0, 120)}). Saltando al siguiente...`);
-      } else if (isQuotaError) {
-        console.warn(`⚡ [AI Failover Cascade] Proveedor '${provider.name}' devolveró ${errStatus || 'error de disponibilidad'} (modelo free sin cuota). Saltando al siguiente...`);
+      if (errStatus === 404 || errStatus === 503 || errMsg.includes('404') || errMsg.includes('No endpoints')) {
+        console.warn(`⚡ [OpenRouter Fallback] Modelo '${model}' devolvió ${errStatus || 'error de cuota'}. Saltando al siguiente...`);
       } else {
-        console.warn(`⚠️ [AI Failover Cascade] Proveedor '${provider.name}' falló (${errMsg}). Conmutando al siguiente modelo de respaldo...`);
+        console.warn(`⚠️ [OpenRouter Fallback] Modelo '${model}' falló (${errMsg}). Saltando...`);
       }
       lastError = err;
-      await handleAiError(err, provider.name);
     }
   }
 
-  throw lastError || new Error('Todos los modelos de IA en la cascada de fallos fallaron.');
+  throw lastError || new Error('Todos los modelos de OpenRouter en fallback fallaron.');
+}
+
+/**
+ * Cascada de resiliencia (Failover Chain)
+ * 1. Slot #1: Google Gemini (gemini-1.5-flash) - Motor Principal (Texto + Visión Multimodal)
+ * 2. Slot #2: OpenRouter (DeepSeek Chat Free) - Fallback Secundario para texto
+ */
+async function callAiProviderCascade(systemPrompt, messages, imageBase64 = null) {
+  let lastError = null;
+
+  // #1: Google Gemini (Motor Principal)
+  if (process.env.GEMINI_API_KEY) {
+    try {
+      console.log('🤖 [Google Gemini] Ejecutando petición con gemini-1.5-flash (Texto + Visión)...');
+      const text = await callGemini(systemPrompt, messages, imageBase64);
+      if (text) {
+        console.log('✅ [Google Gemini] Respuesta generada exitosamente.');
+        return text;
+      }
+    } catch (err) {
+      console.warn(`⚠️ [Google Gemini] Falló (${err.message}). Conmutando al siguiente proveedor de respaldo...`);
+      lastError = err;
+      await handleAiError(err, 'Google Gemini');
+    }
+  } else {
+    console.warn('⚠️ GEMINI_API_KEY no configurada en entorno. Saltando a OpenRouter...');
+  }
+
+  // #2: OpenRouter (Fallback Secundario para texto)
+  const openRouterKey = process.env.OPENROUTER_API_KEY || process.env.OPENAI_API_KEY;
+  if (openRouterKey) {
+    try {
+      console.log('🤖 [OpenRouter Fallback] Conmutando a modelos gratuitos de OpenRouter...');
+      const text = await callOpenRouter(systemPrompt, messages);
+      if (text) {
+        console.log('✅ [OpenRouter Fallback] Respuesta obtenida con éxito.');
+        return text;
+      }
+    } catch (err) {
+      console.warn(`⚠️ [OpenRouter Fallback] Falló (${err.message}).`);
+      lastError = err;
+      await handleAiError(err, 'OpenRouter');
+    }
+  }
+
+  throw lastError || new Error('Todos los proveedores de IA configurados fallaron o no hay claves API válidas.');
 }
 
 /**
@@ -241,10 +324,6 @@ Si el cliente revela información útil para futuras ventas (nombre, talla, pref
       systemContent += `\n\nINFORMACIÓN DEL CLIENTE (Memoria a largo plazo): ${customerPreferences}`;
     }
 
-    let formattedMessages = [
-      { role: 'system', content: systemContent },
-    ];
-
     // Obtener historial de la memoria FIFO
     let history = [];
     if (remoteJid) {
@@ -254,56 +333,8 @@ Si el cliente revela información útil para futuras ventas (nombre, talla, pref
     // Unir el historial de memoria con el mensaje actual
     const fullContext = [...history, ...context];
 
-    if (imageBase64) {
-      // Limpiar espacios y saltos de línea del base64
-      let cleanBase64 = imageBase64.replace(/\s/g, '');
-      if (cleanBase64.startsWith('data:image/')) {
-        const match = cleanBase64.match(/^data:image\/[a-zA-Z]+;base64,(.+)$/);
-        if (match) {
-          cleanBase64 = match[1];
-        }
-      }
-
-      // Buscar el último mensaje del usuario en el contexto completo
-      const userMessageIndex = fullContext.findLastIndex(m => m.role === 'user');
-      
-      const visionContent = [
-        { type: 'image_url', image_url: { url: `data:image/jpeg;base64,${cleanBase64}` } }
-      ];
-
-      // Mapear el contexto completo para inyectar visión en el último mensaje de usuario
-      const mappedContext = fullContext.map((msg, index) => {
-        if (index === userMessageIndex) {
-          const textContent = typeof msg.content === 'string' ? msg.content : 'Analiza esta imagen';
-          return {
-            role: 'user',
-            content: [
-              { type: 'text', text: textContent },
-              ...visionContent
-            ]
-          };
-        }
-        return msg;
-      });
-
-      // Si no había ningún mensaje del usuario en el contexto completo, creamos uno nuevo al final
-      if (userMessageIndex === -1) {
-        mappedContext.push({
-          role: 'user',
-          content: [
-            { type: 'text', text: 'Analiza esta imagen' },
-            ...visionContent
-          ]
-        });
-      }
-
-      formattedMessages.push(...mappedContext);
-    } else {
-      formattedMessages.push(...fullContext);
-    }
-
-    // Ejecutar llamada a la cascada de proveedores (Failover automático)
-    const aiText = await callAiProviderCascade(formattedMessages, imageBase64);
+    // Ejecutar llamada a la cascada de proveedores (Google Gemini como Slot #1)
+    const aiText = await callAiProviderCascade(systemContent, fullContext, imageBase64);
 
     // Guardar en el historial de forma optimizada (dieta de tokens sin Base64)
     if (remoteJid && aiText) {
@@ -338,7 +369,9 @@ Si el cliente revela información útil para futuras ventas (nombre, talla, pref
   }
 }
 
-
+/**
+ * Transcribe un archivo de audio en Base64 utilizando Groq Whisper
+ */
 export async function transcribeAudio(base64Audio) {
   let tempFilePath = null;
   try {
@@ -483,4 +516,3 @@ export async function extractFrameFromVideo(base64Video, captionText = '') {
     }
   }
 }
-
