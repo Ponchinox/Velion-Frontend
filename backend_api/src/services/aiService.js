@@ -101,13 +101,12 @@ async function callAiProviderCascade(formattedMessages, imageBase64 = null) {
 
   // #1: Groq Cloud — Proveedor PRIMARIO (confiable, sin límites de 404 de cuota gratuita de terceros)
   // Se posiciona primero para evitar la demora acumulada de múltiples 404s de OpenRouter free tier.
-  // MODELO VISUAL: llama-3.2-11b-vision-instruct (reemplaza al deprecado llama-3.2-11b-vision-preview)
-  // Si el de 11b tampoco estuviera disponible, usar: llama-3.2-90b-vision-preview
+  // MODELO VISUAL: llama-3.2-90b-vision-preview (activo y disponible en API pública de Groq)
   if (process.env.GROQ_API_KEY) {
     providers.push({
       name: 'Groq Cloud (Llama-3.3-70b)',
       getClient: () => groqClient,
-      model: imageBase64 ? 'llama-3.2-11b-vision-instruct' : 'llama-3.3-70b-versatile',
+      model: imageBase64 ? 'llama-3.2-90b-vision-preview' : 'llama-3.3-70b-versatile',
     });
   }
 
