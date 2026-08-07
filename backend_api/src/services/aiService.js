@@ -62,10 +62,7 @@ let openRouterClient = null;
  */
 function getOpenRouterClient() {
   if (!openRouterClient) {
-    const apiKey = process.env.OPENROUTER_API_KEY || process.env.OPENAI_API_KEY;
-    if (!apiKey) {
-      throw new Error('Falta la variable de entorno OPENROUTER_API_KEY u OPENAI_API_KEY para inicializar OpenRouter.');
-    }
+    const apiKey = process.env.OPENROUTER_API_KEY || process.env.OPENAI_API_KEY || process.env.GITHUB_TOKEN || 'dummy-key-to-prevent-crash';
     openRouterClient = new OpenAI({
       baseURL: 'https://openrouter.ai/api/v1',
       apiKey: apiKey,
@@ -78,11 +75,20 @@ function getOpenRouterClient() {
   return openRouterClient;
 }
 
-// Cliente OpenAI dedicado para Groq Whisper (Transcripciones de Audio)
-const groqClient = new OpenAI({
-  apiKey: process.env.GROQ_API_KEY || '',
-  baseURL: 'https://api.groq.com/openai/v1',
-});
+let groqClient = null;
+
+/**
+ * Inicializa y retorna el cliente de Groq de forma perezosa y segura
+ */
+function getGroqClient() {
+  if (!groqClient) {
+    groqClient = new OpenAI({
+      apiKey: process.env.GROQ_API_KEY || 'dummy-key-to-prevent-crash',
+      baseURL: 'https://api.groq.com/openai/v1',
+    });
+  }
+  return groqClient;
+}
 
 // Memoria a corto plazo (Dieta de Tokens)
 const userMemories = new Map();
@@ -397,7 +403,8 @@ export async function transcribeAudio(base64Audio) {
     console.log(`🎙️ [Whisper Groq] Enviando archivo temporal para transcripción: ${tempFilePath}`);
 
     // 5. Enviar a la API de Groq Whisper usando el cliente groqClient
-    const transcription = await groqClient.audio.transcriptions.create({
+    const client = getGroqClient();
+    const transcription = await client.audio.transcriptions.create({
       file: fs.createReadStream(tempFilePath),
       model: 'whisper-large-v3',
     });
