@@ -123,19 +123,18 @@ function extractMimeAndBase64(rawBase64) {
 }
 
 /**
- * Ejecuta la llamada al motor principal: Google Gemini (gemini-1.5-flash)
+ * Ejecuta la llamada al motor principal: Google Gemini (con fallback automático entre slugs activos)
  * Soporta texto e imágenes multimodales de forma nativa en alta velocidad.
  */
 async function callGemini(systemPrompt, messages, imageBase64 = null) {
   const client = getGeminiClient();
-  const model = client.getGenerativeModel({
-    model: 'gemini-1.5-flash',
-    systemInstruction: systemPrompt,
-    generationConfig: {
-      temperature: 0.7,
-      maxOutputTokens: 512,
-    },
-  });
+  const GEMINI_MODELS = [
+    'gemini-1.5-flash-latest',
+    'gemini-1.5-flash',
+    'gemini-2.0-flash',
+    'gemini-2.0-flash-exp',
+    'gemini-1.5-pro-latest'
+  ];
 
   // Estructurar el historial y contenido para el SDK de Google Generative AI
   const contents = [];
@@ -185,33 +184,57 @@ async function callGemini(systemPrompt, messages, imageBase64 = null) {
     contents.push({ role: 'user', parts });
   }
 
-  const result = await model.generateContent({ contents });
-  const response = await result.response;
-  const rawAiText = response.text() || '';
+  let lastErr = null;
+  for (const modelSlug of GEMINI_MODELS) {
+    try {
+      const model = client.getGenerativeModel({
+        model: modelSlug,
+        systemInstruction: systemPrompt,
+        generationConfig: {
+          temperature: 0.7,
+          maxOutputTokens: 512,
+        },
+      });
 
-  return rawAiText
-    .replace(/<think>[\s\S]*?<\/think>/gi, '')
-    .replace(/^\s*\.{3,}\s*/m, '')
-    .trim();
+      const result = await model.generateContent({ contents });
+      const response = await result.response;
+      const rawAiText = response.text() || '';
+
+      const aiText = rawAiText
+        .replace(/<think>[\s\S]*?<\/think>/gi, '')
+        .replace(/^\s*\.{3,}\s*/m, '')
+        .trim();
+
+      if (aiText) {
+        return aiText;
+      }
+    } catch (err) {
+      const errMsg = err?.message || String(err);
+      console.warn(`⚡ [Google Gemini] Slug '${modelSlug}' devolvió error (${errMsg.slice(0, 100)}). Probando variante...`);
+      lastErr = err;
+    }
+  }
+
+  throw lastErr || new Error('Todos los slugs de Google Gemini fallaron.');
 }
 
 /**
- * Ejecuta la llamada de respaldo secundario: OpenRouter (DeepSeek Chat Free)
+ * Ejecuta la llamada de respaldo secundario: OpenRouter con modelo gratuito activo
  * Usado exclusivamente como fallback de texto si Gemini no está disponible.
  */
 async function callOpenRouter(systemPrompt, messages) {
   const client = getOpenRouterClient();
   const models = [
-    'deepseek/deepseek-chat:free',
-    'deepseek/deepseek-chat-v3-0324:free',
-    'openai/gpt-oss-120b:free'
+    'google/gemini-2.0-flash-lite-preview-02-05:free',
+    'google/gemini-2.0-flash-exp:free',
+    'meta-llama/llama-3.3-70b-instruct:free'
   ];
 
   let lastError = null;
 
   for (const model of models) {
     try {
-      console.log(`🤖 [OpenRouter Fallback] Intentando modelo: ${model}...`);
+      console.log(`🤖 [OpenRouter Fallback] Intentando modelo activo: ${model}...`);
       const formattedMessages = [
         { role: 'system', content: systemPrompt },
         ...messages.map(msg => ({
