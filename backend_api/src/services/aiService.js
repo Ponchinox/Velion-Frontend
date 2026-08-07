@@ -45,7 +45,7 @@ let genAI = null;
  * Inicializa y retorna el cliente de Google Gemini de forma perezosa
  */
 function getGeminiClient() {
-  const apiKey = process.env.GEMINI_API_KEY;
+  const apiKey = (process.env.GEMINI_API_KEY || '').trim();
   if (!apiKey) {
     throw new Error('Falta la variable de entorno GEMINI_API_KEY para inicializar Google Gemini.');
   }
@@ -62,7 +62,7 @@ let openRouterClient = null;
  */
 function getOpenRouterClient() {
   if (!openRouterClient) {
-    const apiKey = process.env.OPENROUTER_API_KEY || process.env.OPENAI_API_KEY || process.env.GITHUB_TOKEN || 'dummy-key-to-prevent-crash';
+    const apiKey = (process.env.OPENROUTER_API_KEY || process.env.OPENAI_API_KEY || process.env.GITHUB_TOKEN || 'dummy-key-to-prevent-crash').trim();
     openRouterClient = new OpenAI({
       baseURL: 'https://openrouter.ai/api/v1',
       apiKey: apiKey,
@@ -83,7 +83,7 @@ let groqClient = null;
 function getGroqClient() {
   if (!groqClient) {
     groqClient = new OpenAI({
-      apiKey: process.env.GROQ_API_KEY || 'dummy-key-to-prevent-crash',
+      apiKey: (process.env.GROQ_API_KEY || 'dummy-key-to-prevent-crash').trim(),
       baseURL: 'https://api.groq.com/openai/v1',
     });
   }
@@ -123,17 +123,17 @@ function extractMimeAndBase64(rawBase64) {
 }
 
 /**
- * Ejecuta la llamada al motor principal: Google Gemini (con fallback automático entre slugs activos)
+ * Ejecuta la llamada al motor principal: Google Gemini Gen 3
  * Soporta texto e imágenes multimodales de forma nativa en alta velocidad.
  */
 async function callGemini(systemPrompt, messages, imageBase64 = null) {
   const client = getGeminiClient();
   const GEMINI_MODELS = [
+    'gemini-3.6-flash',
+    'gemini-3.5-flash-lite',
+    'gemini-3.1-pro',
     'gemini-1.5-flash-latest',
-    'gemini-1.5-flash',
-    'gemini-2.0-flash',
-    'gemini-2.0-flash-exp',
-    'gemini-1.5-pro-latest'
+    'gemini-1.5-flash'
   ];
 
   // Estructurar el historial y contenido para el SDK de Google Generative AI
@@ -219,14 +219,13 @@ async function callGemini(systemPrompt, messages, imageBase64 = null) {
 }
 
 /**
- * Ejecuta la llamada de respaldo secundario: OpenRouter con modelo gratuito activo
+ * Ejecuta la llamada de respaldo secundario: OpenRouter con modelos gratuitos de roca sólida
  * Usado exclusivamente como fallback de texto si Gemini no está disponible.
  */
 async function callOpenRouter(systemPrompt, messages) {
   const client = getOpenRouterClient();
   const models = [
-    'google/gemini-2.0-flash-lite-preview-02-05:free',
-    'google/gemini-2.0-flash-exp:free',
+    'meta-llama/llama-3.1-8b-instruct:free',
     'meta-llama/llama-3.3-70b-instruct:free'
   ];
 
