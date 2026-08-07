@@ -112,6 +112,12 @@ const messageBuffers = new Map();
 // Escudo de Facturación: Cache en memoria para rate limiting de llamadas de IA (OpenAI)
 const iaRateLimitCache = new Map();
 
+// Lock de Procesamiento de IA: Evita respuestas paralelas para el mismo usuario.
+// Si la IA está generando una respuesta y llegan mensajes nuevos, estos se encolan en
+// pendingQueues y se procesan de forma ordenada al finalizar la respuesta actual.
+const processingLocks = new Set();
+const pendingQueues = new Map();
+
 // Cache en memoria para rastrear mensajes enviados por el sistema (IA / Flujos / Panel)
 // Permite distinguir intervención humana manual desde el celular/WhatsApp Web
 const sentByAiCache = new Set();
@@ -879,7 +885,30 @@ export async function receiveWebhook(req, res) {
       return res.sendStatus(200);
     }
 
-    // 3. Sistema de Message Buffer / Debounce: Acumular mensajes si el usuario escribe en ráfaga (espera 4000ms)
+    // 3. Sistema de Message Buffer / Debounce + Lock de Procesamiento
+    //
+    // CASO A: La IA ya está procesando una respuesta para este usuario (processingLock activo).
+    //   → No creamos un timer paralelo. Encolamos el mensaje en pendingQueues para procesarlo
+    //     de forma ordenada cuando la IA termine. Esto evita ráfagas paralelas.
+    if (processingLocks.has(remoteJid)) {
+      const existingQueue = pendingQueues.get(remoteJid);
+      if (existingQueue) {
+        existingQueue.text += '\n' + userMessageText;
+        if (imageBase64) existingQueue.imageBase64 = imageBase64;
+        console.log(`🔒 [Processing Lock] IA ocupada para +${clientNumber}. Mensaje encolado en pendingQueue (acumulado).`);
+      } else {
+        pendingQueues.set(remoteJid, {
+          remoteJid, clientNumber, text: userMessageText, imageBase64,
+          tenant, contact, chat, instance, requestApiKey, data, reqIo: req.io
+        });
+        console.log(`🔒 [Processing Lock] IA ocupada para +${clientNumber}. Mensaje guardado en pendingQueue.`);
+      }
+      return res.sendStatus(200);
+    }
+
+    // CASO B: No hay lock activo → aplicar debounce normal de 4000ms.
+    //   Si ya existe un timer corriendo para este usuario, se reinicia desde cero.
+    //   La IA no empieza a pensar hasta que pasen 4s continuos de silencio absoluto.
     const existingBuffer = messageBuffers.get(remoteJid);
     if (existingBuffer) {
       clearTimeout(existingBuffer.timer);
@@ -890,7 +919,7 @@ export async function receiveWebhook(req, res) {
       existingBuffer.timer = setTimeout(() => {
         processBufferedMessage(remoteJid);
       }, 4000);
-      console.log(`⏳ [Message Buffer] Mensaje en ráfaga concatenado para +${clientNumber}. Reiniciando temporizador a 4000ms...`);
+      console.log(`⏳ [Message Buffer] Mensaje en ráfaga concatenado para +${clientNumber}. Temporizador reiniciado a 4000ms desde cero.`);
     } else {
       const bufferEntry = {
         remoteJid,
@@ -909,7 +938,7 @@ export async function receiveWebhook(req, res) {
         }, 4000)
       };
       messageBuffers.set(remoteJid, bufferEntry);
-      console.log(`⏳ [Message Buffer] Primer mensaje en ráfaga de +${clientNumber}. Esperando 4000ms para acumular mensajes adicionales...`);
+      console.log(`⏳ [Message Buffer] Primer mensaje de +${clientNumber}. Esperando 4000ms de silencio absoluto antes de invocar la IA...`);
     }
 
     return res.sendStatus(200);
@@ -926,7 +955,7 @@ async function processBufferedMessage(remoteJid) {
   const buffer = messageBuffers.get(remoteJid);
   if (!buffer) return;
 
-  // Sacar y eliminar del buffer
+  // Sacar y eliminar del buffer inmediatamente para liberar slot
   messageBuffers.delete(remoteJid);
 
   const {
@@ -944,6 +973,13 @@ async function processBufferedMessage(remoteJid) {
 
   console.log(`🤖 [Message Buffer] Procesando ráfaga acumulada para +${clientNumber} (${userMessageText.length} caracteres): "${userMessageText.replace(/\n/g, ' ')}"`);
   const finalCleanNumber = String(clientNumber || '').replace(/[^0-9]/g, '');
+
+  // ─── LOCK DE PROCESAMIENTO (ANTI-PARALELISMO) ───
+  // Marcar al usuario como "ocupado" para que los mensajes entrantes durante
+  // la generación de la IA se encolen en pendingQueues en lugar de disparar
+  // una segunda llamada paralela a la IA.
+  processingLocks.add(remoteJid);
+  console.log(`🔒 [Processing Lock] Lock activado para +${clientNumber}. La IA está generando respuesta.`);
 
   try {
     const evoUrl = process.env.EVOLUTION_API_URL || 'http://localhost:8080';
@@ -1562,5 +1598,26 @@ ${inventarioTexto}`.trim();
     }
   } catch (error) {
     console.error('❌ Error en el procesamiento del buffer de mensajes:', error.message);
+  } finally {
+    // ─── LIBERAR LOCK Y DESPACHAR COLA PENDIENTE ───
+    // Sea cual sea el resultado (éxito o error), siempre liberamos el lock.
+    // Si hay mensajes encolados en pendingQueues, los inyectamos en el buffer
+    // con un pequeño delay para que el cliente sienta la conversación fluida.
+    processingLocks.delete(remoteJid);
+    console.log(`🔓 [Processing Lock] Lock liberado para ${remoteJid}.`);
+
+    const pending = pendingQueues.get(remoteJid);
+    if (pending) {
+      pendingQueues.delete(remoteJid);
+      console.log(`📬 [Pending Queue] Despachando ${pending.text.length} caracteres encolados para +${pending.clientNumber} con nuevo buffer de 4000ms.`);
+      // Re-inyectar como nuevo buffer con debounce fresco
+      const newBufferEntry = {
+        ...pending,
+        timer: setTimeout(() => {
+          processBufferedMessage(pending.remoteJid);
+        }, 4000)
+      };
+      messageBuffers.set(pending.remoteJid, newBufferEntry);
+    }
   }
 }
