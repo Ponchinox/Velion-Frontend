@@ -1171,10 +1171,16 @@ IMÁGENES [SEND_IMAGE:] — REGLAS ABSOLUTAS:
 
 FORMATO Y CONCISIÓN (OBLIGATORIO):
 1. Respuestas EXTREMADAMENTE concisas. Sin muros de texto. Párrafos de máx. 2-3 líneas.
-2. Usa viñetas para listas de productos o características.
+2. Usa viñetas con guión simple (- Producto) para listas. NUNCA uses • ni caracteres especiales raros.
 3. ANTI-REDUNDANCIA: NUNCA repitas información ya dicha en la misma respuesta. Cada idea, una sola vez.
 4. No especifiques la cantidad de opciones ('tengo 2 opciones'). Di directamente 'Tenemos estas opciones:'.
 5. Emojis: mín. 2 por párrafo en contexto comercial. Máx. 4 seguidos.
+6. FORMATO WHATSAPP ESTRICTO (CRÍTICO — CERO EXCEPCIONES):
+   - Para negritas usa UN SOLO asterisco: *texto* (WhatsApp lo entiende). ESTÁ TOTALMENTE PROHIBIDO usar doble asterisco (**texto**) porque se muestra como texto crudo al cliente.
+   - PROHIBIDO usar hashtags (#) para títulos. WhatsApp no los renderiza.
+   - PROHIBIDO usar sintaxis Markdown estándar como __subrayado__, ~~tachado~~, `código`, o ```bloques```.
+   - Usa itálicas con guión bajo: _texto_ si las necesitas.
+   - Escribe texto limpio, natural y conversacional como si fuera un mensaje de WhatsApp real.
 
 CIERRE: Si el cliente agradece o se despide, responde con máx. 5 palabras (ej. '¡De nada, vuelve pronto!'). Sin preguntas de seguimiento, sin '¿En qué más puedo ayudarte?'.
 
@@ -1260,7 +1266,7 @@ ${inventarioTexto}`.trim();
 
     const systemPrompt = `${mainInstructionsHeader}${globalGuardrails}\n\n${systemRulesAndInventory}`;
 
-    console.log(`🤖 [GPT-4o-mini] Generando respuesta de IA para +${clientNumber}...`);
+    console.log(`🧠 [Cerebro IA] Generando respuesta para +${clientNumber}...`);
 
     try {
       axios.post(

@@ -192,7 +192,7 @@ async function callGemini(systemPrompt, messages, imageBase64 = null) {
         systemInstruction: systemPrompt,
         generationConfig: {
           temperature: 0.7,
-          maxOutputTokens: 512,
+          maxOutputTokens: 1024,
         },
       });
 
