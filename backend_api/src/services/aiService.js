@@ -5,12 +5,8 @@ import axios from 'axios';
 import FormData from 'form-data';
 import fs from 'fs';
 import path from 'path';
-import ffmpeg from 'fluent-ffmpeg';
-import ffmpegPath from 'ffmpeg-static';
 import prisma from '../db.js';
 
-
-ffmpeg.setFfmpegPath(ffmpegPath);
 
 /**
  * Registra una alerta de caída global si se detecta un error HTTP 429 (Límite Excedido)
@@ -104,10 +100,10 @@ function extractMimeAndBase64(rawBase64) {
   let mimeType = 'image/jpeg';
 
   if (clean.startsWith('data:')) {
-    const match = clean.match(/^data:([a-zA-Z0-9/+.-]+);base64,(.+)$/);
+    const match = clean.match(/^data:([a-zA-Z0-9/+.-]+)(;[^,]*)?,(.*)$/);
     if (match) {
       mimeType = match[1];
-      clean = match[2];
+      clean = match[3];
     } else if (clean.includes(';base64,')) {
       const parts = clean.split(';base64,');
       mimeType = parts[0].replace('data:', '') || 'image/jpeg';
@@ -115,24 +111,30 @@ function extractMimeAndBase64(rawBase64) {
     }
   }
 
-  // Normalizar mimetypes comunes
-  if (mimeType.includes('png')) mimeType = 'image/png';
-  else if (mimeType.includes('webp')) mimeType = 'image/webp';
-  else if (mimeType.includes('gif')) mimeType = 'image/gif';
-  else mimeType = 'image/jpeg';
+  // Normalizar mimetypes comunes solo si no contiene un slash
+  if (!mimeType.includes('/')) {
+    if (mimeType.includes('png')) mimeType = 'image/png';
+    else if (mimeType.includes('webp')) mimeType = 'image/webp';
+    else if (mimeType.includes('gif')) mimeType = 'image/gif';
+    else mimeType = 'image/jpeg';
+  }
 
   return { data: clean, mimeType };
 }
 
 /**
- * Comprime una imagen Base64 con sharp antes de enviarla a Gemini.
- * Redimensiona a máx 768px y reduce calidad al 75% para ahorrar ~85% de tokens.
- * Si sharp falla por cualquier razón, devuelve la imagen original como plan B.
- * @param {string} rawBase64 - Imagen en Base64 (con o sin prefijo data:)
+ * Procesa multimedia Base64 antes de enviarlo a Gemini.
+ * Si es imagen, redimensiona y comprime. Si es audio/video, lo devuelve intacto.
+ * @param {string} rawBase64 - Multimedia en Base64 (con o sin prefijo data:)
  * @returns {Promise<{data: string, mimeType: string}>}
  */
-async function compressImageBase64(rawBase64) {
+async function processMediaBase64(rawBase64) {
   const { data: rawData, mimeType: origMime } = extractMimeAndBase64(rawBase64);
+
+  // Si es audio o video, devolver intacto para que Gemini lo procese nativamente
+  if (origMime.startsWith('audio/') || origMime.startsWith('video/')) {
+    return { data: rawData, mimeType: origMime };
+  }
 
   try {
     const inputBuffer = Buffer.from(rawData, 'base64');
@@ -149,7 +151,7 @@ async function compressImageBase64(rawBase64) {
 
     return { data: compressedBuffer.toString('base64'), mimeType: 'image/jpeg' };
   } catch (sharpErr) {
-    console.warn(`⚠️ [Sharp] Compresión falló (${sharpErr.message}). Enviando imagen original como plan B.`);
+    console.warn(`⚠️ [Sharp] Compresión falló (${sharpErr.message}). Enviando archivo original como plan B.`);
     return { data: rawData, mimeType: origMime };
   }
 }
@@ -157,9 +159,9 @@ async function compressImageBase64(rawBase64) {
 
 /**
  * Ejecuta la llamada al motor principal: Google Gemini Gen 3
- * Soporta texto e imágenes multimodales de forma nativa en alta velocidad.
+ * Soporta texto e imágenes/audio/video multimodales de forma nativa en alta velocidad.
  */
-async function callGemini(systemPrompt, messages, imageBase64 = null) {
+async function callGemini(systemPrompt, messages, mediaBase64 = null) {
   const client = getGeminiClient();
   const GEMINI_MODELS = [
     'gemini-3.5-flash-lite',
@@ -188,9 +190,9 @@ async function callGemini(systemPrompt, messages, imageBase64 = null) {
 
     const parts = [{ text: textContent || 'Analiza esta información' }];
 
-    // Si es el último mensaje del usuario y hay imagen adjunta, comprimir y enviar
-    if (isUser && imageBase64 && i === messages.length - 1) {
-      const { data, mimeType } = await compressImageBase64(imageBase64);
+    // Si es el último mensaje del usuario y hay multimedia adjunta, procesar y enviar
+    if (isUser && mediaBase64 && i === messages.length - 1) {
+      const { data, mimeType } = await processMediaBase64(mediaBase64);
       parts.push({
         inlineData: {
           data,
@@ -205,8 +207,8 @@ async function callGemini(systemPrompt, messages, imageBase64 = null) {
   // Si no había ningún mensaje, crear uno por defecto
   if (contents.length === 0) {
     const parts = [{ text: 'Hola' }];
-    if (imageBase64) {
-      const { data, mimeType } = await compressImageBase64(imageBase64);
+    if (mediaBase64) {
+      const { data, mimeType } = await processMediaBase64(mediaBase64);
       parts.push({
         inlineData: {
           data,
@@ -312,14 +314,14 @@ async function callOpenRouter(systemPrompt, messages) {
  * 1. Slot #1: Google Gemini (gemini-1.5-flash) - Motor Principal (Texto + Visión Multimodal)
  * 2. Slot #2: OpenRouter (DeepSeek Chat Free) - Fallback Secundario para texto
  */
-async function callAiProviderCascade(systemPrompt, messages, imageBase64 = null) {
+async function callAiProviderCascade(systemPrompt, messages, mediaBase64 = null) {
   let lastError = null;
 
   // #1: Google Gemini (Motor Principal)
   if (process.env.GEMINI_API_KEY) {
     try {
-      console.log('🤖 [Google Gemini] Ejecutando petición con gemini-1.5-flash (Texto + Visión)...');
-      const text = await callGemini(systemPrompt, messages, imageBase64);
+      console.log('🤖 [Google Gemini] Ejecutando petición con gemini-1.5-flash (Texto + Visión + Audio)...');
+      const text = await callGemini(systemPrompt, messages, mediaBase64);
       if (text) {
         console.log('✅ [Google Gemini] Respuesta generada exitosamente.');
         return text;
@@ -357,12 +359,12 @@ async function callAiProviderCascade(systemPrompt, messages, imageBase64 = null)
  * Genera una respuesta de IA utilizando cascada de resiliencia (Failover automático)
  * @param {string} prompt - Prompt de sistema o instrucciones base
  * @param {Array} context - Historial o contexto de la conversación [{ role, content }]
- * @param {string} imageBase64 - Imagen en Base64 para el flujo de visión (opcional)
+ * @param {string} mediaBase64 - Multimedia en Base64 para el flujo de visión/audio (opcional)
  * @param {string} remoteJid - ID de usuario único para memoria FIFO (opcional)
  * @param {string} customerPreferences - Resumen de preferencias históricas del cliente en el CRM (opcional)
  * @returns {Promise<string>}
  */
-export async function generateAIResponse(prompt, context = [], imageBase64 = null, remoteJid = null, customerPreferences = null) {
+export async function generateAIResponse(prompt, context = [], mediaBase64 = null, remoteJid = null, customerPreferences = null) {
   try {
     // visionRules: solo contiene reglas ÚNICAS de esta capa.
     // Las reglas de formato, tono y concisión viven en globalGuardrails (whatsappController)
@@ -395,7 +397,7 @@ Si el cliente revela información útil para futuras ventas (nombre, talla, pref
     const fullContext = [...history, ...context];
 
     // Ejecutar llamada a la cascada de proveedores (Google Gemini como Slot #1)
-    const aiText = await callAiProviderCascade(systemContent, fullContext, imageBase64);
+    const aiText = await callAiProviderCascade(systemContent, fullContext, mediaBase64);
 
     // Guardar en el historial de forma optimizada (dieta de tokens sin Base64)
     if (remoteJid && aiText) {
@@ -405,10 +407,10 @@ Si el cliente revela información útil para futuras ventas (nombre, talla, pref
         savedUserContent = lastUserMsg.content;
       } else if (Array.isArray(lastUserMsg.content)) {
         const textPart = lastUserMsg.content.find(p => p.type === 'text');
-        savedUserContent = textPart ? textPart.text : 'Analiza esta imagen';
+        savedUserContent = textPart ? textPart.text : 'Analiza esta multimedia';
       }
 
-      if (imageBase64) {
+      if (mediaBase64) {
         savedUserContent = `[El usuario envió multimedia con el texto: "${savedUserContent}"]`;
       }
 
@@ -430,151 +432,3 @@ Si el cliente revela información útil para futuras ventas (nombre, talla, pref
   }
 }
 
-/**
- * Transcribe un archivo de audio en Base64 utilizando Groq Whisper
- */
-export async function transcribeAudio(base64Audio) {
-  let tempFilePath = null;
-  try {
-    // 1. Limpiar prefijo data:audio/... o similar si existe
-    let cleanBase64 = base64Audio.replace(/\s/g, '');
-    if (cleanBase64.includes(';base64,')) {
-      cleanBase64 = cleanBase64.split(';base64,')[1];
-    }
-
-    // 2. Convertir el base64 a un buffer
-    const audioBuffer = Buffer.from(cleanBase64, 'base64');
-
-    // 3. Crear una ruta temporal dentro de la carpeta segura del proyecto
-    const tempDir = path.join(process.cwd(), 'temp');
-    if (!fs.existsSync(tempDir)) {
-      fs.mkdirSync(tempDir, { recursive: true });
-    }
-    tempFilePath = path.join(tempDir, `audio_${Date.now()}.ogg`);
-
-    // 4. Guardar temporalmente en el disco
-    fs.writeFileSync(tempFilePath, audioBuffer);
-
-    console.log(`🎙️ [Whisper Groq] Enviando archivo temporal para transcripción: ${tempFilePath}`);
-
-    // 5. Enviar a la API de Groq Whisper usando el cliente groqClient
-    const client = getGroqClient();
-    const transcription = await client.audio.transcriptions.create({
-      file: fs.createReadStream(tempFilePath),
-      model: 'whisper-large-v3',
-    });
-
-    return transcription.text || '';
-  } catch (error) {
-    console.error('❌ Error en transcribeAudio (Whisper Groq):', error);
-    await handleAiError(error, 'Groq Cloud');
-    throw new Error('Fallo al transcribir el audio con la API de Groq.');
-  } finally {
-    // 6. Eliminar el archivo temporal del disco
-    if (tempFilePath && fs.existsSync(tempFilePath)) {
-      try {
-        fs.unlinkSync(tempFilePath);
-        console.log(`🧹 [Whisper Groq] Archivo temporal eliminado: ${tempFilePath}`);
-      } catch (unlinkError) {
-        console.error('⚠️ No se pudo eliminar el archivo temporal de audio:', unlinkError.message);
-      }
-    }
-  }
-}
-
-/**
- * Extrae un fotograma de un video en Base64 en un segundo específico y lo devuelve en Base64
- * @param {string} base64Video - Video codificado en Base64
- * @param {string} captionText - Texto de descripción enviado por el usuario
- * @returns {Promise<string>}
- */
-export async function extractFrameFromVideo(base64Video, captionText = '') {
-  // 1. Determinar el segundo objetivo utilizando regex
-  let targetSecond = null;
-  if (captionText) {
-    const match = captionText.match(/segundo\s+(\d+)/i);
-    if (match && match[1]) {
-      targetSecond = parseInt(match[1], 10);
-    }
-  }
-
-  // Escudo Anti-Saturación: Si no se especificó un segundo explícito, retornar REQUIRE_SECOND de inmediato
-  if (targetSecond === null) {
-    console.log('🛡️ [Escudo Video] No se detectó palabra clave de segundo en el mensaje. Cancelando descarga/procesamiento.');
-    return 'REQUIRE_SECOND';
-  }
-
-  let tempVideoPath = null;
-  let tempImagePath = null;
-  try {
-    console.log(`🎬 [FFmpeg] Extrayendo fotograma al segundo: ${targetSecond}`);
-
-    // 2. Limpiar prefijo data:video/... o similar si existe
-    let cleanBase64 = base64Video.replace(/\s/g, '');
-    if (cleanBase64.includes(';base64,')) {
-      cleanBase64 = cleanBase64.split(';base64,')[1];
-    }
-
-    // 3. Convertir el base64 a un buffer
-    const videoBuffer = Buffer.from(cleanBase64, 'base64');
-
-    // 4. Crear archivos temporales en la carpeta segura del proyecto
-    const tempDir = path.join(process.cwd(), 'temp');
-    if (!fs.existsSync(tempDir)) {
-      fs.mkdirSync(tempDir, { recursive: true });
-    }
-    const timestamp = Date.now();
-    tempVideoPath = path.join(tempDir, `video_${timestamp}.mp4`);
-    tempImagePath = path.join(tempDir, `frame_${timestamp}.jpg`);
-
-    // Guardar el video temporalmente en el disco
-    fs.writeFileSync(tempVideoPath, videoBuffer);
-
-    // 5. Ejecutar la extracción del fotograma usando fluent-ffmpeg encapsulado en una Promesa
-    await new Promise((resolve, reject) => {
-      ffmpeg(tempVideoPath)
-        .seekInput(targetSecond)
-        .frames(1)
-        .output(tempImagePath)
-        .on('end', () => {
-          console.log('✅ [FFmpeg] Fotograma extraído correctamente.');
-          resolve();
-        })
-        .on('error', (err) => {
-          console.error('❌ [FFmpeg] Error al extraer fotograma:', err);
-          reject(err);
-        })
-        .run();
-    });
-
-    // 6. Leer la imagen generada y convertirla a Base64
-    if (!fs.existsSync(tempImagePath)) {
-      throw new Error('No se generó la captura de pantalla del video.');
-    }
-    const imageBuffer = fs.readFileSync(tempImagePath);
-    const imageBase64 = imageBuffer.toString('base64');
-
-    return imageBase64;
-  } catch (error) {
-    console.error('❌ Error en extractFrameFromVideo:', error);
-    throw new Error('Fallo al extraer fotograma del video.');
-  } finally {
-    // 7. Eliminar ambos archivos del disco
-    if (tempVideoPath && fs.existsSync(tempVideoPath)) {
-      try {
-        fs.unlinkSync(tempVideoPath);
-        console.log(`🧹 [FFmpeg] Video temporal eliminado: ${tempVideoPath}`);
-      } catch (e) {
-        console.error('⚠️ No se pudo eliminar el video temporal:', e.message);
-      }
-    }
-    if (tempImagePath && fs.existsSync(tempImagePath)) {
-      try {
-        fs.unlinkSync(tempImagePath);
-        console.log(`🧹 [FFmpeg] Captura temporal eliminada: ${tempImagePath}`);
-      } catch (e) {
-        console.error('⚠️ No se pudo eliminar la captura temporal:', e.message);
-      }
-    }
-  }
-}

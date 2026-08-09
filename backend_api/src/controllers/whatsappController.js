@@ -1,6 +1,6 @@
 import axios from 'axios';
 import prisma from '../db.js';
-import { generateAIResponse, transcribeAudio, extractFrameFromVideo } from '../services/aiService.js';
+import { generateAIResponse } from '../services/aiService.js';
 import * as flowService from '../services/flowService.js';
 import { validateAndRegisterWhatsAppConnection } from '../services/antiFraudService.js';
 
@@ -519,39 +519,17 @@ export async function receiveWebhook(req, res) {
           audioBase64 = typeof resData === 'string' ? resData : (resData.base64 || null);
         }
         if (audioBase64) {
-          console.log('✅ [Evolution API] Audio descargado correctamente en Base64. Iniciando transcripción...');
-          const transcriptionText = await transcribeAudio(audioBase64);
-          if (transcriptionText && transcriptionText.trim()) {
-            console.log(`📝 [Whisper] Audio transcrito con éxito: "${transcriptionText}"`);
-            userMessageText = `[Nota de voz]: ${transcriptionText}`;
-          }
+          console.log('✅ [Evolution API] Audio descargado correctamente en Base64. Pasando a procesamiento nativo en Gemini...');
+          const mimeType = data.message.audioMessage.mimetype || 'audio/ogg';
+          imageBase64 = `data:${mimeType};base64,${audioBase64}`;
+          userMessageText = '[Nota de voz de WhatsApp] Escucha este audio y respóndeme o ejecuta mi solicitud.';
         }
       } catch (audioError) {
         console.error('❌ Error al procesar audio en webhook:', audioError.message);
       }
     } else if (data.message?.videoMessage) {
       const caption = data.message.videoMessage.caption || '';
-      userMessageText = caption || 'Analiza este video';
-
-      // ESCUDO ANTI-SATURACIÓN:
-      // Comprobar con regex si el caption contiene 'segundo \d+' antes de descargar
-      const match = userMessageText.match(/segundo\s+(\d+)/i);
-      if (!match) {
-        console.log('🛡️ [Escudo Video] No se detectó palabra clave de segundo en el mensaje del video. Cancelando descarga y respondiendo.');
-        const cleanClientNumber = clientNumber.replace(/\D/g, '');
-        await axios.post(
-          `${evoUrl}/message/sendText/${instance}`,
-          {
-            number: cleanClientNumber,
-            text: "🎥 He recibido tu video. Para evitar confusiones, ¿podrías enviarme una *captura de pantalla* del momento exacto, o volver a enviarme el video escribiendo el *segundo* en el mensaje? (Ej: 'segundo 5')",
-            options: {
-              delay: 0
-            }
-          },
-          getEvoHeaders()
-        );
-        return res.sendStatus(200);
-      }
+      userMessageText = caption || '[Video de WhatsApp] Analiza este video y responde.';
 
       try {
         console.log(`🎥 [Evolution API] Descargando video en Base64 para la instancia "${instance}"...`);
@@ -566,28 +544,9 @@ export async function receiveWebhook(req, res) {
           videoBase64 = typeof resData === 'string' ? resData : (resData.base64 || null);
         }
         if (videoBase64) {
-          console.log('✅ [Evolution API] Video descargado correctamente en Base64. Iniciando extracción de fotograma...');
-          const frameBase64 = await extractFrameFromVideo(videoBase64, userMessageText);
-          if (frameBase64 === 'REQUIRE_SECOND') {
-            console.log('🛡️ [Escudo Video] extractFrameFromVideo solicitó segundo. Respondiendo plantilla.');
-            const cleanClientNumber = clientNumber.replace(/\D/g, '');
-            await axios.post(
-              `${evoUrl}/message/sendText/${instance}`,
-              {
-                number: cleanClientNumber,
-                text: "🎥 He recibido tu video. Para evitar confusiones, ¿podrías enviarme una *captura de pantalla* del momento exacto, o volver a enviarme el video escribiendo el *segundo* en el mensaje? (Ej: 'segundo 5')",
-                options: {
-                  delay: 0
-                }
-              },
-              getEvoHeaders(requestApiKey)
-            );
-            return res.sendStatus(200);
-          }
-          if (frameBase64 && frameBase64 !== 'REQUIRE_SECOND') {
-            console.log('✅ [FFmpeg] Fotograma extraído y convertido a Base64 con éxito.');
-            imageBase64 = frameBase64;
-          }
+          console.log('✅ [Evolution API] Video descargado correctamente en Base64. Pasando a procesamiento nativo en Gemini...');
+          const mimeType = data.message.videoMessage.mimetype || 'video/mp4';
+          imageBase64 = `data:${mimeType};base64,${videoBase64}`;
         }
       } catch (videoError) {
         console.error('❌ Error al procesar video en webhook:', videoError.message);
@@ -1163,10 +1122,10 @@ RENDICIÓN ELEGANTE: Si no hay nada en esa categoría, discúlpate brevemente y 
 MONEDA (OBLIGATORIO): Usa SIEMPRE "S/." para precios. El símbolo "$" está TOTALMENTE PROHIBIDO.
 
 IMÁGENES [SEND_IMAGE:] — REGLAS ABSOLUTAS:
-1. Solo incluye la etiqueta si el cliente pide ver la foto de un producto del catálogo.
+1. Solo incluye la etiqueta si el cliente pide ver la foto de un producto del catálogo o tú ofreces un producto nuevo.
 2. Formato exacto: [SEND_IMAGE: nombre_exacto_del_producto] al FINAL ABSOLUTO de la respuesta, nunca en medio del texto.
 3. Máximo 1-2 etiquetas por respuesta, solo los productos más relevantes.
-4. NUNCA repitas la misma etiqueta dos veces para el mismo producto en una respuesta.
+4. CONTROL DE IMÁGENES: NUNCA repitas la etiqueta de envío de imagen para un producto que ya mostraste previamente en la conversación. SIN EMBARGO, ESTÁS OBLIGADO a enviar la imagen cuando el cliente pregunte o tú ofrezcas un producto NUEVO y diferente (ej. si ya mostraste el parlante, no repitas su foto, pero si luego el cliente pregunta por un reloj, SÍ debes enviar la foto del reloj). Un envío por producto por chat.
 5. NUNCA envíes imágenes de categorías distintas a la consultada.
 
 FORMATO Y CONCISIÓN (OBLIGATORIO):
