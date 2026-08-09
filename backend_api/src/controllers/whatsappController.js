@@ -1117,16 +1117,9 @@ Si no existe en el catálogo: "Por ahora no contamos con ese producto, pero pued
 ASOCIACIÓN SEMÁNTICA + LÍMITES DE CATEGORÍA (CRÍTICO):
 Busca por familia semántica antes de negar: "audífonos" → AirPods/TWS/earbuds | "relojes" → smartwatch/Xiaomi Band | "parlantes" → JBL/Bluetooth Speaker | "cargadores" → USB/inalámbrico.
 LÍMITE ESTRICTO: SOLO ofrece alternativas de la MISMA categoría. NUNCA ofrezcas relojes si piden parlantes. Las categorías son compartimentos estancos.
-RENDICIÓN ELEGANTE: Si no hay nada en esa categoría, discúlpate brevemente y haz una pregunta abierta general. NUNCA dispares [SEND_IMAGE:] de productos no solicitados.
+RENDICIÓN ELEGANTE: Si no hay nada en esa categoría, discúlpate brevemente y haz una pregunta abierta general. NUNCA dispares imágenes de productos no solicitados.
 
 MONEDA (OBLIGATORIO): Usa SIEMPRE "S/." para precios. El símbolo "$" está TOTALMENTE PROHIBIDO.
-
-IMÁGENES [SEND_IMAGE:] — REGLAS ABSOLUTAS:
-1. Solo incluye la etiqueta si el cliente pide ver la foto de un producto del catálogo o tú ofreces un producto nuevo.
-2. Formato exacto: [SEND_IMAGE: nombre_exacto_del_producto] al FINAL ABSOLUTO de la respuesta, nunca en medio del texto.
-3. LÍMITE DE IMÁGENES DINÁMICO: Si el cliente pregunta por opciones y tú listas varios productos de una categoría (ej. 3 audífonos distintos), ESTÁS OBLIGADO a incluir la etiqueta de imagen [SEND_IMAGE: nombre_exacto] por CADA producto diferente que ofrezcas en ese mensaje (hasta un máximo de 4 imágenes por respuesta). Garantiza que cada opción listada tenga su respectiva foto al final del mensaje.
-4. CONTROL DE IMÁGENES: NUNCA repitas la etiqueta de envío de imagen para un producto que ya mostraste previamente en la conversación. SIN EMBARGO, ESTÁS OBLIGADO a enviar la imagen cuando el cliente pregunte o tú ofrezcas un producto NUEVO y diferente (ej. si ya mostraste el parlante, no repitas su foto, pero si luego el cliente pregunta por un reloj, SÍ debes enviar la foto del reloj). Un envío por producto por chat.
-5. NUNCA envíes imágenes de categorías distintas a la consultada.
 
 FORMATO Y CONCISIÓN (OBLIGATORIO):
 1. Respuestas EXTREMADAMENTE concisas. Sin muros de texto. Párrafos de máx. 2-3 líneas.
@@ -1141,7 +1134,7 @@ FORMATO Y CONCISIÓN (OBLIGATORIO):
    - Usa itálicas con guión bajo: _texto_ si las necesitas.
    - Escribe texto limpio, natural y conversacional como si fuera un mensaje de WhatsApp real.
 
-CIERRE: Si el cliente agradece o se despide, responde con máx. 5 palabras (ej. '¡De nada, vuelve pronto!'). Sin preguntas de seguimiento, sin '¿En qué más puedo ayudarte?'.
+CIERRE: Sé natural al despedirte. A menos que tengas instrucciones de ventas persuasivas, no hagas preguntas de seguimiento innecesarias.
 
 COMPORTAMIENTO CONTEXTUAL:
 - Saludo entrante: respóndelo e invita al cliente a explicar su necesidad.
@@ -1172,32 +1165,6 @@ COMPORTAMIENTO CONTEXTUAL:
     }
 
     const isMultiMessageActive = tenantDetails?.multiMessageMode === true; 
-    let splitRule = '';
-    if (isMultiMessageActive) {
-      splitRule = `\nREGLA CRÍTICA DEL SISTEMA (OBLIGATORIA): 
-Sin importar tus instrucciones anteriores, DEBES separar tus respuestas en múltiples globos de chat cortos y fluidos para simular a un humano escribiendo. 
-Para hacer esto, usa el separador exacto '[SPLIT]' entre cada idea. 
-Ejemplo: '¡Hola! Claro que sí 😃 [SPLIT] ¿Qué producto buscas hoy? [SPLIT] Hacemos envíos a todo el Perú 🚚.'\n`;
-    }
-
-    let orderNotificationRule = '';
-    if (tenantDetails?.notifySalesWhatsApp === true) {
-      orderNotificationRule = `\nINSTRUCCIÓN DE CONFIRMACIÓN DE VENTA/PEDIDO (OBLIGATORIA Y ESTRICTA):
-REGLA ANTI-FALSOS POSITIVOS Y COMPROBANTE DE PAGO:
-SOLO y ÚNICAMENTE puedes generar la confirmación de pedido entre la etiqueta exacta [ORDER_CONFIRMED: ...] cuando el cliente afirme EXPLÍCITAMENTE que YA realizó el pago (ej. 'ya pagué', 'listo, transferido', 'ya eché el yape', 'ya te deposité') o cuando envíe un comprobante (imagen/foto/captura del pago). 
-Una promesa de pago futura ('lo haré luego', 'pásame el número', 'mañana te yapeo', 'en un momento transfiero') ESTÁ ESTRICTAMENTE PROHIBIDO registrarla como venta confirmada.
-
-FORMATO EXACTO DEL PAYLOAD (ESTRICTO):
-SOLO puedes generar la etiqueta en este formato exacto estructurado:
-[ORDER_CONFIRMED: Producto, Cantidad, Total]
-Ejemplo obligatorio: [ORDER_CONFIRMED: JBL Go 4, 1, S/ 50].\n`;
-    }
-
-    const humanHandoffRule = `\nREGLA DE TRANSFERENCIA A HUMANO (FILTRO INTELIGENTE - OBLIGATORIO):
-1. Si el usuario pide hablar con un humano, asesor o persona en su PRIMER mensaje o sin explicar su problema, NO emitirás la etiqueta [HUMAN_HANDOFF: ...] de inmediato.
-2. En su lugar, responde de forma empática ofreciendo tu ayuda primero: 'Con gusto te comunico con un asesor, pero quizás yo pueda resolver tu consulta más rápido. ¿Sobre qué tema necesitas ayuda?'.
-3. Si el usuario procede a explicar su duda y está dentro de tus capacidades (horarios, precios, información básica, catálogo), RESUÉLVELA directamente.
-4. PERO, si el usuario explica un problema complejo (quejas, reembolsos, reclamos, errores de sistema), O si INSISTE agresivamente o por segunda vez en hablar con un humano tras tu ofrecimiento, ENTONCES SÍ debes activar la transferencia. En ese caso, despídete amablemente indicando que un asesor lo atenderá y emite al final de tu respuesta la etiqueta exacta: [HUMAN_HANDOFF: Motivo o breve resumen de la solicitud].\n`;
 
     let marketingInstructionRule = '';
     if (tenantDetails?.marketingModeEnabled === true) {
@@ -1208,22 +1175,60 @@ REGLAS DE ORO PARA ESTE MODO:
 1. VALOR ANTES DEL PRECIO, PERO RÁPIDO: Cuando pregunten el precio, destaca 1 o 2 beneficios clave de forma súper concisa y luego da el precio inmediatamente. No lo ocultes.
 2. USO LIMITADO DE EMOJIS EN MODO PERSUASIVO: Mantén un tono profesional y limpio. Usa un MÁXIMO ABSOLUTO de 1 o 2 emojis por mensaje en total para reforzar el tono emocional (ej. 🔥, ✨, 🚀). Esta regla de límite es OBLIGATORIA y no opcional.
 3. ESTRATEGIA DE PROMOCIONES Y URGENCIAS: Si la tienda te ha proporcionado promociones o descuentos, úsalos estratégicamente para incentivar el cierre rápido. Resalta el contraste (ej. 'Normalmente cuesta S/. X, pero hoy por promoción está en S/. Y 🔥').
-4. EL CIERRE DIRECTO (CALL TO ACTION): ESTRICTAMENTE finaliza CADA mensaje con una pregunta de cierre, preferiblemente de doble opción, que obligue al cliente a avanzar en la compra (ej. '¿Te gustaría pagar con Yape o Plin? 💳', '¿Cuál de estos dos colores prefieres que te envíe? 🎨', '¿A qué distrito sería el envío? 🚚'). No dejes conversaciones abiertas.
+4. CIERRE PERSUASIVO (Prioridad Máxima): IGNORA la regla global de cierre. ESTRICTAMENTE finaliza cada mensaje con una pregunta corta para incitar a la acción y cerrar la venta.
 5. OBJECCIONES Y ALTERNATIVAS: Si el cliente duda por el precio, recuérdale el valor diferencial (envío gratis, garantía, calidad) o muéstrale rápidamente una opción más económica si existe en el catálogo.
 6. PROHIBICIÓN DE VENTA CRUZADA FORZADA (CRÍTICO): NUNCA ofrezcas productos de una categoría diferente a la que el cliente pidió como si fueran equivalentes. Si el cliente pide un parlante y no tienes, NO ofrezcas relojes ni audífonos como 'alternativa'. Eso es engañoso y destruye la confianza. Solo ofrece alternativas de la misma familia semántica o rinde elegantemente.
 7. ÉTICA ESTRICTA: NUNCA inventes características, precios, promociones ni garantías que no estén en tu base de conocimiento. Vende con urgencia y persuasión, pero solo con datos reales de la tienda.\n`;
     }
 
-    const systemRulesAndInventory = `${splitRule}${orderNotificationRule}${humanHandoffRule}${marketingInstructionRule}${infoInstitucional}
+    // ─── DICCIONARIO DE COMANDOS DEL SISTEMA ───
+    let systemCommands = `\n🛠️ DICCIONARIO DE COMANDOS DEL SISTEMA:
+Si necesitas ejecutar una acción del sistema, usa ÚNICAMENTE las siguientes etiquetas (siempre al FINAL ABSOLUTO de tu respuesta, no en medio del texto):
+`;
+    if (isMultiMessageActive) {
+      systemCommands += `- [SPLIT]: Úsalo entre ideas para separar tu texto en múltiples globos de chat cortos (Ej. '¡Hola! [SPLIT] ¿Qué buscas?').\n`;
+    }
+    systemCommands += `- [SEND_IMAGE: nombre_exacto]: OBLIGATORIO incluir esta etiqueta por CADA producto diferente que ofrezcas (máx 4 imágenes por respuesta). NUNCA repitas una foto ya enviada en el chat.\n`;
+    
+    if (tenantDetails?.notifySalesWhatsApp === true) {
+      systemCommands += `- [ORDER_CONFIRMED: Producto, Cantidad, Total]: Úsalo ÚNICAMENTE cuando el cliente afirme EXPLÍCITAMENTE que ya pagó (ej. 'ya te deposité'). Promesas futuras no cuentan.\n`;
+    }
+    
+    systemCommands += `- [HUMAN_HANDOFF: Motivo]: Transfiere a un humano si el cliente insiste agresivamente o presenta quejas complejas, pero SOLO después de haber ofrecido tu ayuda primero.\n`;
+    systemCommands += `- [MEDIA: https://url.jpg]: Envía una imagen externa por URL directa (NO uses Markdown).\n`;
+    systemCommands += `- [SAVE_MEM: resumen]: Guarda datos clave del cliente a largo plazo (ej. preferencias, talla).\n`;
+    systemCommands += `- [BAN_USER]: Usa ESTA etiqueta como tu ÚNICA respuesta si el cliente te envía groserías o contenido inapropiado.\n`;
+
+    // ─── ENSAMBLAJE FINAL ESTRICTO PARA MAXIMIZAR ATENCIÓN ("LOST IN THE MIDDLE") ───
+    
+    // A) Personalidad
+    const mainInstructions = (tenantDetails?.botRole || tenantDetails?.customPrompt || 'Eres un asistente virtual de ventas amable, atento y amigable.').trim();
+    let finalPrompt = `IDENTIDAD E INSTRUCCIONES PRINCIPALES DEL BOT:\n${mainInstructions}\n\n`;
+
+    if (customer.preferences) {
+      finalPrompt += `INFORMACIÓN DEL CLIENTE (Memoria a largo plazo): ${customer.preferences}\n\n`;
+    }
+
+    finalPrompt += `REGLA DE VISIÓN Y CULTURA GENERAL:
+Si el usuario envía una imagen, usa tu amplio conocimiento general para identificar al personaje, objeto o estilo que aparece en ella ANTES de revisar el inventario. Muestra empatía y reconoce lo que el usuario envió (ej. '¡Genial, es Light Yagami de Death Note!'). Luego revisa el inventario: si tienes ese producto o algo muy relacionado, ofrécelo. Si no, dile amablemente que no contamos con ese artículo e invítalo a ver otras opciones.\n`;
+
+    // B) Catálogo e Información
+    finalPrompt += `${infoInstitucional}
 
 CATÁLOGO DE PRODUCTOS DISPONIBLES EN LA TIENDA (actualizado en tiempo real desde la base de datos):
-${inventarioTexto}`.trim();
+${inventarioTexto}
 
-    // ─── ENSAMBLAJE FINAL CON INYECCIÓN DE IDENTIDAD E INSTRUCCIONES EN LA CÚSPIDE ───
-    const mainInstructions = (tenantDetails?.botRole || tenantDetails?.customPrompt || 'Eres un asistente virtual de ventas amable, atento y amigable.').trim();
-    const mainInstructionsHeader = `IDENTIDAD E INSTRUCCIONES PRINCIPALES DEL BOT:\n${mainInstructions}\n\n`;
+`;
 
-    const systemPrompt = `${mainInstructionsHeader}${globalGuardrails}\n\n${systemRulesAndInventory}`;
+    // C) Reglas de Marketing
+    if (marketingInstructionRule) {
+      finalPrompt += `${marketingInstructionRule}\n`;
+    }
+
+    // D) Guardrails Globales y Diccionario de Comandos (Al final absoluto)
+    finalPrompt += `${globalGuardrails}\n\n${systemCommands}`;
+
+    const systemPrompt = finalPrompt;
 
     console.log(`🧠 [Cerebro IA] Generando respuesta para +${clientNumber}...`);
 
@@ -1243,8 +1248,7 @@ ${inventarioTexto}`.trim();
       systemPrompt, 
       [{ role: 'user', content: userMessageText }],
       imageBase64,
-      clientNumber,
-      customer.preferences
+      clientNumber
     );
 
     if (!aiResponse || aiResponse === '...') {

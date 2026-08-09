@@ -364,28 +364,9 @@ async function callAiProviderCascade(systemPrompt, messages, mediaBase64 = null)
  * @param {string} customerPreferences - Resumen de preferencias históricas del cliente en el CRM (opcional)
  * @returns {Promise<string>}
  */
-export async function generateAIResponse(prompt, context = [], mediaBase64 = null, remoteJid = null, customerPreferences = null) {
+export async function generateAIResponse(prompt, context = [], mediaBase64 = null, remoteJid = null) {
   try {
-    // visionRules: solo contiene reglas ÚNICAS de esta capa.
-    // Las reglas de formato, tono y concisión viven en globalGuardrails (whatsappController)
-    // para evitar duplicación de tokens en cada llamada.
-    const visionRules = `
-REGLA DE VISIÓN Y CULTURA GENERAL:
-Si el usuario envía una imagen, usa tu amplio conocimiento general para identificar al personaje, objeto o estilo que aparece en ella ANTES de revisar el inventario. Muestra empatía y reconoce lo que el usuario envió (ej. '¡Genial, es Light Yagami de Death Note!'). Luego revisa el inventario: si tienes ese producto o algo muy relacionado, ofrécelo. Si no, dile amablemente que no contamos con ese artículo e invítalo a ver otras opciones.
-
-REGLA MULTIMEDIA (ETIQUETA [MEDIA: url]):
-Está PROHIBIDO usar Markdown para imágenes (![alt](url)) o mostrar URLs visibles en el texto. Si necesitas enviar una imagen por URL directa (no de catálogo), usa SOLO la etiqueta oculta al final: [MEDIA: https://url.jpg]. Esta etiqueta es distinta de [SEND_IMAGE:] que es para productos del catálogo.
-
-REGLA DE SEGURIDAD Y RESPETO:
-Si el usuario envía contenido sexual explícito, groserías o actúa de forma agresiva/troll, NO respondas con agresión. Despídete amablemente e incluye al final: [HUMAN_HANDOFF: Lenguaje inapropiado o groserías].
-
-REGLA DE MEMORIA PERMANENTE:
-Si el cliente revela información útil para futuras ventas (nombre, talla, preferencias, productos favoritos), incluye al final: [SAVE_MEM: resumen breve]. Ej: [SAVE_MEM: Se llama Carlos, le gustan las skins blancas].`;
-
-    let systemContent = `${prompt}\n\n${visionRules}`;
-    if (customerPreferences) {
-      systemContent += `\n\nINFORMACIÓN DEL CLIENTE (Memoria a largo plazo): ${customerPreferences}`;
-    }
+    let systemContent = prompt;
 
     // Obtener historial de la memoria FIFO
     let history = [];
