@@ -1,5 +1,6 @@
 import { GoogleGenerativeAI } from '@google/generative-ai';
 import OpenAI from 'openai';
+import sharp from 'sharp';
 import axios from 'axios';
 import FormData from 'form-data';
 import fs from 'fs';
@@ -7,6 +8,7 @@ import path from 'path';
 import ffmpeg from 'fluent-ffmpeg';
 import ffmpegPath from 'ffmpeg-static';
 import prisma from '../db.js';
+
 
 ffmpeg.setFfmpegPath(ffmpegPath);
 
@@ -123,15 +125,46 @@ function extractMimeAndBase64(rawBase64) {
 }
 
 /**
+ * Comprime una imagen Base64 con sharp antes de enviarla a Gemini.
+ * Redimensiona a máx 768px y reduce calidad al 75% para ahorrar ~85% de tokens.
+ * Si sharp falla por cualquier razón, devuelve la imagen original como plan B.
+ * @param {string} rawBase64 - Imagen en Base64 (con o sin prefijo data:)
+ * @returns {Promise<{data: string, mimeType: string}>}
+ */
+async function compressImageBase64(rawBase64) {
+  const { data: rawData, mimeType: origMime } = extractMimeAndBase64(rawBase64);
+
+  try {
+    const inputBuffer = Buffer.from(rawData, 'base64');
+
+    const compressedBuffer = await sharp(inputBuffer)
+      .resize({ width: 768, height: 768, fit: 'inside', withoutEnlargement: true })
+      .jpeg({ quality: 75 })
+      .toBuffer();
+
+    const originalKb = Math.round(inputBuffer.length / 1024);
+    const compressedKb = Math.round(compressedBuffer.length / 1024);
+    const savings = originalKb > 0 ? Math.round((1 - compressedKb / originalKb) * 100) : 0;
+    console.log(`📉 [Sharp] Imagen comprimida: ${originalKb}KB → ${compressedKb}KB (ahorro ${savings}%)`);
+
+    return { data: compressedBuffer.toString('base64'), mimeType: 'image/jpeg' };
+  } catch (sharpErr) {
+    console.warn(`⚠️ [Sharp] Compresión falló (${sharpErr.message}). Enviando imagen original como plan B.`);
+    return { data: rawData, mimeType: origMime };
+  }
+}
+
+
+/**
  * Ejecuta la llamada al motor principal: Google Gemini Gen 3
  * Soporta texto e imágenes multimodales de forma nativa en alta velocidad.
  */
 async function callGemini(systemPrompt, messages, imageBase64 = null) {
   const client = getGeminiClient();
   const GEMINI_MODELS = [
-    'gemini-3.6-flash',
     'gemini-3.5-flash-lite',
-    'gemini-3.1-pro',
+    'gemini-3.6-flash',
+    'gemini-3.1-flash-lite',
     'gemini-1.5-flash-latest',
     'gemini-1.5-flash'
   ];
@@ -155,9 +188,9 @@ async function callGemini(systemPrompt, messages, imageBase64 = null) {
 
     const parts = [{ text: textContent || 'Analiza esta información' }];
 
-    // Si es el último mensaje del usuario y hay imagen adjunta, incorporar inlineData
+    // Si es el último mensaje del usuario y hay imagen adjunta, comprimir y enviar
     if (isUser && imageBase64 && i === messages.length - 1) {
-      const { data, mimeType } = extractMimeAndBase64(imageBase64);
+      const { data, mimeType } = await compressImageBase64(imageBase64);
       parts.push({
         inlineData: {
           data,
@@ -173,7 +206,7 @@ async function callGemini(systemPrompt, messages, imageBase64 = null) {
   if (contents.length === 0) {
     const parts = [{ text: 'Hola' }];
     if (imageBase64) {
-      const { data, mimeType } = extractMimeAndBase64(imageBase64);
+      const { data, mimeType } = await compressImageBase64(imageBase64);
       parts.push({
         inlineData: {
           data,
