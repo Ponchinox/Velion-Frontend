@@ -1178,7 +1178,7 @@ FORMATO Y CONCISIÓN (OBLIGATORIO):
 6. FORMATO WHATSAPP ESTRICTO (CRÍTICO — CERO EXCEPCIONES):
    - Para negritas usa UN SOLO asterisco: *texto* (WhatsApp lo entiende). ESTÁ TOTALMENTE PROHIBIDO usar doble asterisco (**texto**) porque se muestra como texto crudo al cliente.
    - PROHIBIDO usar hashtags (#) para títulos. WhatsApp no los renderiza.
-   - PROHIBIDO usar sintaxis Markdown estándar como __subrayado__, ~~tachado~~, `código`, o ```bloques```.
+   - PROHIBIDO usar sintaxis Markdown estándar como __subrayado__, ~~tachado~~, codigo en linea, o bloques de codigo.
    - Usa itálicas con guión bajo: _texto_ si las necesitas.
    - Escribe texto limpio, natural y conversacional como si fuera un mensaje de WhatsApp real.
 
