@@ -37,20 +37,29 @@ async function handleAiError(error, providerName = 'Google Gemini') {
   }
 }
 
-let genAI = null;
+let geminiClients = null;
 
 /**
- * Inicializa y retorna el cliente de Google Gemini de forma perezosa
+ * Inicializa y retorna un array de clientes de Google Gemini de forma perezosa (Rotación de Tokens)
  */
-function getGeminiClient() {
-  const apiKey = (process.env.GEMINI_API_KEY || '').trim();
-  if (!apiKey) {
-    throw new Error('Falta la variable de entorno GEMINI_API_KEY para inicializar Google Gemini.');
+function getGeminiClients() {
+  if (!geminiClients) {
+    const keys = [];
+    const mainKey = (process.env.GEMINI_API_KEY || '').trim();
+    if (mainKey) keys.push(mainKey);
+    
+    for (let i = 1; i <= 6; i++) {
+      const backupKey = (process.env[`GEMINI_KEY_${i}`] || '').trim();
+      if (backupKey) keys.push(backupKey);
+    }
+    
+    if (keys.length === 0) {
+      throw new Error('Falta la variable de entorno GEMINI_API_KEY para inicializar Google Gemini.');
+    }
+    
+    geminiClients = keys.map(k => new GoogleGenerativeAI(k));
   }
-  if (!genAI) {
-    genAI = new GoogleGenerativeAI(apiKey);
-  }
-  return genAI;
+  return geminiClients;
 }
 
 let openRouterClient = null;
@@ -162,7 +171,7 @@ async function processMediaBase64(rawBase64) {
  * Soporta texto e imágenes/audio/video multimodales de forma nativa en alta velocidad.
  */
 async function callGemini(systemPrompt, messages, mediaBase64 = null) {
-  const client = getGeminiClient();
+  const clients = getGeminiClients();
   const GEMINI_MODELS = [
     'gemini-3.5-flash-lite',
     'gemini-3.6-flash',
@@ -221,36 +230,49 @@ async function callGemini(systemPrompt, messages, mediaBase64 = null) {
 
   let lastErr = null;
   for (const modelSlug of GEMINI_MODELS) {
-    try {
-      const model = client.getGenerativeModel({
-        model: modelSlug,
-        systemInstruction: systemPrompt,
-        generationConfig: {
-          temperature: 0.7,
-          maxOutputTokens: 1024,
-        },
-      });
+    for (let c = 0; c < clients.length; c++) {
+      const client = clients[c];
+      try {
+        const model = client.getGenerativeModel({
+          model: modelSlug,
+          systemInstruction: systemPrompt,
+          generationConfig: {
+            temperature: 0.7,
+            maxOutputTokens: 1024,
+          },
+        });
 
-      const result = await model.generateContent({ contents });
-      const response = await result.response;
-      const rawAiText = response.text() || '';
+        const result = await model.generateContent({ contents });
+        const response = await result.response;
+        const rawAiText = response.text() || '';
 
-      const aiText = rawAiText
-        .replace(/<think>[\s\S]*?<\/think>/gi, '')
-        .replace(/^\s*\.{3,}\s*/m, '')
-        .trim();
+        const aiText = rawAiText
+          .replace(/<think>[\s\S]*?<\/think>/gi, '')
+          .replace(/^\s*\.{3,}\s*/m, '')
+          .trim();
 
-      if (aiText) {
-        return aiText;
+        if (aiText) {
+          return aiText;
+        }
+      } catch (err) {
+        lastErr = err;
+        const status = err?.status || err?.response?.status;
+        const errMsg = (err?.message || String(err)).toLowerCase();
+        
+        // Si el error es por límite de cuota/rate limit, probamos con el siguiente token para el mismo modelo
+        if (status === 429 || errMsg.includes('429') || errMsg.includes('quota') || errMsg.includes('rate limit') || errMsg.includes('resource_exhausted')) {
+          console.warn(`⚡ [Google Gemini] Token ${c + 1} agotado (429/Quota) para el modelo '${modelSlug}'. Intentando con el siguiente token...`);
+          continue; 
+        } else {
+          // Si es otro error (503, modelo no encontrado, etc), cambiamos de variante de modelo
+          console.warn(`⚡ [Google Gemini] Slug '${modelSlug}' con token ${c + 1} devolvió error (${errMsg.slice(0, 100)}). Probando variante de modelo...`);
+          break; // Rompe el loop de clientes y pasa al siguiente modelo
+        }
       }
-    } catch (err) {
-      const errMsg = err?.message || String(err);
-      console.warn(`⚡ [Google Gemini] Slug '${modelSlug}' devolvió error (${errMsg.slice(0, 100)}). Probando variante...`);
-      lastErr = err;
     }
   }
 
-  throw lastErr || new Error('Todos los slugs de Google Gemini fallaron.');
+  throw lastErr || new Error('Todos los slugs y tokens de Google Gemini fallaron.');
 }
 
 /**
