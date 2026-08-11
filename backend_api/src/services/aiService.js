@@ -170,7 +170,7 @@ async function processMediaBase64(rawBase64) {
  * Ejecuta la llamada al motor principal: Google Gemini Gen 3
  * Soporta texto e imágenes/audio/video multimodales de forma nativa en alta velocidad.
  */
-async function callGemini(systemPrompt, messages, mediaBase64 = null) {
+async function callGemini(systemPrompt, messages, mediaItems = []) {
   const clients = getGeminiClients();
   const GEMINI_MODELS = [
     'gemini-3.5-flash-lite',
@@ -200,14 +200,16 @@ async function callGemini(systemPrompt, messages, mediaBase64 = null) {
     const parts = [{ text: textContent || 'Analiza esta información' }];
 
     // Si es el último mensaje del usuario y hay multimedia adjunta, procesar y enviar
-    if (isUser && mediaBase64 && i === messages.length - 1) {
-      const { data, mimeType } = await processMediaBase64(mediaBase64);
-      parts.push({
-        inlineData: {
-          data,
-          mimeType,
-        },
-      });
+    if (isUser && mediaItems && mediaItems.length > 0 && i === messages.length - 1) {
+      for (const item of mediaItems) {
+        const { data, mimeType } = await processMediaBase64(item);
+        parts.push({
+          inlineData: {
+            data,
+            mimeType,
+          },
+        });
+      }
     }
 
     contents.push({ role, parts });
@@ -216,14 +218,16 @@ async function callGemini(systemPrompt, messages, mediaBase64 = null) {
   // Si no había ningún mensaje, crear uno por defecto
   if (contents.length === 0) {
     const parts = [{ text: 'Hola' }];
-    if (mediaBase64) {
-      const { data, mimeType } = await processMediaBase64(mediaBase64);
-      parts.push({
-        inlineData: {
-          data,
-          mimeType,
-        },
-      });
+    if (mediaItems && mediaItems.length > 0) {
+      for (const item of mediaItems) {
+        const { data, mimeType } = await processMediaBase64(item);
+        parts.push({
+          inlineData: {
+            data,
+            mimeType,
+          },
+        });
+      }
     }
     contents.push({ role: 'user', parts });
   }
@@ -336,14 +340,14 @@ async function callOpenRouter(systemPrompt, messages) {
  * 1. Slot #1: Google Gemini (gemini-1.5-flash) - Motor Principal (Texto + Visión Multimodal)
  * 2. Slot #2: OpenRouter (DeepSeek Chat Free) - Fallback Secundario para texto
  */
-async function callAiProviderCascade(systemPrompt, messages, mediaBase64 = null) {
+async function callAiProviderCascade(systemPrompt, messages, mediaItems = []) {
   let lastError = null;
 
   // #1: Google Gemini (Motor Principal)
   if (process.env.GEMINI_API_KEY) {
     try {
       console.log('🤖 [Google Gemini] Ejecutando petición con gemini-1.5-flash (Texto + Visión + Audio)...');
-      const text = await callGemini(systemPrompt, messages, mediaBase64);
+      const text = await callGemini(systemPrompt, messages, mediaItems);
       if (text) {
         console.log('✅ [Google Gemini] Respuesta generada exitosamente.');
         return text;
@@ -386,7 +390,7 @@ async function callAiProviderCascade(systemPrompt, messages, mediaBase64 = null)
  * @param {string} customerPreferences - Resumen de preferencias históricas del cliente en el CRM (opcional)
  * @returns {Promise<string>}
  */
-export async function generateAIResponse(prompt, context = [], mediaBase64 = null, remoteJid = null) {
+export async function generateAIResponse(prompt, context = [], mediaItems = [], remoteJid = null) {
   try {
     let systemContent = prompt;
 
@@ -400,7 +404,7 @@ export async function generateAIResponse(prompt, context = [], mediaBase64 = nul
     const fullContext = [...history, ...context];
 
     // Ejecutar llamada a la cascada de proveedores (Google Gemini como Slot #1)
-    const aiText = await callAiProviderCascade(systemContent, fullContext, mediaBase64);
+    const aiText = await callAiProviderCascade(systemContent, fullContext, mediaItems);
 
     // Guardar en el historial de forma optimizada (dieta de tokens sin Base64)
     if (remoteJid && aiText) {
@@ -413,8 +417,8 @@ export async function generateAIResponse(prompt, context = [], mediaBase64 = nul
         savedUserContent = textPart ? textPart.text : 'Analiza esta multimedia';
       }
 
-      if (mediaBase64) {
-        savedUserContent = `[El usuario envió multimedia con el texto: "${savedUserContent}"]`;
+      if (mediaItems && mediaItems.length > 0) {
+        savedUserContent = `[El usuario envió ${mediaItems.length} archivo(s) multimedia con el texto: "${savedUserContent}"]`;
       }
 
       const userHistory = userMemories.get(remoteJid) || [];

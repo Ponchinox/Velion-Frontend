@@ -478,7 +478,7 @@ export async function receiveWebhook(req, res) {
 
     // Extraer texto o imagen del mensaje entrante
     let userMessageText = '';
-    let imageBase64 = null;
+    let mediaItems = [];
 
     if (data.message?.conversation) {
       userMessageText = data.message.conversation;
@@ -488,22 +488,35 @@ export async function receiveWebhook(req, res) {
       const caption = data.message.imageMessage.caption || '';
       userMessageText = caption || 'Analiza esta imagen';
 
-      try {
-        console.log(`📸 [Evolution API] Descargando imagen en Base64 para la instancia "${instance}"...`);
-        const mediaRes = await axios.post(
-          `${evoUrl}/chat/getBase64FromMediaMessage/${instance}`,
-          { message: data },
-          getEvoHeaders(requestApiKey)
-        );
-        let resData = mediaRes.data;
-        if (resData) {
-          imageBase64 = typeof resData === 'string' ? resData : (resData.base64 || null);
+      const existingQueue = pendingQueues.get(remoteJid);
+      const existingBuffer = messageBuffers.get(remoteJid);
+      let totalMedia = 0;
+      if (existingQueue && existingQueue.mediaItems) totalMedia += existingQueue.mediaItems.length;
+      if (existingBuffer && existingBuffer.mediaItems) totalMedia += existingBuffer.mediaItems.length;
+
+      if (totalMedia >= 2) {
+        console.log(`⚠️ [Multimedia] Límite de imágenes alcanzado para +${clientNumber}. Omitiendo descarga.`);
+        userMessageText += "\n[Sistema: El usuario envió más de 2 fotos. Solo procesaste las 2 primeras para ahorrar memoria. Avísale discretamente si es necesario.]";
+      } else {
+        try {
+          console.log(`📸 [Evolution API] Descargando imagen en Base64 para la instancia "${instance}"...`);
+          const mediaRes = await axios.post(
+            `${evoUrl}/chat/getBase64FromMediaMessage/${instance}`,
+            { message: data },
+            getEvoHeaders(requestApiKey)
+          );
+          let resData = mediaRes.data;
+          let imgBase64 = null;
+          if (resData) {
+            imgBase64 = typeof resData === 'string' ? resData : (resData.base64 || null);
+          }
+          if (imgBase64) {
+            mediaItems.push(imgBase64);
+            console.log('✅ [Evolution API] Imagen descargada correctamente en Base64.');
+          }
+        } catch (mediaError) {
+          console.error('❌ [Evolution API] Error al descargar imagen en Base64:', mediaError.response?.data || mediaError.message);
         }
-        if (imageBase64) {
-          console.log('✅ [Evolution API] Imagen descargada correctamente en Base64.');
-        }
-      } catch (mediaError) {
-        console.error('❌ [Evolution API] Error al descargar imagen en Base64:', mediaError.response?.data || mediaError.message);
       }
     } else if (data.message?.audioMessage) {
       try {
@@ -521,7 +534,7 @@ export async function receiveWebhook(req, res) {
         if (audioBase64) {
           console.log('✅ [Evolution API] Audio descargado correctamente en Base64. Pasando a procesamiento nativo en Gemini...');
           const mimeType = data.message.audioMessage.mimetype || 'audio/ogg';
-          imageBase64 = `data:${mimeType};base64,${audioBase64}`;
+          mediaItems.push(`data:${mimeType};base64,${audioBase64}`);
           userMessageText = '[Nota de voz de WhatsApp] Escucha este audio y respóndeme o ejecuta mi solicitud.';
         }
       } catch (audioError) {
@@ -530,27 +543,8 @@ export async function receiveWebhook(req, res) {
     } else if (data.message?.videoMessage) {
       const caption = data.message.videoMessage.caption || '';
       userMessageText = caption || '[Video de WhatsApp] Analiza este video y responde.';
-
-      try {
-        console.log(`🎥 [Evolution API] Descargando video en Base64 para la instancia "${instance}"...`);
-        const mediaRes = await axios.post(
-          `${evoUrl}/chat/getBase64FromMediaMessage/${instance}`,
-          { message: data },
-          getEvoHeaders(requestApiKey)
-        );
-        let resData = mediaRes.data;
-        let videoBase64 = null;
-        if (resData) {
-          videoBase64 = typeof resData === 'string' ? resData : (resData.base64 || null);
-        }
-        if (videoBase64) {
-          console.log('✅ [Evolution API] Video descargado correctamente en Base64. Pasando a procesamiento nativo en Gemini...');
-          const mimeType = data.message.videoMessage.mimetype || 'video/mp4';
-          imageBase64 = `data:${mimeType};base64,${videoBase64}`;
-        }
-      } catch (videoError) {
-        console.error('❌ Error al procesar video en webhook:', videoError.message);
-      }
+      console.log(`⚠️ [Multimedia] Video ignorado para +${clientNumber}.`);
+      userMessageText += "\n[Sistema: El usuario envió un video. Dile amablemente que no puedes procesar videos, que por favor lo explique por texto o envíe una foto.]";
     }
 
     // Ignorar si el mensaje no tiene contenido de texto legible
@@ -853,11 +847,14 @@ export async function receiveWebhook(req, res) {
       const existingQueue = pendingQueues.get(remoteJid);
       if (existingQueue) {
         existingQueue.text += '\n' + userMessageText;
-        if (imageBase64) existingQueue.imageBase64 = imageBase64;
+        if (mediaItems.length > 0) {
+          if (!existingQueue.mediaItems) existingQueue.mediaItems = [];
+          existingQueue.mediaItems.push(...mediaItems);
+        }
         console.log(`🔒 [Processing Lock] IA ocupada para +${clientNumber}. Mensaje encolado en pendingQueue (acumulado).`);
       } else {
         pendingQueues.set(remoteJid, {
-          remoteJid, clientNumber, text: userMessageText, imageBase64,
+          remoteJid, clientNumber, text: userMessageText, mediaItems: [...mediaItems],
           tenant, contact, chat, instance, requestApiKey, data, reqIo: req.io
         });
         console.log(`🔒 [Processing Lock] IA ocupada para +${clientNumber}. Mensaje guardado en pendingQueue.`);
@@ -872,8 +869,9 @@ export async function receiveWebhook(req, res) {
     if (existingBuffer) {
       clearTimeout(existingBuffer.timer);
       existingBuffer.text += '\n' + userMessageText;
-      if (imageBase64) {
-        existingBuffer.imageBase64 = imageBase64;
+      if (mediaItems.length > 0) {
+        if (!existingBuffer.mediaItems) existingBuffer.mediaItems = [];
+        existingBuffer.mediaItems.push(...mediaItems);
       }
       existingBuffer.timer = setTimeout(() => {
         processBufferedMessage(remoteJid);
@@ -884,7 +882,7 @@ export async function receiveWebhook(req, res) {
         remoteJid,
         clientNumber,
         text: userMessageText,
-        imageBase64,
+        mediaItems: [...mediaItems],
         tenant,
         contact,
         chat,
@@ -919,7 +917,7 @@ async function processBufferedMessage(remoteJid) {
 
   const {
     text: userMessageText,
-    imageBase64,
+    mediaItems,
     tenant,
     contact,
     chat,
@@ -1247,7 +1245,7 @@ ${inventarioTexto}
     const aiResponse = await generateAIResponse(
       systemPrompt, 
       [{ role: 'user', content: userMessageText }],
-      imageBase64,
+      mediaItems,
       clientNumber
     );
 
