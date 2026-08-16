@@ -159,6 +159,7 @@ export default function ConexionesPage() {
   const [toast, setToast] = useState(null);
 
   const pollIntervalRef = useRef(null);
+  const instanceNameRef = useRef('');
 
   const showToast = (msg, type = 'success') => {
     setToast({ msg, type });
@@ -169,12 +170,17 @@ export default function ConexionesPage() {
   const [activeConnectionsCount, setActiveConnectionsCount] = useState(0);
   const isConnected = status === 'CONNECTED';
 
-  const checkStatus = async (currentInstanceName = instanceName) => {
+  const checkStatus = async (currentInstanceName) => {
+    // Usar ref para siempre tener el nombre actualizado sin stale closure
+    const nameToCheck = currentInstanceName || instanceNameRef.current;
     try {
-      const data = await connectionService.getStatus(currentInstanceName);
-      setInstanceName(data.instanceName || '');
-      
-      // Asegurar que solo consideramos CONNECTED si ya hay un número de teléfono válido devuelto por Evolution
+      const data = await connectionService.getStatus(nameToCheck);
+      if (data.instanceName) {
+        setInstanceName(data.instanceName);
+        instanceNameRef.current = data.instanceName;
+      }
+
+      // Estrategia primaria: Evolution API devolvió estado open + teléfono
       if ((data.status === 'open' || data.status === 'CONNECTED') && data.phone) {
         setStatus('CONNECTED');
         setPhone(data.phone);
@@ -186,14 +192,41 @@ export default function ConexionesPage() {
           clearInterval(pollIntervalRef.current);
           pollIntervalRef.current = null;
         }
-        await loadProvider(); // Actualizar conteo de conexiones de forma inmediata
+        await loadProvider();
         return 'CONNECTED';
-      } else {
-        // Mantenemos DISCONNECTED si está close, o si está open pero aún no devuelve phone
-        setStatus('DISCONNECTED');
-        setPhone('');
-        return 'DISCONNECTED';
       }
+
+      // Estrategia secundaria: Evolution no devolvió el teléfono, pero
+      // el webhook YA pudo haberlo guardado en la DB. Verificamos ahí.
+      if (data.status === 'open' || data.status === 'CONNECTED') {
+        const providerData = await connectionService.getProvider();
+        const dbConnections = providerData.connections || [];
+        const matchedConn = nameToCheck
+          ? dbConnections.find(c => c.instanceName === nameToCheck)
+          : dbConnections[0];
+
+        if (matchedConn?.phoneNumber) {
+          setStatus('CONNECTED');
+          setPhone(matchedConn.phoneNumber);
+          setConnections(dbConnections);
+          if (providerData.connLimit) setConnLimit(providerData.connLimit);
+          if (providerData.activeConnectionsCount !== undefined) setActiveConnectionsCount(providerData.activeConnectionsCount);
+          setShowNewConnectionModal((prev) => {
+            if (prev) showToast('¡WhatsApp vinculado exitosamente!');
+            return false;
+          });
+          if (pollIntervalRef.current) {
+            clearInterval(pollIntervalRef.current);
+            pollIntervalRef.current = null;
+          }
+          return 'CONNECTED';
+        }
+      }
+
+      // Si ninguna estrategia encontró conexión activa
+      setStatus('DISCONNECTED');
+      setPhone('');
+      return 'DISCONNECTED';
     } catch (err) {
       if (err.status === 403) {
         showToast(err.message, 'error');
@@ -231,15 +264,19 @@ export default function ConexionesPage() {
   // Polling QR Evolution
   useEffect(() => {
     if (showNewConnectionModal && status === 'DISCONNECTED' && selectedProvider === 'EVOLUTION') {
-      if (!pollIntervalRef.current) {
-        pollIntervalRef.current = setInterval(async () => {
-          const current = await checkStatus();
-          if (current === 'CONNECTED') {
-            clearInterval(pollIntervalRef.current);
-            pollIntervalRef.current = null;
-          }
-        }, 4000);
+      // Limpiar intervalo previo antes de crear uno nuevo
+      if (pollIntervalRef.current) {
+        clearInterval(pollIntervalRef.current);
+        pollIntervalRef.current = null;
       }
+      pollIntervalRef.current = setInterval(async () => {
+        // checkStatus lee instanceNameRef.current internamente para evitar stale closures
+        const current = await checkStatus();
+        if (current === 'CONNECTED') {
+          clearInterval(pollIntervalRef.current);
+          pollIntervalRef.current = null;
+        }
+      }, 3000);
     } else if (!showNewConnectionModal || selectedProvider !== 'EVOLUTION') {
       if (pollIntervalRef.current) {
         clearInterval(pollIntervalRef.current);
@@ -247,7 +284,7 @@ export default function ConexionesPage() {
       }
     }
     return () => { if (pollIntervalRef.current) { clearInterval(pollIntervalRef.current); pollIntervalRef.current = null; } };
-  }, [showNewConnectionModal, status, selectedProvider, instanceName]);
+  }, [showNewConnectionModal, status, selectedProvider]);
 
   const handleOpenConnectFlow = () => {
     if (activeConnectionsCount >= connLimit) {
@@ -279,10 +316,15 @@ export default function ConexionesPage() {
         setActiveProvider('EVOLUTION');
         setShowNewConnectionModal(false);
         showToast('WhatsApp ya se encuentra conectado.');
+        await loadProvider();
       } else if (res.qr) {
         const formattedQr = res.qr.startsWith('data:image') ? res.qr : `data:image/png;base64,${res.qr}`;
         setQrBase64(formattedQr);
-        setInstanceName(res.instanceName);
+        // Guardar el instanceName tanto en estado como en ref para que el polling lo use sin stale closures
+        if (res.instanceName) {
+          setInstanceName(res.instanceName);
+          instanceNameRef.current = res.instanceName;
+        }
         setStatus('DISCONNECTED');
         showToast('Código QR generado. ¡Escanéalo con WhatsApp!');
       }
