@@ -1045,7 +1045,7 @@ export async function receiveWebhook(req, res) {
         chat,
         instance,
         requestApiKey,
-        data,
+        data: normalized.rawData || null,
         reqIo: req.io,
         timer: setTimeout(() => {
           processBufferedMessage(remoteJid);
@@ -1057,8 +1057,8 @@ export async function receiveWebhook(req, res) {
 
     return res.sendStatus(200);
   } catch (error) {
-    console.error('❌ Error en webhook de recepción:', error.response?.data || error.message);
-    return res.sendStatus(200);
+    console.error('❌ Error en webhook de recepción:', error.message);
+    // La respuesta 200 ya fue enviada al inicio del webhook, no podemos re-enviar.
   }
 }
 
