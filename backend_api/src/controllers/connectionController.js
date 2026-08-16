@@ -347,6 +347,30 @@ export async function getQrCode(req, res) {
       qr: qrBase64,
       instanceName
     });
+
+    // Fire-and-forget: asegurar que MESSAGES_UPSERT esté configurado en el webhook
+    // Lo hacemos DESPUÉS de responder, cuando la instancia ya existe con certeza.
+    // Si falla, no afecta al usuario (el QR ya fue entregado).
+    setImmediate(async () => {
+      try {
+        await axios.post(
+          `${evoUrl}/webhook/set/${instanceName}`,
+          {
+            webhook: {
+              enabled: true,
+              url: webhookUrl,
+              byEvents: false,
+              webhookByEvents: false,
+              events: ["MESSAGES_UPSERT", "CONNECTION_UPDATE"]
+            }
+          },
+          getEvoHeaders()
+        );
+        console.log(`✅ [Webhook] Configuración MESSAGES_UPSERT confirmada para: ${instanceName}`);
+      } catch (e) {
+        console.warn(`⚠️ [Webhook] No se pudo confirmar MESSAGES_UPSERT para ${instanceName}:`, e.message);
+      }
+    });
   } catch (error) {
     const errorMsg = error.response?.data || error.message || '';
     const isAlreadyConnected = (error.response?.status === 400 || error.response?.status === 403) && 
