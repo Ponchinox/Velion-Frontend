@@ -804,7 +804,7 @@ export async function receiveWebhook(req, res) {
         }
       }
     } else {
-      const tenantPrefix = instance.replace('bot_prod_', '');
+      const tenantPrefix = instance.replace('bot_prod_', '').substring(0, 8);
       const tenants = await prisma.tenant.findMany({ select: { id: true } });
       const matchingTenant = tenants.find(t => t.id.toLowerCase().startsWith(tenantPrefix.toLowerCase()));
       if (!matchingTenant) {
