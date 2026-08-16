@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Visor de Instancias - Evolution API</title>
+    <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; background: #f8f9fa; color: #333; padding: 20px; }
+        .container { max-width: 800px; margin: 0 auto; background: white; padding: 20px; border-radius: 8px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); }
+        h1 { font-size: 24px; margin-bottom: 20px; border-bottom: 2px solid #e9ecef; padding-bottom: 10px; }
+        .instance-card { background: #fdfdfd; border: 1px solid #dee2e6; padding: 15px; margin-bottom: 15px; border-radius: 6px; }
+        .instance-card h3 { margin-top: 0; color: #228be6; display: flex; align-items: center; justify-content: space-between; }
+        .status { padding: 4px 8px; border-radius: 4px; font-size: 12px; font-weight: bold; text-transform: uppercase; }
+        .status.connecting { background: #fff3cd; color: #856404; }
+        .status.open { background: #d4edda; color: #155724; }
+        .status.close { background: #f8d7da; color: #721c24; }
+        .detail-row { display: flex; margin-bottom: 5px; font-size: 14px; }
+        .detail-row strong { width: 150px; color: #555; }
+        pre { background: #2d2d2d; color: #f8f8f2; padding: 15px; border-radius: 5px; overflow-x: auto; font-size: 13px; }
+        #error { color: #dc3545; font-weight: bold; padding: 10px; background: #f8d7da; border-radius: 4px; display: none; }
+        #loading { color: #6c757d; font-style: italic; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Instancias de Evolution API</h1>
+        <div id="error"></div>
+        <div id="loading">Cargando datos desde http://localhost:8080...</div>
+        <div id="instances-container"></div>
+        
+        <h3 style="margin-top: 40px; border-top: 1px solid #eee; padding-top: 20px;">Respuesta Cruda (JSON)</h3>
+        <pre id="raw-json">Esperando respuesta...</pre>
+    </div>
+
+    <script>
+        const API_URL = "http://localhost:8080/instance/fetchInstances";
+        const API_KEY = "A59F9002-9FFF-41CF-8EA6-58AEEB06ED7B";
+
+        async function fetchInstances() {
+            try {
+                const response = await fetch(API_URL, {
+                    method: 'GET',
+                    headers: {
+                        'apikey': API_KEY,
+                        'Content-Type': 'application/json'
+                    }
+                });
+
+                if (!response.ok) {
+                    throw new Error(`Error de red: ${response.status} ${response.statusText}`);
+                }
+
+                const data = await response.json();
+                
+                document.getElementById('loading').style.display = 'none';
+                document.getElementById('raw-json').textContent = JSON.stringify(data, null, 2);
+                
+                const container = document.getElementById('instances-container');
+                
+                if (data.length === 0) {
+                    container.innerHTML = '<p>No hay instancias creadas actualmente.</p>';
+                    return;
+                }
+
+                data.forEach(instance => {
+                    const statusClass = instance.connectionStatus === 'open' ? 'open' : 
+                                      (instance.connectionStatus === 'connecting' ? 'connecting' : 'close');
+                    
+                    const html = `
+                        <div class="instance-card">
+                            <h3>
+                                ${instance.name || 'Sin nombre'}
+                                <span class="status ${statusClass}">${instance.connectionStatus || 'Desconocido'}</span>
+                            </h3>
+                            <div class="detail-row"><strong>ID de Instancia:</strong> <span>${instance.id || 'N/A'}</span></div>
+                            <div class="detail-row"><strong>Teléfono:</strong> <span>${instance.ownerJid ? instance.ownerJid.split('@')[0] : 'No vinculado'}</span></div>
+                            <div class="detail-row"><strong>Integración:</strong> <span>${instance.integration || 'N/A'}</span></div>
+                            <div class="detail-row"><strong>Creado en:</strong> <span>${new Date(instance.createdAt).toLocaleString()}</span></div>
+                        </div>
+                    `;
+                    container.innerHTML += html;
+                });
+
+            } catch (error) {
+                document.getElementById('loading').style.display = 'none';
+                const errDiv = document.getElementById('error');
+                errDiv.style.display = 'block';
+                errDiv.textContent = 'Error al conectar con Evolution API: ' + error.message + ' (Asegúrate de que Evolution API esté corriendo)';
+            }
+        }
+
+        fetchInstances();
+    </script>
+</body>
+</html>

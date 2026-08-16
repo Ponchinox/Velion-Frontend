@@ -169,9 +169,19 @@ export async function getStatus(req, res) {
     );
 
     const state = response.data?.instance?.state || 'close';
-    const phone = response.data?.instance?.phone || null;
+    let phone = response.data?.instance?.phone || null;
 
-    if (state === 'open' && phone) {
+    if (state === 'open') {
+      // Intentar obtener el teléfono de la DB si Evolution API no lo devuelve en connectionState
+      if (!phone) {
+        const registered = await prisma.registeredWhatsAppNumber.findFirst({
+          where: { instanceName }
+        });
+        if (registered) {
+          phone = registered.phoneNumber;
+        }
+      }
+
       const validation = await validateAndRegisterWhatsAppConnection(tenantId, instanceName, phone);
       if (!validation.allowed) {
         return res.status(403).json({

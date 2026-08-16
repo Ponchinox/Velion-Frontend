@@ -195,6 +195,14 @@ export default function ConexionesPage() {
         return 'DISCONNECTED';
       }
     } catch (err) {
+      if (err.status === 403) {
+        showToast(err.message, 'error');
+        setShowNewConnectionModal(false);
+        if (pollIntervalRef.current) {
+          clearInterval(pollIntervalRef.current);
+          pollIntervalRef.current = null;
+        }
+      }
       setStatus('DISCONNECTED');
       return 'DISCONNECTED';
     }
