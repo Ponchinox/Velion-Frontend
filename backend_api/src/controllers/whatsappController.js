@@ -1054,8 +1054,7 @@ export async function receiveWebhook(req, res) {
       messageBuffers.set(remoteJid, bufferEntry);
       console.log(`⏳ [Message Buffer] Primer mensaje de +${clientNumber}. Esperando 4000ms de silencio absoluto antes de invocar la IA...`);
     }
-
-    return res.sendStatus(200);
+    // Respuesta ya enviada al inicio (res.sendStatus(200) en línea ~649).
   } catch (error) {
     console.error('❌ Error en webhook de recepción:', error.message);
     // La respuesta 200 ya fue enviada al inicio del webhook, no podemos re-enviar.
