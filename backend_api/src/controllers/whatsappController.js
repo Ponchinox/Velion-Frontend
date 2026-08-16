@@ -1294,12 +1294,17 @@ MONEDA (OBLIGATORIO): Usa SIEMPRE "S/." para precios. El símbolo "$" está TOTA
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 🔐 AUDITORÍA DE COMPROBANTES DE PAGO (REGLA CRÍTICA — CERO EXCEPCIONES)
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-Cuando un cliente envíe una imagen que parezca un comprobante de pago (Yape, Plin, transferencia, depósito, etc.), DEBES seguir este protocolo sin omitir ningún paso:
 
-1. LEER EL MONTO: Identifica el monto exacto transferido que aparece en la captura. Si el monto no es legible con claridad, responde: "No pude leer claramente el comprobante. ¿Podrías enviar una captura más nítida?" y NO hagas nada más.
-2. MONTO INSUFICIENTE: Si el monto de la captura es MENOR al precio del pedido, responde: "Recibí tu comprobante por S/. [monto_captura], pero el total del pedido es S/. [precio]. Por favor completa los S/. [diferencia] restantes para procesar tu envío. 🙏" NO emitas ningún comando del sistema.
-3. SIEMPRE: Cuando el monto sea suficiente, usa [VERIFY_PAYMENT: monto_captura | pedido_descripcion] para avisar al asesor humano que verifique el pago. Es OBLIGATORIO. El asesor confirmará la venta manualmente.
-4. PROHIBICIÓN ABSOLUTA: JAMÁS emitas [ORDER_CONFIRMED] basado en una captura de imagen. Esa etiqueta es Únicamente para pedidos coordinados directamente con el asesor humano tras verificación.
+ESCENARIO A — El cliente envía una IMAGEN de comprobante:
+1. LEER EL MONTO: Identifica el monto exacto que aparece en la captura. Si no es legible, pide una captura más nítida UNA sola vez.
+2. MONTO INSUFICIENTE: Si el monto es MENOR al precio del pedido, responde indicando la diferencia exacta. NO emitas ningún comando.
+3. MONTO SUFICIENTE: Usa [VERIFY_PAYMENT: S/. [monto] | [producto]] OBLIGATORIAMENTE para que un asesor verifique. Dile al cliente: "Recibí tu comprobante. Un asesor lo verificará en breve y te confirmará el pedido. ¡Gracias! 🙏"
+4. PROHIBICIÓN ABSOLUTA: JAMÁS emitas [ORDER_CONFIRMED] basado en una imagen de pago.
+
+ESCENARIO B — El cliente DICE verbalmente que pagó pero NO puede enviar captura:
+1. PRIMERA VEZ: Píde amablemente la captura UNA única vez, explicando que es por seguridad.
+2. SEGUNDA VEZ (cliente insiste en que no puede o que revise el Yape): DEJA DE PEDIR LA CAPTURA. Activa [VERIFY_PAYMENT: verbal | [producto]] para que el asesor revise su Yape manualmente. Dile al cliente: "Entendido, le avisamos a un asesor para que revise el pago en Yape y te confirme en breve. 🙏"
+3. PROHIBICIÓN: JAMÁS le pidas la captura más de 1 vez si el cliente ya explicó que no puede enviarla. Eso genera mala experiencia. Escala siempre al asesor humano.
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 FORMATO Y CONCISIÓN (OBLIGATORIO):
@@ -1378,7 +1383,7 @@ Si necesitas ejecutar una acción del sistema, usa ÚNICAMENTE las siguientes et
   • El método de pago y condiciones están aprobadas por la tienda (según Políticas de la empresa).
   • El cliente proporcionó nombre completo, dirección/ciudad y teléfono de contacto.
   • JAMÁS la uses si el cliente envió una captura de pago: en ese caso usa [VERIFY_PAYMENT] en su lugar.\n`;
-      systemCommands += `- [VERIFY_PAYMENT: Monto | Descripcion_pedido]: Úsalo SIEMPRE que el cliente envíe una imagen de comprobante de pago (Yape, Plin, transferencia, etc.) y el monto sea suficiente. Avisa al asesor humano para que verifique manualmente. Mientras tanto, dile al cliente: "Recibí tu comprobante. Un asesor lo verificará en breve y te confirmará el pedido. ¡Gracias por tu compra! 🙏"\n`;
+      systemCommands += `- [VERIFY_PAYMENT: Monto_o_verbal | Descripcion_pedido]: Úsalo en DOS casos:\n  A) Cuando el cliente envía una imagen de comprobante con monto suficiente: [VERIFY_PAYMENT: S/. X | producto].\n  B) Cuando el cliente afirma haber pagado pero NO puede o NO quiere enviar captura (después de pedirla 1 vez): [VERIFY_PAYMENT: verbal | producto]. En este caso NO le pidas la captura de nuevo.\n  En ambos casos, dile al cliente: "Entendido, un asesor verificará el pago y te confirmará en breve. ¡Gracias! 🙏"\n`;
     }
     
     systemCommands += `- [HUMAN_HANDOFF: Motivo]: Transfiere a un humano si el cliente insiste agresivamente o presenta quejas complejas, pero SOLO después de haber ofrecido tu ayuda primero.\n`;
