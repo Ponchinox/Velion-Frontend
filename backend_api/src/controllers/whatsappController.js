@@ -1021,7 +1021,7 @@ export async function receiveWebhook(req, res) {
         });
         console.log(`🔒 [Processing Lock] IA ocupada para +${clientNumber}. Mensaje guardado en pendingQueue.`);
       }
-      return res.sendStatus(200);
+      // Respuesta 200 ya enviada al inicio del webhook — no re-enviar.
     }
 
     // CASO B: No hay lock activo → aplicar debounce normal de 4000ms.
