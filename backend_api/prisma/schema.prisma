@@ -105,6 +105,8 @@ model Message {
   id         String   @id @default(uuid())
   content    String
   senderRole String   // "agent" | "bot" | "contact"
+  status     String   @default("sent") // "sent" | "delivered" | "read" | "failed"
+  externalId String?  // ID devuelto por WhatsApp (Meta wamid... o Evolution key.id)
   chatId     String
   chat       Chat     @relation(fields: [chatId], references: [id], onDelete: Cascade)
   tenantId   String
@@ -132,7 +134,9 @@ model Product {
   description      String?
   price            Float
   isAvailable      Boolean   @default(true)
-  imageUrl         String?   // URL del archivo subido a Cloudinary (saas_products)
+  imageUrl         String?   // URL de la imagen principal/portada (Cloudinary saas_products)
+  images           String[]  @default([]) // Galería de imágenes secundarias (hasta 4 fotos en total)
+  videoUrl         String?   // URL del video demostrativo opcional
   promotionalPrice Float?
   promoStartDate   DateTime?
   promoEndDate     DateTime?
@@ -245,12 +249,21 @@ model Flow {
 }
 
 // ─── MODELO REGISTEREDWHATSAPPNUMBER (Anti-Fraude / Fingerprinting Único de Número) ───
+// Patrón Gateway: soporta Evolution API (QR) y Meta Cloud API (Oficial)
 model RegisteredWhatsAppNumber {
-  id          String   @id @default(uuid())
-  phoneNumber String   @unique
+  id                 String   @id @default(uuid())
+  phoneNumber        String   @unique
+  provider           String   @default("EVOLUTION") // "EVOLUTION" | "META"
+
+  // Campos exclusivos para Meta Cloud API (opcionales)
+  metaPhoneNumberId  String?  // Phone Number ID de la API de Meta
+  metaWabaId         String?  // WhatsApp Business Account ID
+  metaAccessToken    String?  @db.Text // Token de acceso (puede ser largo)
+
   tenantId    String
   tenant      Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
 }
 
 // Forzando actualizacion limpia para Render.

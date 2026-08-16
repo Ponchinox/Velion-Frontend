@@ -1,5 +1,6 @@
 import axios from 'axios';
 import prisma from '../db.js';
+import { sendText as gatewaySendText, sendMedia as gatewaySendMedia } from './whatsappGateway.js';
 
 /**
  * Guarda el mensaje saliente del flujo en la base de datos y lo transmite por WebSockets en tiempo real
@@ -50,30 +51,18 @@ async function saveAndEmitOutgoingMessage(customer, text, instance) {
 }
 
 /**
- * Envía un mensaje de texto simple a través de Evolution API
+ * Envía un mensaje de texto simple a través del Gateway activo del Tenant
+ * (Evolution API o Meta Cloud API según configuración en la BD)
  */
 async function sendFlowMessage(customer, text, instance) {
-  const evoUrl = process.env.EVOLUTION_API_URL || 'http://localhost:8080';
-  const evoKey = process.env.EVOLUTION_API_KEY || '';
   const clientNumber = customer.phone.split('@')[0].replace(/\D/g, '');
 
   try {
-    await axios.post(
-      `${evoUrl}/message/sendText/${instance}`,
-      {
-        number: clientNumber,
-        text: text,
-        options: {
-          delay: 0
-        }
-      },
-      {
-        headers: {
-          apikey: evoKey,
-          'Content-Type': 'application/json'
-        }
-      }
-    );
+    await gatewaySendText({
+      tenantId: customer.tenantId, // El gateway resuelve proveedor desde la BD
+      to: clientNumber,
+      text,
+    });
     console.log(`✉️ [Flow Service] Texto enviado a +${clientNumber}: "${text}"`);
     await saveAndEmitOutgoingMessage(customer, text, instance);
   } catch (error) {
@@ -82,11 +71,9 @@ async function sendFlowMessage(customer, text, instance) {
 }
 
 /**
- * Envía un mensaje multimedia (imagen) a través de Evolution API
+ * Envía un mensaje multimedia (imagen) a través del Gateway activo del Tenant
  */
 async function sendFlowMedia(customer, mediaUrl, caption, instance) {
-  const evoUrl = process.env.EVOLUTION_API_URL || 'http://localhost:8080';
-  const evoKey = process.env.EVOLUTION_API_KEY || '';
   const clientNumber = customer.phone.split('@')[0].replace(/\D/g, '');
 
   if (!mediaUrl) {
@@ -95,21 +82,12 @@ async function sendFlowMedia(customer, mediaUrl, caption, instance) {
   }
 
   try {
-    await axios.post(
-      `${evoUrl}/message/sendMedia/${instance}`,
-      {
-        number: clientNumber,
-        mediatype: 'image',
-        media: mediaUrl,
-        caption: caption || ''
-      },
-      {
-        headers: {
-          apikey: evoKey,
-          'Content-Type': 'application/json'
-        }
-      }
-    );
+    await gatewaySendMedia({
+      tenantId: customer.tenantId, // El gateway resuelve proveedor desde la BD
+      to: clientNumber,
+      url: mediaUrl,
+      caption: caption || '',
+    });
     console.log(`🖼️ [Flow Service] Multimedia enviado a +${clientNumber} (Caption: "${caption}")`);
     await saveAndEmitOutgoingMessage(customer, caption || '[Imagen Adjunta]', instance);
   } catch (error) {

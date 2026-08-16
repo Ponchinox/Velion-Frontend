@@ -1,11 +1,14 @@
 import express from 'express';
-import { getStatus, connectDevice, disconnectDevice, sendMessage, receiveWebhook } from '../controllers/whatsappController.js';
+import { getStatus, connectDevice, disconnectDevice, sendMessage, receiveWebhook, receiveMetaVerification } from '../controllers/whatsappController.js';
 import authMiddleware from '../middlewares/authMiddleware.js';
 
 const router = express.Router();
 
-// Webhook público para recibir eventos de Evolution API sin JWT
+// ─── GATEWAY: Webhook unificado (Evolution API POST + Meta Cloud API POST) ───
 router.post('/webhook', receiveWebhook);
+
+// ─── GATEWAY: Verificación de webhook de Meta Cloud API (GET handshake) ───
+router.get('/webhook', receiveMetaVerification);
 
 // Proteger todas las rutas de WhatsApp
 router.use(authMiddleware);

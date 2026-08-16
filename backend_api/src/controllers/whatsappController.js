@@ -3,6 +3,12 @@ import prisma from '../db.js';
 import { generateAIResponse } from '../services/aiService.js';
 import * as flowService from '../services/flowService.js';
 import { validateAndRegisterWhatsAppConnection } from '../services/antiFraudService.js';
+import {
+  sendText as gatewaySendText,
+  sendMedia as gatewaySendMedia,
+  resolveGatewayCtx,
+  downloadMetaMedia,
+} from '../services/whatsappGateway.js';
 
 /**
  * Helper para generar los headers de autenticación del Evolution API
@@ -16,6 +22,44 @@ function getEvoHeaders(customApiKey) {
     }
   };
 }
+
+/**
+ * ─── GATEWAY: Envía un mensaje de texto a través del proveedor correcto ───
+ * Abstrae la diferencia entre Evolution API y Meta Cloud API para que el
+ * motor de IA y flujos no necesiten saber de dónde vino el mensaje.
+ *
+ * @param {object} opts
+ * @param {string} [opts.provider]          - 'EVOLUTION' | 'META'
+ * @param {string} opts.to                - Número destino (solo dígitos)
+ * @param {string} opts.text              - Texto a enviar
+ * @param {string} [opts.instance]        - Nombre de instancia (Evolution)
+ * @param {string} [opts.apiKey]          - API key de Evolution
+ * @param {string} [opts.metaPhoneNumberId] - Phone Number ID de Meta
+ * @param {string} [opts.metaAccessToken]   - Token de acceso de Meta
+ * @param {string} [opts.tenantId]        - ID del tenant para resolución
+ * @returns {Promise<string|null>}        - messageId (wamid o key.id) o null
+ */
+async function sendWhatsAppReply(opts) {
+  try {
+    return await gatewaySendText(opts);
+  } catch (err) {
+    console.error('❌ [Gateway Reply] Error al enviar respuesta:', err.message);
+    return null;
+  }
+}
+
+/**
+ * ─── GATEWAY: Envía una imagen o video a través del proveedor correcto ───
+ */
+async function sendWhatsAppMedia(opts) {
+  try {
+    return await gatewaySendMedia(opts);
+  } catch (err) {
+    console.error('❌ [Gateway Media] Error al enviar multimedia:', err.message);
+    return null;
+  }
+}
+
 
 /**
  * Helper para formatear el nombre de la instancia en base al tenantId
@@ -384,238 +428,366 @@ export async function disconnectDevice(req, res) {
 }
 
 /**
- * Envía un mensaje de texto a través de un canal activo de Evolution API
+ * Envía un mensaje de texto a través del proveedor activo del Tenant
+ * ─── GATEWAY: consulta la BD para determinar si usar Evolution API o Meta Cloud API ───
  */
 export async function sendMessage(req, res) {
   const { number, message, instanceName } = req.body;
+  const tenantId = req.user?.tenantId;
 
-  if (!number || !message || !instanceName) {
-    return res.status(400).json({ error: 'Faltan parámetros requeridos (number, message, instanceName).' });
+  if (!number || !message) {
+    return res.status(400).json({ error: 'Faltan parámetros requeridos (number, message).' });
   }
 
-  const evoUrl = process.env.EVOLUTION_API_URL || 'http://localhost:8080';
-
-  const cleanNumber = number.replace(/\D/g, '');
   try {
-    const response = await axios.post(
-      `${evoUrl}/message/sendText/${instanceName}`,
-      {
-        number: cleanNumber,
-        text: message,
-        options: {
-          delay: 0
-        }
-      },
-      getEvoHeaders()
-    );
+    // Resolver proveedor desde la BD por tenantId
+    const ctx = tenantId
+      ? await resolveGatewayCtx(tenantId)
+      : { provider: 'EVOLUTION', instance: instanceName, apiKey: (process.env.EVOLUTION_API_KEY || '').trim(), metaPhoneNumberId: null, metaAccessToken: null };
 
-    const msgId = response.data?.key?.id;
+    const cleanNumber = number.replace(/\D/g, '');
+
+    const msgId = await gatewaySendText({
+      ...ctx,
+      to: cleanNumber,
+      text: message,
+    });
+
     if (msgId) markMessageAsSentByAi(msgId);
     markMessageAsSentByAi(message);
 
-    return res.json({
-      success: true,
-      data: response.data,
-    });
+    console.log(`📤 [sendMessage API | ${ctx.provider}] Mensaje enviado a +${cleanNumber}`);
+
+    return res.json({ success: true, provider: ctx.provider });
   } catch (error) {
-    console.error('DETALLE DEL ERROR DE EVOLUTION:', error.response?.data || error.message);
+    console.error('[sendMessage API] Error al enviar mensaje:', error.response?.data || error.message);
     return res.status(500).json({
-      error: 'Error al enviar el mensaje de texto a través de Evolution API.',
+      error: 'Error al enviar el mensaje.',
       details: error.response?.data || error.message,
     });
   }
 }
 
 /**
- * Procesa los webhooks entrantes de Evolution API (Mensajes recibidos)
- * y responde automáticamente consultando la base de datos de productos de ese tenant e invocando a la IA
+ * ─── GATEWAY: Verificación de Webhook de Meta Cloud API (GET) ───
+ * Meta envía un GET request para verificar que el endpoint es válido.
+ * Debemos responder con el hub.challenge si el token coincide.
+ */
+export function receiveMetaVerification(req, res) {
+  const VERIFY_TOKEN = process.env.META_WEBHOOK_VERIFY_TOKEN || 'velion_meta_verify_2024';
+  const mode = req.query['hub.mode'];
+  const token = req.query['hub.verify_token'];
+  const challenge = req.query['hub.challenge'];
+
+  if (mode === 'subscribe' && token === VERIFY_TOKEN) {
+    console.log('✅ [Meta Gateway] Webhook verificado correctamente por Meta.');
+    return res.status(200).send(challenge);
+  }
+  console.error('❌ [Meta Gateway] Verificación de webhook fallida. Token incorrecto.');
+  return res.status(403).json({ error: 'Forbidden' });
+}
+
+/**
+ * ─── GATEWAY: Normaliza el payload de Meta Cloud API ───
+ * Extrae remitente, texto, audios, imágenes, statuses y phoneNumberId.
+ *
+ * @param {object} body - req.body del webhook de Meta
+ * @returns {object|null}
+ */
+function normalizeMeta(body) {
+  try {
+    const entry = body?.entry?.[0];
+    const change = entry?.changes?.[0];
+    const value = change?.value;
+
+    // 1. Detección de Eventos de Estado (sent, delivered, read, failed)
+    if (value?.statuses?.[0]) {
+      return {
+        isStatusEvent: true,
+        statusObj: value.statuses[0],
+        metaPhoneNumberId: value?.metadata?.phone_number_id || ''
+      };
+    }
+
+    // 2. Detección de Mensajes Entrantes
+    const msg = value?.messages?.[0];
+    if (!msg) return null;
+
+    const metaPhoneNumberId = value?.metadata?.phone_number_id || '';
+    const sender = msg.from || ''; // número del remitente, solo dígitos
+    const msgId = msg.id || null;
+
+    let text = '';
+    let audioId = null;
+    let audioMime = null;
+    let imageId = null;
+
+    if (msg.type === 'text') {
+      text = msg.text?.body || '';
+    } else if (msg.type === 'image') {
+      text = msg.image?.caption || 'Analiza esta imagen';
+      imageId = msg.image?.id || null;
+    } else if (msg.type === 'audio') {
+      text = '[Nota de voz de WhatsApp] Escucha este audio y respóndeme o ejecuta mi solicitud.';
+      audioId = msg.audio?.id || null;
+      audioMime = msg.audio?.mime_type || 'audio/ogg';
+    } else if (msg.type === 'video') {
+      text = '[Video de WhatsApp] El usuario envió un video. Dile amablemente que no puedes procesar videos, que por favor lo explique por texto o envíe una foto.';
+    } else {
+      // Tipo no soportado (sticker, location, etc.)
+      return null;
+    }
+
+    const pushName = value?.contacts?.[0]?.profile?.name || null;
+
+    return { sender, text, metaPhoneNumberId, pushName, msgId, audioId, audioMime, imageId, isStatusEvent: false };
+  } catch (e) {
+    console.error('❌ [Meta Gateway] Error normalizando payload de Meta:', e.message);
+    return null;
+  }
+}
+
+/**
+ * ─── GATEWAY: Normaliza el payload de Evolution API ───
+ * Extrae remitente, texto e instancia del formato Evolution.
+ *
+ * @param {object} body - req.body del webhook de Evolution
+ * @returns {{ sender: string, text: string, instance: string, pushName: string, fromMe: boolean, key: object, rawData: object, mediaItems: Array }|null}
+ */
+async function normalizeEvolution(body, requestApiKey) {
+  const { event, instance, data } = body;
+
+  if (event !== 'messages.upsert') return null;
+
+  const key = data?.key || {};
+  const remoteJid = key.remoteJid || '';
+  const sender = remoteJid.split('@')[0] || '';
+  const fromMe = Boolean(key.fromMe);
+
+  let text = '';
+  let mediaItems = [];
+  const evoUrl = process.env.EVOLUTION_API_URL || 'http://localhost:8080';
+
+  if (data.message?.conversation) {
+    text = data.message.conversation;
+  } else if (data.message?.extendedTextMessage?.text) {
+    text = data.message.extendedTextMessage.text;
+  } else if (data.message?.imageMessage) {
+    text = data.message.imageMessage.caption || 'Analiza esta imagen';
+    try {
+      const mediaRes = await axios.post(
+        `${evoUrl}/chat/getBase64FromMediaMessage/${instance}`,
+        { message: data },
+        getEvoHeaders(requestApiKey)
+      );
+      const imgBase64 = typeof mediaRes.data === 'string' ? mediaRes.data : (mediaRes.data?.base64 || null);
+      if (imgBase64) mediaItems.push(imgBase64);
+    } catch (e) {
+      console.error('❌ [Evolution] Error descargando imagen:', e.message);
+    }
+  } else if (data.message?.audioMessage) {
+    try {
+      const mediaRes = await axios.post(
+        `${evoUrl}/chat/getBase64FromMediaMessage/${instance}`,
+        { message: data },
+        getEvoHeaders(requestApiKey)
+      );
+      const audioBase64 = typeof mediaRes.data === 'string' ? mediaRes.data : (mediaRes.data?.base64 || null);
+      if (audioBase64) {
+        const mimeType = data.message.audioMessage.mimetype || 'audio/ogg';
+        mediaItems.push(`data:${mimeType};base64,${audioBase64}`);
+      }
+    } catch (e) {
+      console.error('❌ [Evolution] Error descargando audio:', e.message);
+    }
+    text = '[Nota de voz de WhatsApp] Escucha este audio y respóndeme o ejecuta mi solicitud.';
+  } else if (data.message?.videoMessage) {
+    text = (data.message.videoMessage.caption || '[Video de WhatsApp]') +
+      '\n[Sistema: El usuario envió un video. Dile amablemente que no puedes procesar videos, que por favor lo explique por texto o envíe una foto.]';
+  }
+
+  const pushName = !fromMe ? (data?.pushName || data?.key?.pushName || null) : null;
+
+  return { sender, text, instance, pushName, fromMe, key, rawData: data, mediaItems, remoteJid, msgId: key.id || null };
+}
+
+/**
+ * Procesa los webhooks entrantes de WhatsApp.
+ * ─── GATEWAY PATTERN ───
+ * Detecta automáticamente si el origen es Meta Cloud API o Evolution API,
+ * normaliza el payload a un objeto estándar y lo procesa de forma unificada.
  */
 export async function receiveWebhook(req, res) {
-  const requestApiKey = (req.query?.apikey || req.headers?.apikey || req.body?.apikey || req.headers?.['x-api-key'] || '').trim();
-  const systemApiKey = (process.env.EVOLUTION_API_KEY || '').trim();
+  // ── 1. DETECCIÓN DE PROVEEDOR ──────────────────────────────────────────────
+  const isMeta = req.body?.object === 'whatsapp_business_account';
+  const provider = isMeta ? 'META' : 'EVOLUTION';
 
-  // Validación de Seguridad: Si se envía una ApiKey explícita y no coincide con la del sistema, se bloquea.
-  if (systemApiKey && requestApiKey && requestApiKey !== systemApiKey) {
-    console.log('🔍 [DEBUG KEY] Recibida:', requestApiKey, '|| Esperada:', systemApiKey);
-    console.error('🚨 [Seguridad Webhook] Petición bloqueada por ApiKey explícitamente inválida.');
-    return res.status(401).json({ error: 'Unauthorized' });
+  // ── 2. VALIDACIÓN DE SEGURIDAD (Solo Evolution requiere API Key) ────────────
+  if (!isMeta) {
+    const requestApiKey = (req.query?.apikey || req.headers?.apikey || req.body?.apikey || req.headers?.['x-api-key'] || '').trim();
+    const systemApiKey = (process.env.EVOLUTION_API_KEY || '').trim();
+    if (systemApiKey && requestApiKey && requestApiKey !== systemApiKey) {
+      console.error('🚨 [Seguridad Webhook] Petición bloqueada por ApiKey explícitamente inválida.');
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
   }
 
-  const { event, instance, data } = req.body;
-  const remoteJid = data?.key?.remoteJid || '';
-  const clientNumber = remoteJid.split('@')[0] || 'desconocido';
-  const tenantTag = instance ? instance.replace('bot_prod_', '').substring(0, 8) : 'sistema';
+  // Meta requiere respuesta inmediata 200 antes de procesar
+  res.sendStatus(200);
 
-  // Identificar si el mensaje proviene o pertenece a un grupo de WhatsApp (@g.us)
-  const isGroup = remoteJid.endsWith('@g.us') || remoteJid.includes('@g.us') || !!data?.key?.participant || data?.isGroup === true;
+  // ── 3. NORMALIZACIÓN DEL PAYLOAD ───────────────────────────────────────────
+  let normalized = null;
+  let instance = null;
+  let requestApiKey = '';
+  let metaNumberRecord = null;
 
-  // REGLA ESTRICTA HARDCODEADA: Bloquear siempre respuestas e interacciones en grupos de WhatsApp
-  if (isGroup) {
-    console.log(`🛡️ [Bloqueo Estricto de Grupos] Mensaje de grupo ignorado para ${remoteJid}.`);
-    return res.status(200).send('Group message ignored (hardcoded policy)');
+  if (isMeta) {
+    // ── 3A. META CLOUD API ──
+    normalized = normalizeMeta(req.body);
+    if (!normalized) {
+      return;
+    }
+
+    // Procesar evento de Status (sent, delivered, read, failed)
+    if (normalized.isStatusEvent && normalized.statusObj) {
+      const { id: statusId, status: statusName, recipient_id: recipientPhone } = normalized.statusObj;
+      console.log(`📊 [Meta Status] Mensaje ${statusId} -> ${statusName} (Para: +${recipientPhone})`);
+
+      try {
+        const existingMsg = await prisma.message.findFirst({
+          where: { externalId: statusId },
+          include: { chat: true }
+        });
+
+        if (existingMsg) {
+          await prisma.message.update({
+            where: { id: existingMsg.id },
+            data: { status: statusName }
+          });
+
+          const ioInstance = req.io || global.io;
+          if (ioInstance) {
+            ioInstance.emit('message_status_updated', {
+              messageId: existingMsg.id,
+              chatId: existingMsg.chatId,
+              externalId: statusId,
+              status: statusName,
+              timestamp: new Date()
+            });
+          }
+        }
+      } catch (statusErr) {
+        console.error('❌ [Meta Status] Error actualizando estado de mensaje:', statusErr.message);
+      }
+      return;
+    }
+
+    console.log(`[📱 META] 📥 De: +${normalized.sender} | Texto: "${normalized.text}" (msgId: ${normalized.msgId || 'N/A'})`);
+  } else {
+    // ── 3B. EVOLUTION API ──
+    requestApiKey = (req.query?.apikey || req.headers?.apikey || req.body?.apikey || req.headers?.['x-api-key'] || '').trim();
+    instance = req.body?.instance;
+    const evoNorm = await normalizeEvolution(req.body, requestApiKey);
+    if (!evoNorm) {
+      return;
+    }
+    normalized = evoNorm;
+    instance = evoNorm.instance;
+    const tenantTag = instance ? instance.replace('bot_prod_', '').substring(0, 8) : 'sistema';
+    console.log(`[🏢 TENANT: ${tenantTag}] 📥 EVENTO: ${req.body?.event || 'N/A'} | De: +${normalized.sender} | Proveedor: EVOLUTION`);
   }
 
-  // Verificar tipo de mensaje entrante
-  const messageType = data?.message ? Object.keys(data.message)[0] : 'event';
+  const { sender: clientNumber, text: userMessageText, pushName } = normalized;
+  const remoteJid = isMeta ? clientNumber : (normalized.remoteJid || clientNumber);
+  let mediaItems = normalized.mediaItems || [];
+  const fromMe = isMeta ? false : (normalized.fromMe || false);
 
-  // Log estructurado limpio en formato SaaS de una sola línea (Sin Log Pollution)
-  console.log(`[🏢 TENANT: ${tenantTag}] 📥 EVENTO: ${event || 'N/A'} | De: +${clientNumber} | Tipo: ${messageType}`);
+  // Bloquear grupos (@g.us)
+  if (!isMeta) {
+    const isGroup = remoteJid.endsWith('@g.us') || !!normalized.rawData?.key?.participant || normalized.rawData?.isGroup === true;
+    if (isGroup) {
+      console.log(`🛡️ [Bloqueo Estricto de Grupos] Mensaje de grupo ignorado para ${remoteJid}.`);
+      return;
+    }
+  }
+
+  // Ignorar mensajes sin texto
+  if (!userMessageText?.trim()) return;
 
   try {
-    // Solo procesar la creación/recepción de nuevos mensajes
-    if (event !== 'messages.upsert') {
-      return res.sendStatus(200);
-    }
+    // ── 4. RESOLUCIÓN DE TENANT ────────────────────────────────────────────────
+    let tenant = null;
 
-    const key = data.key;
+    if (isMeta) {
+      metaNumberRecord = await prisma.registeredWhatsAppNumber.findFirst({
+        where: {
+          provider: 'META',
+          metaPhoneNumberId: normalized.metaPhoneNumberId
+        },
+        include: { tenant: true }
+      });
+      if (!metaNumberRecord) {
+        console.warn(`⚠️ [Meta Gateway] No se encontró Tenant para metaPhoneNumberId: ${normalized.metaPhoneNumberId}`);
+        return;
+      }
+      tenant = metaNumberRecord.tenant;
+      console.log(`✅ [Meta Gateway] Tenant resuelto: ${tenant.name} (${tenant.id})`);
 
-    // SI EL MENSAJE ES NUESTRO (ENVIADO POR EL BOT O EL AGENTE HUMANO)
-    if (key.fromMe) {
-      // No procesar IA ni activar buffer para mensajes salientes de nuestra propia cuenta
-    }
-
-    const evoUrl = process.env.EVOLUTION_API_URL || 'http://localhost:8080';
-
-    // Extraer texto o imagen del mensaje entrante
-    let userMessageText = '';
-    let mediaItems = [];
-
-    if (data.message?.conversation) {
-      userMessageText = data.message.conversation;
-    } else if (data.message?.extendedTextMessage?.text) {
-      userMessageText = data.message.extendedTextMessage.text;
-    } else if (data.message?.imageMessage) {
-      const caption = data.message.imageMessage.caption || '';
-      userMessageText = caption || 'Analiza esta imagen';
-
-      const existingQueue = pendingQueues.get(remoteJid);
-      const existingBuffer = messageBuffers.get(remoteJid);
-      let totalMedia = 0;
-      if (existingQueue && existingQueue.mediaItems) totalMedia += existingQueue.mediaItems.length;
-      if (existingBuffer && existingBuffer.mediaItems) totalMedia += existingBuffer.mediaItems.length;
-
-      if (totalMedia >= 2) {
-        console.log(`⚠️ [Multimedia] Límite de imágenes alcanzado para +${clientNumber}. Omitiendo descarga.`);
-        userMessageText += "\n[Sistema: El usuario envió más de 2 fotos. Solo procesaste las 2 primeras para ahorrar memoria. Avísale discretamente si es necesario.]";
-      } else {
-        try {
-          console.log(`📸 [Evolution API] Descargando imagen en Base64 para la instancia "${instance}"...`);
-          const mediaRes = await axios.post(
-            `${evoUrl}/chat/getBase64FromMediaMessage/${instance}`,
-            { message: data },
-            getEvoHeaders(requestApiKey)
-          );
-          let resData = mediaRes.data;
-          let imgBase64 = null;
-          if (resData) {
-            imgBase64 = typeof resData === 'string' ? resData : (resData.base64 || null);
-          }
-          if (imgBase64) {
-            mediaItems.push(imgBase64);
-            console.log('✅ [Evolution API] Imagen descargada correctamente en Base64.');
-          }
-        } catch (mediaError) {
-          console.error('❌ [Evolution API] Error al descargar imagen en Base64:', mediaError.response?.data || mediaError.message);
+      // ── DESCARGA DE AUDIO / NOTA DE VOZ EN META CLOUD API ──
+      const metaToken = metaNumberRecord.metaAccessToken || process.env.META_ACCESS_TOKEN;
+      if (normalized.audioId && metaToken) {
+        console.log(`🎙️ [Meta Audio] Descargando nota de voz (${normalized.audioId}) vía Graph API...`);
+        const audioRes = await downloadMetaMedia(normalized.audioId, metaToken);
+        if (audioRes?.dataUrl) {
+          mediaItems.push(audioRes.dataUrl);
+          console.log(`✅ [Meta Audio] Nota de voz descargada y enviada a IA (${audioRes.mimeType})`);
+        }
+      } else if (normalized.imageId && metaToken) {
+        console.log(`📸 [Meta Imagen] Descargando imagen (${normalized.imageId}) vía Graph API...`);
+        const imgRes = await downloadMetaMedia(normalized.imageId, metaToken);
+        if (imgRes?.dataUrl) {
+          mediaItems.push(imgRes.dataUrl);
+          console.log(`✅ [Meta Imagen] Imagen descargada y enviada a IA`);
         }
       }
-    } else if (data.message?.audioMessage) {
-      try {
-        console.log(`🎙️ [Evolution API] Descargando audio en Base64 para la instancia "${instance}"...`);
-        const mediaRes = await axios.post(
-          `${evoUrl}/chat/getBase64FromMediaMessage/${instance}`,
-          { message: data },
-          getEvoHeaders(requestApiKey)
-        );
-        let resData = mediaRes.data;
-        let audioBase64 = null;
-        if (resData) {
-          audioBase64 = typeof resData === 'string' ? resData : (resData.base64 || null);
-        }
-        if (audioBase64) {
-          console.log('✅ [Evolution API] Audio descargado correctamente en Base64. Pasando a procesamiento nativo en Gemini...');
-          const mimeType = data.message.audioMessage.mimetype || 'audio/ogg';
-          mediaItems.push(`data:${mimeType};base64,${audioBase64}`);
-          userMessageText = '[Nota de voz de WhatsApp] Escucha este audio y respóndeme o ejecuta mi solicitud.';
-        }
-      } catch (audioError) {
-        console.error('❌ Error al procesar audio en webhook:', audioError.message);
+    } else {
+      const tenantPrefix = instance.replace('bot_prod_', '');
+      const tenants = await prisma.tenant.findMany({ select: { id: true } });
+      const matchingTenant = tenants.find(t => t.id.toLowerCase().startsWith(tenantPrefix.toLowerCase()));
+      if (!matchingTenant) {
+        console.warn(`⚠️ [Webhook Evolution] No se encontró Tenant para prefijo: ${tenantPrefix}`);
+        return;
       }
-    } else if (data.message?.videoMessage) {
-      const caption = data.message.videoMessage.caption || '';
-      userMessageText = caption || '[Video de WhatsApp] Analiza este video y responde.';
-      console.log(`⚠️ [Multimedia] Video ignorado para +${clientNumber}.`);
-      userMessageText += "\n[Sistema: El usuario envió un video. Dile amablemente que no puedes procesar videos, que por favor lo explique por texto o envíe una foto.]";
+      tenant = await prisma.tenant.findUnique({ where: { id: matchingTenant.id } });
     }
 
-    // Ignorar si el mensaje no tiene contenido de texto legible
-    if (!userMessageText.trim()) {
-      return res.sendStatus(200);
+    if (!tenant) return;
+
+    // ESCUDO DE GRUPOS para Evolution
+    if (!isMeta) {
+      const isGroup = remoteJid.endsWith('@g.us') || !!normalized.rawData?.key?.participant || normalized.rawData?.isGroup === true;
+      if (isGroup && !tenant.respondInGroups) {
+        console.log(`🛡️ [Seguridad] Mensaje de grupo ignorado (respondInGroups: false)`);
+        return;
+      }
     }
 
-    console.log(`💬 [Webhook Evolution] Mensaje entrante de +${clientNumber} en instancia ${instance}: "${userMessageText}"`);
+    // ── 5. PERSISTENCIA EN CRM (Contact, Chat) ────────────────────────────────
+    const cleanPhone = String(clientNumber).replace(/\D/g, '') || clientNumber;
+    const isOutgoing = fromMe;
 
-    // Mapear el nombre de la instancia al Tenant correspondiente en PostgreSQL
-    // El nombre de la instancia sigue el formato: bot_prod_8c975d84 (los primeros 8 caracteres del tenantId)
-    const tenantPrefix = instance.replace('bot_prod_', '');
-    
-    const tenants = await prisma.tenant.findMany({ select: { id: true } });
-    console.log("🔍 [DEBUG] Tenants en la base de datos:", tenants.map(t => t.id));
-    console.log("🔍 [DEBUG] Buscando el prefijo exacto:", tenantPrefix);
-
-    const matchingTenant = tenants.find(t => t.id.toLowerCase().startsWith(tenantPrefix.toLowerCase()));
-
-    if (!matchingTenant) {
-        console.log(`⚠️ [Webhook Evolution] No se encontró ningún Tenant registrado en DB para el prefijo: ${tenantPrefix}`);
-        return res.status(200).send('Tenant no encontrado, pero mensaje recibido.');
-    }
-
-    const tenant = await prisma.tenant.findUnique({
-      where: { id: matchingTenant.id }
-    });
-
-    // ESCUDO DE GRUPOS: Validar si el mensaje es de un grupo y si el Tenant permite responder en grupos
-    if (isGroup && !tenant?.respondInGroups) {
-      console.log(`🛡️ [Seguridad] Mensaje de grupo ignorado para ${remoteJid} (respondInGroups es false)`);
-      return res.status(200).send('Group message ignored');
-    }
-
-    // --- Persistencia en Chat y Mensajes (Live Chat CRM) ---
-    const cleanPhone = clientNumber.replace(/\D/g, '') || clientNumber;
-    const sendBy = data?.sendBy || req.body?.sendBy;
-    const isOutgoing = Boolean(data?.key?.fromMe) || sendBy === 'api' || sendBy === 'me';
-
-    // REGLA CRÍTICA DE NOMBRES EN CRM:
-    // Si el mensaje es SALIENTE (fromMe: true), el pushName en el evento pertenece al dueño del bot (tenant).
-    // Está ESTRICTAMENTE PROHIBIDO usar el pushName de eventos salientes para nombrar al cliente.
-    // Para mensajes salientes a números nuevos, registramos al contacto temporalmente con su número ("Cliente +51...").
-    // Solo cuando el mensaje es ENTRANTE (!fromMe) extraemos y guardamos el pushName real del cliente.
-    const rawPushName = !isOutgoing
-      ? (data?.pushName || data?.key?.pushName || req.body?.pushName || null)
-      : null;
-
-    const extractedName = sanitizePushName(rawPushName);
+    const extractedName = sanitizePushName(!isOutgoing ? pushName : null);
     const fallbackName = `Cliente +${cleanPhone}`;
     const initialName = (!isOutgoing && extractedName !== 'Cliente Desconocido') ? extractedName : fallbackName;
 
-    // Búsqueda ESTRICTA por tenantId y phone exacto (Evita duplicados o cruces de nombres)
     let contact = await prisma.contact.findFirst({
-      where: {
-        tenantId: tenant.id,
-        phone: cleanPhone
-      }
+      where: { tenantId: tenant.id, phone: cleanPhone }
     });
-
     if (!contact) {
       contact = await prisma.contact.create({
-        data: {
-          name: initialName,
-          phone: cleanPhone,
-          tenantId: tenant.id,
-          category: 'Whatsapp'
-        }
+        data: { name: initialName, phone: cleanPhone, tenantId: tenant.id, category: 'Whatsapp' }
       });
     } else if (!isOutgoing && extractedName !== 'Cliente Desconocido' && (contact.name === 'Cliente Desconocido' || contact.name.startsWith('Cliente +'))) {
-      // Si el mensaje es ENTRANTE y el cliente envía un pushName válido, actualizamos su nombre real en el CRM
       contact = await prisma.contact.update({
         where: { id: contact.id },
         data: { name: extractedName }
@@ -623,149 +795,82 @@ export async function receiveWebhook(req, res) {
     }
 
     let chat = await prisma.chat.findFirst({
-      where: {
-        contactId: contact.id,
-        tenantId: tenant.id
-      }
+      where: { contactId: contact.id, tenantId: tenant.id }
     });
-
     if (!chat) {
       chat = await prisma.chat.create({
-        data: {
-          contactId: contact.id,
-          tenantId: tenant.id
-        }
+        data: { contactId: contact.id, tenantId: tenant.id }
       });
     }
 
-    // SI EL MENSAJE ES NUESTRO (ENVIADO DESDE EL CELULAR COMERCIAL, PANEL O IA)
-    if (key.fromMe) {
+
+    // ── 6. MENSAJES SALIENTES (Solo Evolution, Meta no nos envía los nuestros) ─
+    if (fromMe) {
+      const key = normalized.key || {};
       const msgId = key.id;
-      const isAiMessage = (msgId && sentByAiCache.has(msgId)) || 
+      const isAiMessage = (msgId && sentByAiCache.has(msgId)) ||
                           (userMessageText && sentByAiCache.has(userMessageText.trim()));
 
       if (isAiMessage) {
         if (msgId) sentByAiCache.delete(msgId);
         if (userMessageText) sentByAiCache.delete(userMessageText.trim());
-        console.log(`🤖 [Webhook Evolution] Mensaje saliente de IA/Sistema verificado para +${clientNumber}.`);
+        console.log(`🤖 [Webhook Evolution] Mensaje saliente de IA verificado para +${clientNumber}.`);
       } else {
-        // 🚨 ¡INTERVENCIÓN HUMANA DETECTADA DESDE CELULAR O WHATSAPP WEB!
-        console.log(`👤 [Auto-Pausa Human Handoff] Intervención humana detectada en +${clientNumber}. Pausando bot automáticamente...`);
-
-        // 1. Pausar en Contact (CRM)
-        if (contact && !contact.botPaused) {
-          await prisma.contact.update({
-            where: { id: contact.id },
-            data: { botPaused: true }
-          });
-        }
-
-        // 2. Pausar en Chat (CRM)
-        if (chat && !chat.botPaused) {
-          await prisma.chat.update({
-            where: { id: chat.id },
-            data: { botPaused: true }
-          });
-        }
-
-        // 3. Pausar en Customer (Bot Engine)
-        const cleanPhone = clientNumber.replace(/\D/g, '');
-        if (cleanPhone) {
-          await prisma.customer.updateMany({
-            where: { tenantId: tenant.id, phone: { contains: cleanPhone } },
-            data: { isBotPaused: true }
-          });
-        }
-
-        // 4. Cancelar cualquier buffer de mensajes acumulados pendiente del cliente
+        console.log(`👤 [Auto-Pausa Human Handoff] Intervención humana detectada en +${clientNumber}. Pausando bot...`);
+        if (contact && !contact.botPaused) await prisma.contact.update({ where: { id: contact.id }, data: { botPaused: true } });
+        if (chat && !chat.botPaused) await prisma.chat.update({ where: { id: chat.id }, data: { botPaused: true } });
+        await prisma.customer.updateMany({
+          where: { tenantId: tenant.id, phone: { contains: cleanPhone } },
+          data: { isBotPaused: true }
+        });
         if (messageBuffers.has(remoteJid)) {
           const buf = messageBuffers.get(remoteJid);
           if (buf?.timer) clearTimeout(buf.timer);
           messageBuffers.delete(remoteJid);
-          console.log(`🧹 [Message Buffer] Buffer cancelado para +${clientNumber} por intervención humana.`);
         }
-
-        // 5. Emitir eventos por WebSocket en tiempo real para el Dashboard
         if (req.io) {
-          req.io.emit('contact_updated', {
-            contactId: contact?.id,
-            phone: cleanPhone,
-            botPaused: true,
-            reason: 'HUMAN_INTERVENTION'
-          });
-          req.io.emit('bot_status_changed', {
-            contactId: contact?.id,
-            phone: cleanPhone,
-            botPaused: true
-          });
+          req.io.emit('contact_updated', { contactId: contact?.id, phone: cleanPhone, botPaused: true, reason: 'HUMAN_INTERVENTION' });
+          req.io.emit('bot_status_changed', { contactId: contact?.id, phone: cleanPhone, botPaused: true });
         }
       }
 
-      // Guardar en la base de datos como mensaje del agente si no se ha guardado previamente
       const existingMessage = await prisma.message.findFirst({
-        where: {
-          chatId: chat.id,
-          content: userMessageText,
-          senderRole: 'agent'
-        }
+        where: { chatId: chat.id, content: userMessageText, senderRole: 'agent' }
       });
-
       if (!existingMessage) {
         await prisma.message.create({
-          data: {
-            content: userMessageText,
-            senderRole: 'agent',
-            chatId: chat.id,
-            tenantId: tenant.id
-          }
+          data: { content: userMessageText, senderRole: 'agent', chatId: chat.id, tenantId: tenant.id }
         });
       }
-
-      // Emitir mensaje saliente a través de WebSocket en tiempo real
-      if (req.io) {
-        req.io.emit('new_whatsapp_message', {
-          chatId: chat.id,
-          remoteJid,
-          text: userMessageText,
-          type: 'outgoing',
-          timestamp: new Date()
-        });
-      }
-
-      console.log(`📤 [Webhook Evolution] Mensaje saliente propio de +${clientNumber} guardado y transmitido por socket: "${userMessageText}"`);
-      return res.sendStatus(200);
+      if (req.io) req.io.emit('new_whatsapp_message', { chatId: chat.id, remoteJid, text: userMessageText, type: 'outgoing', timestamp: new Date() });
+      console.log(`📤 [Webhook Evolution] Mensaje saliente propio de +${clientNumber} guardado.`);
+      return;
     }
 
-    // SI EL MENSAJE ES ENTRANTE (DEL CLIENTE)
-    // 1. Registrar el mensaje entrante en la base de datos inmediatamente para el panel
+    // ── 7. REGISTRO DEL MENSAJE ENTRANTE EN CRM ────────────────────────────────
     await prisma.message.create({
       data: {
         content: userMessageText,
         senderRole: 'contact',
+        status: 'delivered',
+        externalId: normalized.msgId || null,
         chatId: chat.id,
         tenantId: tenant.id
       }
     });
+    if (req.io) req.io.emit('new_whatsapp_message', {
+      chatId: chat.id,
+      remoteJid,
+      text: userMessageText,
+      type: 'incoming',
+      externalId: normalized.msgId || null,
+      status: 'delivered',
+      timestamp: new Date()
+    });
 
-    // 2. Emitir mensaje entrante a través de WebSocket en tiempo real inmediatamente
-    if (req.io) {
-      req.io.emit('new_whatsapp_message', {
-        chatId: chat.id,
-        remoteJid,
-        text: userMessageText,
-        type: 'incoming',
-        timestamp: new Date()
-      });
-    }
-
-    // 2.5 ESCUDO DE AUTO-PAUSA Y AUTO-REACTIVACIÓN POR TIMEOUT (24 HORAS)
+    // ── 8. AUTO-PAUSA Y AUTO-REACTIVACIÓN 24H ─────────────────────────────────
     const existingCustomerForCheck = await prisma.customer.findUnique({
-      where: {
-        tenantId_phone: {
-          tenantId: tenant.id,
-          phone: remoteJid
-        }
-      }
+      where: { tenantId_phone: { tenantId: tenant.id, phone: remoteJid } }
     });
 
     let isPaused = Boolean(contact?.botPaused || existingCustomerForCheck?.isBotPaused);
@@ -834,15 +939,13 @@ export async function receiveWebhook(req, res) {
     }
 
     if (isPaused) {
-      console.log(`👥 [Auto-Pausa Human Handoff] Bot pausado para +${clientNumber} (< 24h desde la última interacción). Mensaje del cliente guardado en CRM pero la IA no responderá.`);
+      console.log(`👥 [Auto-Pausa Human Handoff] Bot pausado para +${clientNumber} (< 24h desde la última interacción).`);
       return res.sendStatus(200);
     }
 
     // 3. Sistema de Message Buffer / Debounce + Lock de Procesamiento
-    //
-    // CASO A: La IA ya está procesando una respuesta para este usuario (processingLock activo).
-    //   → No creamos un timer paralelo. Encolamos el mensaje en pendingQueues para procesarlo
-    //     de forma ordenada cuando la IA termine. Esto evita ráfagas paralelas.
+    const provider = isMeta ? 'META' : 'EVOLUTION';
+    
     if (processingLocks.has(remoteJid)) {
       const existingQueue = pendingQueues.get(remoteJid);
       if (existingQueue) {
@@ -855,7 +958,10 @@ export async function receiveWebhook(req, res) {
       } else {
         pendingQueues.set(remoteJid, {
           remoteJid, clientNumber, text: userMessageText, mediaItems: [...mediaItems],
-          tenant, contact, chat, instance, requestApiKey, data, reqIo: req.io
+          tenant, contact, chat, instance, requestApiKey, provider,
+          metaPhoneNumberId: metaNumberRecord?.metaPhoneNumberId,
+          metaAccessToken: metaNumberRecord?.metaAccessToken,
+          data: normalized.rawData, reqIo: req.io
         });
         console.log(`🔒 [Processing Lock] IA ocupada para +${clientNumber}. Mensaje guardado en pendingQueue.`);
       }
@@ -863,8 +969,6 @@ export async function receiveWebhook(req, res) {
     }
 
     // CASO B: No hay lock activo → aplicar debounce normal de 4000ms.
-    //   Si ya existe un timer corriendo para este usuario, se reinicia desde cero.
-    //   La IA no empieza a pensar hasta que pasen 4s continuos de silencio absoluto.
     const existingBuffer = messageBuffers.get(remoteJid);
     if (existingBuffer) {
       clearTimeout(existingBuffer.timer);
@@ -876,7 +980,7 @@ export async function receiveWebhook(req, res) {
       existingBuffer.timer = setTimeout(() => {
         processBufferedMessage(remoteJid);
       }, 4000);
-      console.log(`⏳ [Message Buffer] Mensaje en ráfaga concatenado para +${clientNumber}. Temporizador reiniciado a 4000ms desde cero.`);
+      console.log(`⏳ [Message Buffer] Mensaje en ráfaga concatenado para +${clientNumber}. Temporizador reiniciado a 4000ms.`);
     } else {
       const bufferEntry = {
         remoteJid,
@@ -923,10 +1027,16 @@ async function processBufferedMessage(remoteJid) {
     chat,
     instance,
     requestApiKey,
+    provider = 'EVOLUTION',
+    metaPhoneNumberId,
+    metaAccessToken,
     clientNumber,
     data,
     reqIo
   } = buffer;
+
+  // Contexto de Gateway para enviar respuestas por el proveedor correcto
+  const gatewayCtx = { provider, instance, apiKey: requestApiKey, metaPhoneNumberId, metaAccessToken };
 
   console.log(`🤖 [Message Buffer] Procesando ráfaga acumulada para +${clientNumber} (${userMessageText.length} caracteres): "${userMessageText.replace(/\n/g, ' ')}"`);
   const finalCleanNumber = String(clientNumber || '').replace(/[^0-9]/g, '');
@@ -1042,16 +1152,12 @@ async function processBufferedMessage(remoteJid) {
 
     if (monthMsgCount >= tenantMsgLimit) {
       console.warn(`🛑 [Límite Excedido] Tenant '${tenant.name}' alcanzó su límite mensual (${monthMsgCount}/${tenantMsgLimit}). Se detiene la IA y se notifica al usuario.`);
-      const finalCleanNumber = clientNumber.replace(/[^0-9]/g, '');
       try {
-        await axios.post(
-          `${evoUrl}/message/sendText/${instance}`,
-          {
-            number: finalCleanNumber,
-            text: "Has alcanzado el límite mensual de mensajes de tu plan."
-          },
-          getEvoHeaders(requestApiKey)
-        );
+        await sendWhatsAppReply({
+          ...gatewayCtx,
+          to: finalCleanNumber,
+          text: 'Has alcanzado el límite mensual de mensajes de tu plan.'
+        });
       } catch (limitSendErr) {
         console.error(`❌ Error enviando mensaje de límite excedido:`, limitSendErr.message);
       }
@@ -1063,7 +1169,9 @@ async function processBufferedMessage(remoteJid) {
     const lines = products.map((p) => {
       const disponibilidad = p.isAvailable ? 'Disponible' : 'Agotado';
       const descripcion = p.description ? `. ${p.description}` : '';
-      const imagenUrl = p.imageUrl ? ` | Imagen: ${p.imageUrl}` : ' | Imagen: Sin imagen';
+      const imagenUrl = p.imageUrl ? ` | Portada: ${p.imageUrl}` : ' | Portada: Sin imagen';
+      const galleryUrls = (Array.isArray(p.images) && p.images.length > 0) ? ` | Fotos adicionales de galería (${p.images.length}): [${p.images.join(', ')}]` : '';
+      const videoDemoUrl = p.videoUrl ? ` | Video demostrativo: ${p.videoUrl}` : '';
 
       let tienePromoActiva = false;
       if (p.promotionalPrice !== null && p.promotionalPrice !== undefined) {
@@ -1088,7 +1196,7 @@ async function processBufferedMessage(remoteJid) {
         precioTexto = p.price ? `S/. ${p.price.toFixed(2)}` : 'precio no definido';
       }
 
-      return `- ${p.name}: ${precioTexto}, Estado: ${disponibilidad}${descripcion}${imagenUrl}`;
+      return `- ${p.name}: ${precioTexto}, Estado: ${disponibilidad}${descripcion}${imagenUrl}${galleryUrls}${videoDemoUrl}`;
     });
 
     const inventarioTexto = lines.length > 0
@@ -1186,14 +1294,16 @@ Si necesitas ejecutar una acción del sistema, usa ÚNICAMENTE las siguientes et
     if (isMultiMessageActive) {
       systemCommands += `- [SPLIT]: Úsalo entre ideas para separar tu texto en múltiples globos de chat cortos (Ej. '¡Hola! [SPLIT] ¿Qué buscas?').\n`;
     }
-    systemCommands += `- [SEND_IMAGE: nombre_exacto]: OBLIGATORIO incluir esta etiqueta por CADA producto diferente que ofrezcas (máx 4 imágenes por respuesta). NUNCA repitas una foto ya enviada en el chat.\n`;
+    systemCommands += `- [SEND_IMAGE: nombre_exacto]: Envía la imagen principal de portada del producto (máx 2 imágenes por respuesta). NUNCA repitas una foto ya enviada.\n`;
+    systemCommands += `- [SEND_GALLERY: nombre_exacto]: Envía las fotos adicionales del producto ÚNICAMENTE si el cliente te pide expresamente ver más fotos, ángulos o detalles.\n`;
+    systemCommands += `- [SEND_VIDEO: nombre_exacto]: Envía el video demostrativo del producto ÚNICAMENTE si el cliente te pide expresamente ver un video o demostración de cómo funciona.\n`;
     
     if (tenantDetails?.notifySalesWhatsApp === true) {
       systemCommands += `- [ORDER_CONFIRMED: Producto, Cantidad, Total]: Úsalo ÚNICAMENTE cuando el cliente afirme EXPLÍCITAMENTE que ya pagó (ej. 'ya te deposité'). Promesas futuras no cuentan.\n`;
     }
     
     systemCommands += `- [HUMAN_HANDOFF: Motivo]: Transfiere a un humano si el cliente insiste agresivamente o presenta quejas complejas, pero SOLO después de haber ofrecido tu ayuda primero.\n`;
-    systemCommands += `- [MEDIA: https://url.jpg]: Envía una imagen externa por URL directa (NO uses Markdown).\n`;
+    systemCommands += `- [MEDIA: https://url.jpg]: Envía una imagen o video externo por URL directa (NO uses Markdown).\n`;
     systemCommands += `- [SAVE_MEM: resumen]: Guarda datos clave del cliente a largo plazo (ej. preferencias, talla).\n`;
     systemCommands += `- [BAN_USER]: Usa ESTA etiqueta como tu ÚNICA respuesta si el cliente te envía groserías o contenido inapropiado.\n`;
 
@@ -1228,19 +1338,18 @@ ${inventarioTexto}
 
     const systemPrompt = finalPrompt;
 
-    console.log(`🧠 [Cerebro IA] Generando respuesta para +${clientNumber}...`);
+    console.log(`🧠 [Cerebro IA] Generando respuesta para +${clientNumber} [${provider}]...`);
 
-    try {
-      axios.post(
-        `${evoUrl}/chat/sendPresence/${instance}`,
-        {
-          number: remoteJid,
-          presence: "composing",
-          delay: 2000
-        },
-        getEvoHeaders()
-      ).catch(err => {});
-    } catch {}
+    // Indicador "escribiendo..." — solo soportado en Evolution
+    if (provider === 'EVOLUTION') {
+      try {
+        axios.post(
+          `${evoUrl}/chat/sendPresence/${instance}`,
+          { number: remoteJid, presence: 'composing', delay: 2000 },
+          getEvoHeaders()
+        ).catch(() => {});
+      } catch {}
+    }
 
     const aiResponse = await generateAIResponse(
       systemPrompt, 
@@ -1273,13 +1382,19 @@ ${inventarioTexto}
 
     const mediaRegex = /\[MEDIA:\s*(.+?)\]/g;
     const sendImageRegex = /\[SEND_IMAGE:\s*(.+?)\]/g;
-    const mediaUrls = [];
+    const sendGalleryRegex = /\[SEND_GALLERY:\s*(.+?)\]/g;
+    const sendVideoRegex = /\[SEND_VIDEO:\s*(.+?)\]/g;
+    const mediaItemsToSend = []; // Array de { url, mediaType: 'image' | 'video' }
 
     let match;
     while ((match = mediaRegex.exec(aiResponse)) !== null) {
       if (match[1]) {
         const urls = match[1].split(',').map(url => url.trim());
-        mediaUrls.push(...urls);
+        for (const u of urls) {
+          const lower = u.toLowerCase();
+          const isVid = lower.includes('.mp4') || lower.includes('.mov') || lower.includes('.webm') || lower.includes('.m4v') || lower.includes('/video/upload/');
+          mediaItemsToSend.push({ url: u, mediaType: isVid ? 'video' : 'image' });
+        }
       }
     }
 
@@ -1288,11 +1403,39 @@ ${inventarioTexto}
       if (imageMatch[1]) {
         const queryStr = imageMatch[1].trim();
         if (queryStr.startsWith('http')) {
-          mediaUrls.push(queryStr);
+          mediaItemsToSend.push({ url: queryStr, mediaType: 'image' });
         } else {
           const matchedProd = products.find(p => p.name.toLowerCase().includes(queryStr.toLowerCase()));
           if (matchedProd && matchedProd.imageUrl && matchedProd.imageUrl !== 'Sin imagen') {
-            mediaUrls.push(matchedProd.imageUrl);
+            mediaItemsToSend.push({ url: matchedProd.imageUrl, mediaType: 'image' });
+          }
+        }
+      }
+    }
+
+    let galleryMatch;
+    while ((galleryMatch = sendGalleryRegex.exec(aiResponse)) !== null) {
+      if (galleryMatch[1]) {
+        const queryStr = galleryMatch[1].trim();
+        const matchedProd = products.find(p => p.name.toLowerCase().includes(queryStr.toLowerCase()));
+        if (matchedProd && Array.isArray(matchedProd.images) && matchedProd.images.length > 0) {
+          for (const gUrl of matchedProd.images) {
+            mediaItemsToSend.push({ url: gUrl, mediaType: 'image' });
+          }
+        }
+      }
+    }
+
+    let videoMatch;
+    while ((videoMatch = sendVideoRegex.exec(aiResponse)) !== null) {
+      if (videoMatch[1]) {
+        const queryStr = videoMatch[1].trim();
+        if (queryStr.startsWith('http')) {
+          mediaItemsToSend.push({ url: queryStr, mediaType: 'video' });
+        } else {
+          const matchedProd = products.find(p => p.name.toLowerCase().includes(queryStr.toLowerCase()));
+          if (matchedProd && matchedProd.videoUrl) {
+            mediaItemsToSend.push({ url: matchedProd.videoUrl, mediaType: 'video' });
           }
         }
       }
@@ -1342,17 +1485,14 @@ ${inventarioTexto}
         for (const reason of handoffMatches) {
           const alertMessage = `🚨 *ALERTA DE ASESOR REQUERIDO* 🚨\nEl cliente *+${clientNumber}* requiere atención de un asesor humano.\n*Motivo / Último mensaje:* ${reason}\n¡Por favor, entra al chat y atiéndelo!`;
           try {
-            await axios.post(
-              `${evoUrl}/message/sendText/${instance}`,
-              {
-                number: destPhone,
-                text: alertMessage,
-              },
-              getEvoHeaders(requestApiKey)
-            );
-            console.log(`🚨 [Human Handoff] Alerta enviada a ${destPhone} para cliente +${clientNumber}`);
+            await gatewaySendText({
+              tenantId: tenant.id,
+              to: destPhone,
+              text: alertMessage
+            });
+            console.log(`🚨 [Human Handoff] Alerta enviada a +${destPhone} vía Gateway para cliente +${clientNumber}`);
           } catch (errHandoff) {
-            console.error(`❌ [Human Handoff] Error al enviar alerta a ${destPhone}:`, errHandoff.response?.data || errHandoff.message);
+            console.error(`❌ [Human Handoff] Error al enviar alerta a +${destPhone}:`, errHandoff.message);
           }
         }
       }
@@ -1384,17 +1524,14 @@ ${inventarioTexto}
           for (const summary of orderSummaries) {
             const notificationText = `🚨 *NUEVO PEDIDO CONFIRMADO por IA*\n\n📱 *Cliente:* +${clientNumber} (${customer.name || 'Sin Nombre'})\n📋 *Resumen:* ${summary}\n\n⚡ _Velion Agent Auto-Notification_`;
             try {
-              await axios.post(
-                `${evoUrl}/message/sendText/${instance}`,
-                {
-                  number: destPhone,
-                  text: notificationText,
-                },
-                getEvoHeaders(requestApiKey)
-              );
-              console.log(`📲 [Notificación de Venta] Enviada exitosamente a ${destPhone}`);
+              await gatewaySendText({
+                tenantId: tenant.id,
+                to: destPhone,
+                text: notificationText
+              });
+              console.log(`📲 [Notificación de Venta] Enviada exitosamente a +${destPhone} vía Gateway`);
             } catch (notifyErr) {
-              console.error(`❌ [Notificación de Venta] Error al enviar a ${destPhone}:`, notifyErr.response?.data || notifyErr.message);
+              console.error(`❌ [Notificación de Venta] Error al enviar a +${destPhone}:`, notifyErr.message);
             }
           }
         }
@@ -1420,6 +1557,8 @@ ${inventarioTexto}
     const cleanText = aiResponse
       .replace(mediaRegex, '')
       .replace(sendImageRegex, '')
+      .replace(sendGalleryRegex, '')
+      .replace(sendVideoRegex, '')
       .replace(saveMemRegex, '')
       .replace(orderRegex, '')
       .replace(handoffRegex, '')
@@ -1435,36 +1574,41 @@ ${inventarioTexto}
           .map(segment => segment.trim())
           .filter(segment => segment.length > 0);
 
-        console.log(`📤 [Evolution API] Modo Multi-Mensaje: enviando ${messageSegments.length} segmento(s) a ${finalCleanNumber}...`);
-
-        const evoSendUrl = `${evoUrl}/message/sendText/${instance}`;
+        console.log(`📤 [${provider} Gateway] Modo Multi-Mensaje: enviando ${messageSegments.length} segmento(s) a ${finalCleanNumber}...`);
 
         for (let i = 0; i < messageSegments.length; i++) {
           const msgSegment = messageSegments[i];
+          let msgId = null;
           try {
-            const sendRes = await axios.post(
-              evoSendUrl,
-              { number: finalCleanNumber, text: msgSegment, options: { delay: 0 } },
-              getEvoHeaders(requestApiKey)
-            );
-            const msgId = sendRes.data?.key?.id;
+            msgId = await sendWhatsAppReply({ ...gatewayCtx, to: finalCleanNumber, text: msgSegment });
             if (msgId) markMessageAsSentByAi(msgId);
             markMessageAsSentByAi(msgSegment);
-
-            console.log(`✅ [Evolution API] Segmento ${i + 1}/${messageSegments.length} enviado: "${msgSegment}"`);
+            console.log(`✅ [${provider} Gateway] Segmento ${i + 1}/${messageSegments.length} enviado (msgId: ${msgId}).`);
           } catch (sendErr) {
-            console.error(`❌ [Evolution API] Error al enviar segmento ${i + 1}:`, sendErr.response?.data || sendErr.message);
+            console.error(`❌ [${provider} Gateway] Error al enviar segmento ${i + 1}:`, sendErr.message);
           }
 
-          await prisma.message.create({
-            data: { content: msgSegment, senderRole: 'agent', chatId: chat.id, tenantId: tenant.id }
+          const savedMsg = await prisma.message.create({
+            data: {
+              content: msgSegment,
+              senderRole: 'agent',
+              status: 'sent',
+              externalId: msgId || null,
+              chatId: chat.id,
+              tenantId: tenant.id
+            }
           });
 
-          if (reqIo) {
-            reqIo.emit('new_whatsapp_message', {
-              chatId: chat.id, remoteJid, text: msgSegment, type: 'outgoing', timestamp: new Date()
-            });
-          }
+          if (reqIo) reqIo.emit('new_whatsapp_message', {
+            chatId: chat.id,
+            remoteJid,
+            text: msgSegment,
+            type: 'outgoing',
+            status: 'sent',
+            externalId: msgId || null,
+            messageId: savedMsg.id,
+            timestamp: new Date()
+          });
 
           // Pausa de 2.5 segundos entre segmentos para simular escritura humana
           if (i < messageSegments.length - 1) {
@@ -1472,64 +1616,60 @@ ${inventarioTexto}
           }
         }
       } else {
-        // Modo Conversación Humana DESACTIVADO: Limpiar etiquetas [SPLIT] y enviar 1 solo bloque
+        // Modo Conversación Humana DESACTIVADO: Enviar 1 solo bloque
         const singleMessage = cleanText
           .replace(/\[SPLIT\]/g, ' ')
           .replace(/\s{2,}/g, ' ')
           .trim();
 
-        console.log(`📤 [Evolution API] Modo Mensaje Único: enviando respuesta completa a ${finalCleanNumber}...`);
-
+        console.log(`📤 [${provider} Gateway] Modo Mensaje Único: enviando a ${finalCleanNumber}...`);
+        let msgId = null;
         try {
-          const sendRes = await axios.post(
-            `${evoUrl}/message/sendText/${instance}`,
-            { number: finalCleanNumber, text: singleMessage, options: { delay: 0 } },
-            getEvoHeaders(requestApiKey)
-          );
-          const msgId = sendRes.data?.key?.id;
+          msgId = await sendWhatsAppReply({ ...gatewayCtx, to: finalCleanNumber, text: singleMessage });
           if (msgId) markMessageAsSentByAi(msgId);
           markMessageAsSentByAi(singleMessage);
-
-          console.log(`✅ [Evolution API] Mensaje único enviado a ${finalCleanNumber}: "${singleMessage}"`);
+          console.log(`✅ [${provider} Gateway] Mensaje único enviado a ${finalCleanNumber} (msgId: ${msgId}).`);
         } catch (sendErr) {
-          console.error(`❌ [Evolution API] Error al enviar mensaje único:`, sendErr.response?.data || sendErr.message);
+          console.error(`❌ [${provider} Gateway] Error al enviar mensaje único:`, sendErr.message);
         }
 
-        await prisma.message.create({
-          data: { content: singleMessage, senderRole: 'agent', chatId: chat.id, tenantId: tenant.id }
+        const savedMsg = await prisma.message.create({
+          data: {
+            content: singleMessage,
+            senderRole: 'agent',
+            status: 'sent',
+            externalId: msgId || null,
+            chatId: chat.id,
+            tenantId: tenant.id
+          }
         });
 
-        if (reqIo) {
-          reqIo.emit('new_whatsapp_message', {
-            chatId: chat.id,
-            remoteJid,
-            text: singleMessage,
-            type: 'outgoing',
-            timestamp: new Date()
-          });
-        }
+        if (reqIo) reqIo.emit('new_whatsapp_message', {
+          chatId: chat.id,
+          remoteJid,
+          text: singleMessage,
+          type: 'outgoing',
+          status: 'sent',
+          externalId: msgId || null,
+          messageId: savedMsg.id,
+          timestamp: new Date()
+        });
       }
     }
 
-    for (const url of mediaUrls) {
+    for (const mediaItem of mediaItemsToSend) {
+      const { url, mediaType } = mediaItem;
       if (url && url !== 'Sin imagen') {
         try {
-          await axios.post(
-            `${evoUrl}/message/sendMedia/${instance}`,
-            {
-              number: finalCleanNumber,
-              mediatype: "image",
-              media: url,
-              caption: "Imagen de producto"
-            },
-            getEvoHeaders(requestApiKey)
-          );
-          console.log(`✅ [Evolution API] Multimedia enviado a ${finalCleanNumber}`);
+          const mediaMsgId = await sendWhatsAppMedia({ ...gatewayCtx, to: finalCleanNumber, url, mediaType });
+          console.log(`✅ [${provider} Gateway] Multimedia (${mediaType}) enviado a ${finalCleanNumber} (msgId: ${mediaMsgId})`);
 
-          await prisma.message.create({
+          const savedMediaMsg = await prisma.message.create({
             data: {
-              content: `[Imagen]: ${url}`,
+              content: `[${mediaType === 'video' ? 'Video' : 'Imagen'}]: ${url}`,
               senderRole: 'agent',
+              status: 'sent',
+              externalId: mediaMsgId || null,
               chatId: chat.id,
               tenantId: tenant.id
             }
@@ -1541,15 +1681,19 @@ ${inventarioTexto}
               remoteJid,
               text: url,
               type: 'outgoing',
-              mediaType: 'image',
+              mediaType: mediaType || 'image',
+              status: 'sent',
+              externalId: mediaMsgId || null,
+              messageId: savedMediaMsg.id,
               timestamp: new Date()
             });
           }
         } catch (mediaSendError) {
-          console.error('❌ [Evolution API] Error al enviar archivo multimedia:', mediaSendError.response?.data || mediaSendError.message);
+          console.error(`❌ [${provider} Gateway] Error al enviar multimedia:`, mediaSendError.message);
         }
       }
     }
+
   } catch (error) {
     console.error('❌ Error en el procesamiento del buffer de mensajes:', error.message);
   } finally {

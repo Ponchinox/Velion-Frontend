@@ -12,6 +12,11 @@ import {
   PencilSimple,
   CaretLeft,
   CaretRight,
+  Package,
+  Images,
+  VideoCamera,
+  FilmStrip,
+  PlayCircle,
 } from '@phosphor-icons/react';
 import * as XLSX from 'xlsx';
 
@@ -19,6 +24,102 @@ const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:3000';
 import { useUnsavedChanges } from '../context/UnsavedChangesContext';
 import ConfirmModal from '../components/ui/ConfirmModal';
 import Modal from '../components/ui/Modal';
+
+/* ─── Utilidad: Compresión ligera de imágenes en el cliente (Canvas) ─── */
+async function compressImageFile(file, maxWidth = 1200, maxHeight = 1200, quality = 0.8) {
+  if (!file || !file.type.startsWith('image/') || file.size < 80 * 1024) {
+    return file;
+  }
+
+  return new Promise((resolve) => {
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      const img = new Image();
+      img.onload = () => {
+        let width = img.width;
+        let height = img.height;
+
+        if (width > maxWidth || height > maxHeight) {
+          if (width > height) {
+            height = Math.round((height * maxWidth) / width);
+            width = maxWidth;
+          } else {
+            width = Math.round((width * maxHeight) / height);
+            height = maxHeight;
+          }
+        }
+
+        const canvas = document.createElement('canvas');
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext('2d');
+        ctx.drawImage(img, 0, 0, width, height);
+
+        canvas.toBlob(
+          (blob) => {
+            if (blob && blob.size < file.size) {
+              const compressedFile = new File([blob], file.name.replace(/\.[^/.]+$/, '.jpg'), {
+                type: 'image/jpeg',
+                lastModified: Date.now(),
+              });
+              resolve(compressedFile);
+            } else {
+              resolve(file);
+            }
+          },
+          'image/jpeg',
+          quality
+        );
+      };
+      img.onerror = () => resolve(file);
+      img.src = event.target.result;
+    };
+    reader.onerror = () => resolve(file);
+    reader.readAsDataURL(file);
+  });
+}
+
+/* ─── Utilidad: Validación de video en el cliente (15MB y 45s) ─── */
+async function validateVideoFile(file) {
+  const MAX_SIZE_MB = 15;
+  if (file.size > MAX_SIZE_MB * 1024 * 1024) {
+    return {
+      valid: false,
+      error: `El video pesa ${(file.size / (1024 * 1024)).toFixed(1)} MB. El tamaño máximo permitido es de ${MAX_SIZE_MB} MB.`,
+    };
+  }
+
+  const MAX_DURATION_SEC = 45;
+  return new Promise((resolve) => {
+    const video = document.createElement('video');
+    video.preload = 'metadata';
+    const objectUrl = URL.createObjectURL(file);
+
+    video.onloadedmetadata = () => {
+      URL.revokeObjectURL(objectUrl);
+      const duration = video.duration;
+      if (duration > MAX_DURATION_SEC) {
+        resolve({
+          valid: false,
+          error: `El video dura ${Math.round(duration)} segundos. La duración máxima permitida es de ${MAX_DURATION_SEC} segundos.`,
+        });
+      } else {
+        resolve({
+          valid: true,
+          duration: Math.round(duration),
+          sizeMb: (file.size / (1024 * 1024)).toFixed(1),
+        });
+      }
+    };
+
+    video.onerror = () => {
+      URL.revokeObjectURL(objectUrl);
+      resolve({ valid: true, duration: null, sizeMb: (file.size / (1024 * 1024)).toFixed(1) });
+    };
+
+    video.src = objectUrl;
+  });
+}
 
 /* ─── Skeleton de Carga (Data Table Compacta) ─── */
 function ProductSkeleton() {
@@ -29,7 +130,7 @@ function ProductSkeleton() {
         <div className="h-4 bg-line rounded w-48" />
       </div>
       <div className="divide-y divide-line">
-        {[1, 2, 3, 4, 5].map(n => (
+        {[1, 2, 3, 4, 5].map((n) => (
           <div key={n} className="flex items-center gap-6 px-6 py-4">
             <div className="w-10 h-10 bg-line rounded-md" />
             <div className="h-4 bg-line rounded w-1/4" />
@@ -68,8 +169,23 @@ export default function Products() {
   const [description, setDescription] = useState('');
   const [price, setPrice] = useState('');
   const [isAvailable, setIsAvailable] = useState(true);
-  const [imageFile, setImageFile] = useState(null);
-  const [imagePreview, setImagePreview] = useState(null);
+
+  // Multimedia: Imagen Principal / Portada
+  const [mainImageFile, setMainImageFile] = useState(null);
+  const [mainImagePreview, setMainImagePreview] = useState(null);
+  const [removeMainImage, setRemoveMainImage] = useState(false);
+
+  // Multimedia: Galería Secundaria (hasta 3 fotos adicionales)
+  const [galleryItems, setGalleryItems] = useState([]); // [{ id, file?, previewUrl, isExisting }]
+  const [isCompressingImages, setIsCompressingImages] = useState(false);
+
+  // Multimedia: Video Demostrativo (hasta 15MB, 45s)
+  const [videoFile, setVideoFile] = useState(null);
+  const [videoPreview, setVideoPreview] = useState(null);
+  const [removeVideo, setRemoveVideo] = useState(false);
+  const [videoMeta, setVideoMeta] = useState(null);
+  const [isValidatingVideo, setIsValidatingVideo] = useState(false);
+
   const [saving, setSaving] = useState(false);
 
   // Estados de Promociones Temporales
@@ -83,7 +199,7 @@ export default function Products() {
 
   const showToast = (msg, type = 'success') => {
     setToast({ msg, type });
-    setTimeout(() => setToast(null), 3000);
+    setTimeout(() => setToast(null), 3500);
   };
 
   // Cargar productos desde el backend
@@ -91,12 +207,12 @@ export default function Products() {
     setIsLoading(true);
     setErrorMsg('');
     const token = localStorage.getItem('sa_token');
-    
+
     try {
       const response = await fetch(`${API_BASE_URL}/api/products`, {
         method: 'GET',
         headers: {
-          'Authorization': `Bearer ${token}`,
+          Authorization: `Bearer ${token}`,
         },
       });
 
@@ -119,32 +235,124 @@ export default function Products() {
     loadProducts();
   }, []);
 
-  // Manejar el cambio de texto de búsqueda y reiniciar página
   const handleSearchChange = (e) => {
     setSearchQuery(e.target.value);
     setCurrentPage(1);
   };
 
-  // Filtrar productos en tiempo real por el nombre
   const filteredProducts = products.filter((prod) =>
     prod.name.toLowerCase().includes(searchQuery.toLowerCase())
   );
 
-  // Paginación lógica en memoria
   const totalItems = filteredProducts.length;
   const totalPages = Math.ceil(totalItems / itemsPerPage);
   const indexOfLastItem = currentPage * itemsPerPage;
   const indexOfFirstItem = indexOfLastItem - itemsPerPage;
   const currentItems = filteredProducts.slice(indexOfFirstItem, indexOfLastItem);
 
-  // Manejar el cambio de imagen
-  const handleImageChange = (e) => {
-    const file = e.target.files[0];
-    if (file) {
-      setImageFile(file);
-      setImagePreview(URL.createObjectURL(file));
+  // Manejar cambio de Imagen Principal (con compresión ligera en cliente)
+  const handleMainImageChange = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    try {
+      setIsCompressingImages(true);
+      const compressed = await compressImageFile(file);
+      setMainImageFile(compressed);
+      setMainImagePreview(URL.createObjectURL(compressed));
+      setRemoveMainImage(false);
       setIsFormDirty(true);
+    } catch (err) {
+      console.error('Error al optimizar imagen:', err);
+      setMainImageFile(file);
+      setMainImagePreview(URL.createObjectURL(file));
+      setRemoveMainImage(false);
+      setIsFormDirty(true);
+    } finally {
+      setIsCompressingImages(false);
     }
+  };
+
+  // Manejar adición de fotos a la galería secundaria
+  const handleAddGalleryImages = async (e) => {
+    const files = Array.from(e.target.files || []);
+    if (files.length === 0) return;
+
+    const availableSlots = 3 - galleryItems.length;
+    if (availableSlots <= 0) {
+      showToast('Máximo 3 fotos adicionales permitidas en la galería.', 'error');
+      return;
+    }
+
+    const filesToAdd = files.slice(0, availableSlots);
+    setIsCompressingImages(true);
+
+    try {
+      const newItems = await Promise.all(
+        filesToAdd.map(async (file) => {
+          const compressed = await compressImageFile(file);
+          return {
+            id: `new_${Date.now()}_${Math.random()}`,
+            file: compressed,
+            previewUrl: URL.createObjectURL(compressed),
+            isExisting: false,
+          };
+        })
+      );
+
+      setGalleryItems((prev) => [...prev, ...newItems]);
+      setIsFormDirty(true);
+      if (files.length > availableSlots) {
+        showToast(`Se añadieron ${availableSlots} foto(s). Límite de 3 alcanzado.`, 'info');
+      }
+    } catch (err) {
+      console.error('Error al comprimir imágenes:', err);
+      showToast('Error al procesar imágenes de galería.', 'error');
+    } finally {
+      setIsCompressingImages(false);
+    }
+  };
+
+  // Remover foto individual de la galería
+  const handleRemoveGalleryItem = (index) => {
+    setGalleryItems((prev) => prev.filter((_, i) => i !== index));
+    setIsFormDirty(true);
+  };
+
+  // Manejar selección de Video Demostrativo
+  const handleVideoChange = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    setIsValidatingVideo(true);
+    try {
+      const validation = await validateVideoFile(file);
+      if (!validation.valid) {
+        showToast(validation.error, 'error');
+        e.target.value = '';
+        return;
+      }
+
+      setVideoFile(file);
+      setVideoPreview(URL.createObjectURL(file));
+      setRemoveVideo(false);
+      setVideoMeta({ duration: validation.duration, sizeMb: validation.sizeMb });
+      setIsFormDirty(true);
+      showToast(`Video validado: ${validation.sizeMb} MB${validation.duration ? ` (${validation.duration}s)` : ''}`);
+    } catch (err) {
+      console.error('Error validando video:', err);
+      showToast('No se pudo validar el video seleccionado.', 'error');
+    } finally {
+      setIsValidatingVideo(false);
+    }
+  };
+
+  const handleRemoveVideo = () => {
+    setVideoFile(null);
+    setVideoPreview(null);
+    setRemoveVideo(true);
+    setVideoMeta(null);
+    setIsFormDirty(true);
   };
 
   // Limpiar estados y cerrar modal de producto
@@ -155,8 +363,14 @@ export default function Products() {
     setDescription('');
     setPrice('');
     setIsAvailable(true);
-    setImageFile(null);
-    setImagePreview(null);
+    setMainImageFile(null);
+    setMainImagePreview(null);
+    setRemoveMainImage(false);
+    setGalleryItems([]);
+    setVideoFile(null);
+    setVideoPreview(null);
+    setRemoveVideo(false);
+    setVideoMeta(null);
     setHasPromo(false);
     setPromotionalPrice('');
     setPromoStartDate('');
@@ -176,10 +390,31 @@ export default function Products() {
     formData.append('description', description);
     formData.append('price', price);
     formData.append('isAvailable', isAvailable);
-    if (imageFile) {
-      formData.append('image', imageFile);
+
+    // 1. Imagen Principal
+    if (mainImageFile) {
+      formData.append('image', mainImageFile);
+    } else if (removeMainImage) {
+      formData.append('removeImage', 'true');
     }
-    
+
+    // 2. Galería de Imágenes
+    const existingImages = galleryItems.filter((item) => item.isExisting).map((item) => item.previewUrl);
+    formData.append('existingImages', JSON.stringify(existingImages));
+
+    galleryItems.forEach((item) => {
+      if (!item.isExisting && item.file) {
+        formData.append('images', item.file);
+      }
+    });
+
+    // 3. Video Demostrativo
+    if (videoFile) {
+      formData.append('video', videoFile);
+    } else if (removeVideo) {
+      formData.append('removeVideo', 'true');
+    }
+
     // Inyectar campos de promoción
     formData.append('promotionalPrice', hasPromo ? promotionalPrice : '');
     formData.append('promoStartDate', hasPromo ? promoStartDate : '');
@@ -194,70 +429,26 @@ export default function Products() {
       const response = await fetch(url, {
         method,
         headers: {
-          'Authorization': `Bearer ${token}`,
+          Authorization: `Bearer ${token}`,
         },
         body: formData,
       });
 
       if (!response.ok) {
-        throw new Error(editingProduct ? 'Error al actualizar el producto.' : 'Error al registrar el producto.');
+        const errData = await response.json().catch(() => ({}));
+        throw new Error(errData.error || (editingProduct ? 'Error al actualizar el producto.' : 'Error al registrar el producto.'));
       }
 
       showToast(editingProduct ? 'Producto actualizado con éxito' : 'Producto añadido al inventario');
-      setShowModal(false);
-      
-      // Limpiar formulario y estado de edición
-      setEditingProduct(null);
-      setName('');
-      setDescription('');
-      setPrice('');
-      setIsAvailable(true);
-      setImageFile(null);
-      setImagePreview(null);
-      setHasPromo(false);
-      setPromotionalPrice('');
-      setPromoStartDate('');
-      setPromoEndDate('');
-      setIsFormDirty(false);
-
-      // Recargar catálogo
+      closeModal();
       loadProducts();
     } catch (error) {
-      showToast(error.message || 'Error de conexión', 'error');
+      showToast(error.message || 'Error al completar la operación.', 'error');
     } finally {
       setSaving(false);
     }
   };
 
-  const formatDate = (dateStr) => {
-    if (!dateStr) return '';
-    const d = new Date(dateStr);
-    const year = d.getFullYear();
-    const month = String(d.getMonth() + 1).padStart(2, '0');
-    const day = String(d.getDate()).padStart(2, '0');
-    return `${year}-${month}-${day}`;
-  };
-
-  // Carga los datos del producto actual en el formulario para editar
-  const handleEdit = (prod) => {
-    setEditingProduct(prod);
-    setName(prod.name);
-    setDescription(prod.description || '');
-    setPrice(prod.price);
-    setIsAvailable(prod.isAvailable);
-    setImageFile(null);
-    setImagePreview(prod.imageUrl || null);
-
-    const isPromoActive = prod.promotionalPrice !== null && prod.promotionalPrice !== undefined;
-    setHasPromo(isPromoActive);
-    setPromotionalPrice(isPromoActive ? prod.promotionalPrice : '');
-    setPromoStartDate(isPromoActive && prod.promoStartDate ? formatDate(prod.promoStartDate) : '');
-    setPromoEndDate(isPromoActive && prod.promoEndDate ? formatDate(prod.promoEndDate) : '');
-
-    setShowModal(true);
-  };
-
-  // Elimina un producto tras confirmar la acción en el modal global
   const handleConfirmDeleteProduct = async () => {
     if (!productToDelete) return;
 
@@ -267,7 +458,7 @@ export default function Products() {
       const response = await fetch(`${API_BASE_URL}/api/products/${productToDelete.id}`, {
         method: 'DELETE',
         headers: {
-          'Authorization': `Bearer ${token}`,
+          Authorization: `Bearer ${token}`,
         },
       });
 
@@ -288,7 +479,7 @@ export default function Products() {
 
   // Procesar archivo Excel/CSV para importación masiva
   const handleFileUpload = (e) => {
-    const file = e.target.files[0];
+    const file = e.target.files?.[0];
     if (!file) return;
 
     setIsLoading(true);
@@ -305,17 +496,22 @@ export default function Products() {
           throw new Error('El archivo Excel está vacío.');
         }
 
-        // Mapear campos buscando coincidencia semántica
-        const mappedProducts = rawData.map(row => {
+        const mappedProducts = rawData.map((row) => {
           const findKey = (keys) => {
-            const found = Object.keys(row).find(k => keys.includes(k.toLowerCase().trim()));
+            const found = Object.keys(row).find((k) => keys.includes(k.toLowerCase().trim()));
             return found ? row[found] : undefined;
           };
 
           const availableRaw = findKey(['disponible', 'available', 'isavailable', 'disponibilidad', 'activo', 'active']);
-          const isAvailableVal = availableRaw !== undefined 
-            ? (availableRaw === true || availableRaw === 'true' || availableRaw === 1 || availableRaw === '1' || String(availableRaw).toLowerCase() === 'si' || String(availableRaw).toLowerCase() === 'yes') 
-            : true;
+          const isAvailableVal =
+            availableRaw !== undefined
+              ? availableRaw === true ||
+                availableRaw === 'true' ||
+                availableRaw === 1 ||
+                availableRaw === '1' ||
+                String(availableRaw).toLowerCase() === 'si' ||
+                String(availableRaw).toLowerCase() === 'yes'
+              : true;
 
           return {
             name: findKey(['nombre', 'name', 'producto', 'product']) || 'Producto sin nombre',
@@ -331,7 +527,7 @@ export default function Products() {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
-            'Authorization': `Bearer ${token}`,
+            Authorization: `Bearer ${token}`,
           },
           body: JSON.stringify({ products: mappedProducts }),
         });
@@ -348,38 +544,24 @@ export default function Products() {
         showToast(err.message || 'Error al procesar archivo Excel.', 'error');
         setIsLoading(false);
       } finally {
-        e.target.value = ''; // Limpiar el input file
+        if (fileInputRef.current) fileInputRef.current.value = '';
       }
     };
     reader.readAsArrayBuffer(file);
   };
 
   return (
-    <section aria-labelledby="inventario-heading" className="space-y-6">
-      {/* Header */}
-      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 border-b border-line pb-6 mb-6">
+    <section className="space-y-6">
+      {/* Cabecera */}
+      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 border-b border-line pb-6">
         <div>
-          <h1 id="inventario-heading" className="text-2xl font-extrabold text-hi tracking-tight">
-            Catálogo de Productos
-          </h1>
+          <h1 className="text-2xl font-extrabold text-hi tracking-tight">Catálogo de Productos</h1>
           <p className="text-sm text-lo mt-1">
-            Administra tus artículos de inventario, stock físico y precios en el SaaS.
+            Gestiona tu inventario con fotos de portada, galería múltiple y videos demostrativos que la IA usará para responder a tus clientes.
           </p>
         </div>
 
-        <div className="flex items-center gap-3 self-start sm:self-auto flex-shrink-0">
-          {/* Botón Excel */}
-          <button
-            onClick={() => fileInputRef.current?.click()}
-            className="
-              flex items-center gap-2 px-4 py-2.5 rounded-xl
-              border border-line text-mid hover:text-hi hover:bg-app text-sm font-semibold
-              transition-all duration-fast cursor-pointer shadow-sm
-            "
-          >
-            <UploadSimple size={18} />
-            <span>Importar Excel</span>
-          </button>
+        <div className="flex items-center gap-3">
           <input
             type="file"
             ref={fileInputRef}
@@ -387,67 +569,59 @@ export default function Products() {
             accept=".xlsx, .xls, .csv"
             className="hidden"
           />
-
-          {/* Botón Crear */}
           <button
-            onClick={() => setShowModal(true)}
-            className="
-              inline-flex items-center justify-center gap-2
-              px-5 py-2.5 rounded-xl
-              bg-brand text-white font-bold text-sm
-              hover:bg-brand-hover active:scale-[0.98]
-              transition-all duration-fast shadow-md cursor-pointer
-            "
+            type="button"
+            onClick={() => fileInputRef.current?.click()}
+            className="inline-flex items-center gap-2 px-4 py-2 text-xs font-semibold border border-line bg-card hover:bg-app text-mid hover:text-hi rounded-lg shadow-sm transition-colors cursor-pointer"
           >
-            <Plus size={18} weight="bold" />
+            <UploadSimple size={16} />
+            <span>Importar Excel</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => {
+              closeModal();
+              setShowModal(true);
+            }}
+            className="inline-flex items-center gap-2 px-4 py-2 text-xs font-bold bg-brand text-white hover:bg-brand-hover rounded-lg shadow transition-colors cursor-pointer"
+          >
+            <Plus size={16} weight="bold" />
             <span>Añadir Producto</span>
           </button>
         </div>
       </div>
 
-      {/* Filtros de Catálogo */}
-      {!isLoading && !errorMsg && products.length > 0 && (
-        <div className="flex items-center w-full max-w-md relative">
-          <MagnifyingGlass className="absolute left-3.5 text-muted" size={18} />
+      {/* Barra de Filtros y Búsqueda */}
+      <div className="flex items-center justify-between gap-4 bg-card p-4 rounded-xl border border-line shadow-card">
+        <div className="relative flex-1 max-w-sm">
+          <MagnifyingGlass size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted" />
           <input
             type="text"
             value={searchQuery}
             onChange={handleSearchChange}
-            placeholder="Buscar productos por nombre..."
-            className="w-full pl-10 pr-4 py-2.5 text-sm bg-card border border-line rounded-lg focus:outline-none focus:border-brand text-hi placeholder:text-muted"
+            placeholder="Buscar por nombre de producto..."
+            className="w-full pl-9 pr-4 py-2 text-xs bg-app border border-line rounded-lg text-hi placeholder:text-muted focus:outline-none focus:border-brand"
           />
         </div>
-      )}
 
-      {/* Grid de Productos / Loader / Failsafe */}
+        <button
+          onClick={loadProducts}
+          className="p-2 text-muted hover:text-hi hover:bg-app border border-line rounded-lg transition-colors cursor-pointer"
+          title="Actualizar catálogo"
+        >
+          <ArrowsClockwise size={16} />
+        </button>
+      </div>
+
+      {/* Tabla de Productos o Estado Vacío */}
       {isLoading ? (
         <ProductSkeleton />
-      ) : errorMsg ? (
-        <div className="bg-card border border-line rounded-lg shadow-card p-10 text-center space-y-4 max-w-lg mx-auto">
-          <WarningCircle size={40} className="mx-auto text-danger" aria-hidden="true" />
-          <div>
-            <p className="text-sm font-semibold text-hi">{errorMsg}</p>
-            <p className="text-xs text-lo mt-1">El servidor de base de datos no está respondiendo en este momento.</p>
-          </div>
-          <button
-            onClick={loadProducts}
-            className="inline-flex items-center gap-2 px-4 py-2 text-xs font-semibold bg-brand text-white hover:bg-brand-hover rounded-md shadow transition-colors cursor-pointer"
-          >
-            <ArrowsClockwise size={14} />
-            Reintentar Carga
-          </button>
-        </div>
-      ) : products.length === 0 ? (
-        <div className="bg-card border border-line rounded-lg shadow-card p-12 text-center text-lo max-w-md mx-auto">
-          <Package size={36} className="mx-auto text-muted mb-3" aria-hidden="true" />
-          <p className="text-sm font-medium text-hi">Tu catálogo está vacío</p>
-          <p className="text-xs mt-1">Registra tu primer artículo de inventario pulsando el botón superior.</p>
-        </div>
-      ) : totalItems === 0 ? (
-        <div className="bg-card border border-line rounded-lg shadow-card p-12 text-center text-lo max-w-md mx-auto">
-          <MagnifyingGlass size={36} className="mx-auto text-muted mb-3" aria-hidden="true" />
-          <p className="text-sm font-medium text-hi">Sin resultados coincidentes</p>
-          <p className="text-xs mt-1">Intenta con otros términos o limpia tu criterio de búsqueda.</p>
+      ) : filteredProducts.length === 0 ? (
+        <div className="bg-card border border-line rounded-xl p-12 text-center text-lo shadow-card">
+          <Package size={40} className="mx-auto text-muted mb-3" />
+          <p className="text-sm font-semibold text-hi">No se encontraron productos</p>
+          <p className="text-xs mt-1">Intenta con otros términos o añade un nuevo artículo a tu inventario.</p>
         </div>
       ) : (
         <div className="bg-card border border-line rounded-xl shadow-card overflow-hidden">
@@ -455,7 +629,7 @@ export default function Products() {
             <table className="w-full border-collapse text-left text-sm text-mid">
               <thead className="bg-app text-xs font-bold text-hi uppercase tracking-wider border-b border-line">
                 <tr>
-                  <th scope="col" className="px-6 py-4 w-16">Imagen</th>
+                  <th scope="col" className="px-6 py-4 w-28">Multimedia</th>
                   <th scope="col" className="px-6 py-4">Nombre</th>
                   <th scope="col" className="px-6 py-4">Descripción</th>
                   <th scope="col" className="px-6 py-4">Precio</th>
@@ -464,103 +638,127 @@ export default function Products() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-line bg-card">
-                {currentItems.map((prod) => (
-                  <tr key={prod.id} className="hover:bg-app/35 transition-colors duration-fast">
-                    {/* Columna Imagen */}
-                    <td className="px-6 py-3">
-                      <div className="w-10 h-10 rounded-md border border-line bg-app overflow-hidden flex items-center justify-center flex-shrink-0">
-                        {prod.imageUrl ? (
-                          <img
-                            src={prod.imageUrl}
-                            alt={prod.name}
-                            className="w-full h-full object-cover"
-                            loading="lazy"
-                          />
-                        ) : (
-                          <Package size={18} className="text-muted" />
-                        )}
-                      </div>
-                    </td>
+                {currentItems.map((prod) => {
+                  const galleryCount = Array.isArray(prod.images) ? prod.images.length : 0;
+                  const hasVideo = !!prod.videoUrl;
 
-                    {/* Columna Nombre */}
-                    <td className="px-6 py-3 font-semibold text-hi">
-                      <span className="block truncate max-w-[200px]">{prod.name}</span>
-                    </td>
-
-                    {/* Columna Descripción */}
-                    <td className="px-6 py-3">
-                      <span className="block truncate max-w-xs text-lo">{prod.description || 'Sin descripción'}</span>
-                    </td>
-
-                    {/* Columna Precio */}
-                    <td className="px-6 py-3 font-mono">
-                      {(() => {
-                        const hasPromoPrice = prod.promotionalPrice !== null && prod.promotionalPrice !== undefined;
-                        let isPromoActive = false;
-                        if (hasPromoPrice) {
-                          const hoy = new Date();
-                          hoy.setHours(0, 0, 0, 0);
-                          const start = prod.promoStartDate ? new Date(prod.promoStartDate) : null;
-                          const end = prod.promoEndDate ? new Date(prod.promoEndDate) : null;
-                          if (start) start.setHours(0, 0, 0, 0);
-                          if (end) end.setHours(0, 0, 0, 0);
-                          const despuesDeInicio = !start || hoy >= start;
-                          const antesDeFin = !end || hoy <= end;
-                          isPromoActive = despuesDeInicio && antesDeFin;
-                        }
-
-                        return isPromoActive ? (
-                          <div className="flex flex-col">
-                            <span className="text-3xs text-gray-400 line-through">S/. {prod.price.toFixed(2)}</span>
-                            <div className="flex items-center gap-1.5 mt-0.5">
-                              <span className="text-sm font-bold text-green-600">S/. {prod.promotionalPrice.toFixed(2)}</span>
-                              <span className="px-1.5 py-0.5 rounded text-[8px] font-bold bg-green-50 text-green-700 border border-green-200">
-                                PROMO
+                  return (
+                    <tr key={prod.id} className="hover:bg-app/35 transition-colors duration-fast">
+                      {/* Columna Multimedia */}
+                      <td className="px-6 py-3">
+                        <div className="flex items-center gap-2">
+                          <div className="relative w-11 h-11 rounded-lg border border-line bg-app overflow-hidden flex items-center justify-center flex-shrink-0">
+                            {prod.imageUrl ? (
+                              <img
+                                src={prod.imageUrl}
+                                alt={prod.name}
+                                className="w-full h-full object-cover"
+                                loading="lazy"
+                              />
+                            ) : (
+                              <Package size={20} className="text-muted" />
+                            )}
+                            {galleryCount > 0 && (
+                              <span className="absolute bottom-0 right-0 bg-hi/80 text-card text-[9px] font-bold px-1 rounded-tl-md">
+                                +{galleryCount}
                               </span>
+                            )}
+                          </div>
+
+                          {/* Indicador de Video */}
+                          {hasVideo && (
+                            <span
+                              title="Cuenta con video demostrativo"
+                              className="inline-flex items-center justify-center w-7 h-7 rounded-lg bg-blue-500/15 text-blue-600 dark:text-blue-400 border border-blue-500/20"
+                            >
+                              <VideoCamera size={14} weight="fill" />
+                            </span>
+                          )}
+                        </div>
+                      </td>
+
+                      {/* Columna Nombre */}
+                      <td className="px-6 py-3 font-semibold text-hi">
+                        <span className="block truncate max-w-[200px]">{prod.name}</span>
+                      </td>
+
+                      {/* Columna Descripción */}
+                      <td className="px-6 py-3">
+                        <span className="block truncate max-w-xs text-lo">{prod.description || 'Sin descripción'}</span>
+                      </td>
+
+                      {/* Columna Precio */}
+                      <td className="px-6 py-3 font-mono">
+                        {(() => {
+                          const hasPromoPrice = prod.promotionalPrice !== null && prod.promotionalPrice !== undefined;
+                          let isPromoActive = false;
+                          if (hasPromoPrice) {
+                            const hoy = new Date();
+                            hoy.setHours(0, 0, 0, 0);
+                            const start = prod.promoStartDate ? new Date(prod.promoStartDate) : null;
+                            const end = prod.promoEndDate ? new Date(prod.promoEndDate) : null;
+                            if (start) start.setHours(0, 0, 0, 0);
+                            if (end) end.setHours(0, 0, 0, 0);
+                            const despuesDeInicio = !start || hoy >= start;
+                            const antesDeFin = !end || hoy <= end;
+                            isPromoActive = despuesDeInicio && antesDeFin;
+                          }
+
+                          return isPromoActive ? (
+                            <div className="flex flex-col">
+                              <span className="text-3xs text-gray-400 line-through">S/. {prod.price.toFixed(2)}</span>
+                              <div className="flex items-center gap-1.5 mt-0.5">
+                                <span className="text-sm font-bold text-green-600">
+                                  S/. {prod.promotionalPrice.toFixed(2)}
+                                </span>
+                                <span className="px-1.5 py-0.5 rounded text-[8px] font-bold bg-green-50 text-green-700 border border-green-200">
+                                  PROMO
+                                </span>
+                              </div>
                             </div>
+                          ) : (
+                            <span className="text-sm font-bold text-brand">S/. {prod.price.toFixed(2)}</span>
+                          );
+                        })()}
+                      </td>
+
+                      {/* Columna Disponibilidad */}
+                      <td className="px-6 py-3">
+                        {prod.isAvailable ? (
+                          <div className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-emerald-50 text-emerald-700 text-2xs font-bold border border-emerald-200">
+                            <span className="w-1.5 h-1.5 rounded-full bg-emerald-600" />
+                            Disponible
                           </div>
                         ) : (
-                          <span className="text-sm font-bold text-brand">S/. {prod.price.toFixed(2)}</span>
-                        );
-                      })()}
-                    </td>
+                          <div className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-red-50 text-danger text-2xs font-bold border border-red-200">
+                            <span className="w-1.5 h-1.5 rounded-full bg-danger" />
+                            Agotado
+                          </div>
+                        )}
+                      </td>
 
-                    {/* Columna Disponibilidad */}
-                    <td className="px-6 py-3">
-                      {prod.isAvailable ? (
-                        <div className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-emerald-50 text-emerald-700 text-2xs font-bold border border-emerald-200">
-                          <span className="w-1.5 h-1.5 rounded-full bg-emerald-600" />
-                          Disponible
+                      {/* Columna Acciones */}
+                      <td className="px-6 py-3 text-right">
+                        <div className="inline-flex gap-1">
+                          <button
+                            onClick={() => handleEdit(prod)}
+                            className="p-1.5 rounded text-muted hover:text-hi hover:bg-app transition-colors"
+                            title="Editar"
+                          >
+                            <PencilSimple size={16} />
+                          </button>
+                          <button
+                            onClick={() => setProductToDelete(prod)}
+                            className="p-1.5 rounded text-muted hover:text-danger hover:bg-red-50 transition-colors cursor-pointer"
+                            title="Eliminar"
+                          >
+                            <Trash size={16} />
+                          </button>
                         </div>
-                      ) : (
-                        <div className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-red-50 text-danger text-2xs font-bold border border-red-200">
-                          <span className="w-1.5 h-1.5 rounded-full bg-danger" />
-                          Agotado
-                        </div>
-                      )}
-                    </td>
-
-                    {/* Columna Acciones */}
-                    <td className="px-6 py-3 text-right">
-                      <div className="inline-flex gap-1">
-                        <button
-                          onClick={() => handleEdit(prod)}
-                          className="p-1.5 rounded text-muted hover:text-hi hover:bg-app transition-colors"
-                          title="Editar"
-                        >
-                          <PencilSimple size={16} />
-                        </button>
-                        <button
-                          onClick={() => setProductToDelete(prod)}
-                          className="p-1.5 rounded text-muted hover:text-danger hover:bg-red-50 transition-colors cursor-pointer"
-                          title="Eliminar"
-                        >
-                          <Trash size={16} />
-                        </button>
-                      </div>
-                    </td>
-                  </tr>
-                ))}
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>
@@ -605,20 +803,30 @@ export default function Products() {
         isOpen={showModal}
         onClose={closeModal}
         title={editingProduct ? 'Editar Producto' : 'Añadir Nuevo Producto'}
-        subtitle={editingProduct ? 'Actualiza la información del artículo en tu inventario.' : 'Crea un nuevo artículo en tu catálogo.'}
-        maxWidth="max-w-lg"
+        subtitle={
+          editingProduct
+            ? 'Actualiza la información, galería y video de tu artículo.'
+            : 'Crea un nuevo artículo en tu catálogo con fotos y video.'
+        }
+        maxWidth="max-w-xl"
       >
-        <form onSubmit={handleSubmit} className="space-y-4">
+        <form onSubmit={handleSubmit} className="space-y-4 max-h-[80vh] overflow-y-auto pr-1">
+          {/* Nombre */}
           <div>
-            <label htmlFor="prod-name" className="block text-xs font-semibold text-hi mb-1">Nombre del Producto <span className="text-red-500">*</span></label>
+            <label htmlFor="prod-name" className="block text-xs font-semibold text-hi mb-1">
+              Nombre del Producto <span className="text-red-500">*</span>
+            </label>
             <input
               id="prod-name"
               type="text"
               required
               maxLength={100}
               value={name}
-              onChange={e => { setName(e.target.value); setIsFormDirty(true); }}
-              placeholder=""
+              onChange={(e) => {
+                setName(e.target.value);
+                setIsFormDirty(true);
+              }}
+              placeholder="Ej. Zapatillas Urban Runner Pro"
               className="w-full px-3 py-2.5 text-sm bg-app border border-line rounded-lg text-hi placeholder:text-muted focus:outline-none focus:border-brand focus:shadow-input-focus transition-all"
             />
             <div className="text-right mt-0.5">
@@ -626,15 +834,21 @@ export default function Products() {
             </div>
           </div>
 
+          {/* Descripción */}
           <div>
-            <label htmlFor="prod-desc" className="block text-xs font-semibold text-hi mb-1">Descripción (Opcional)</label>
+            <label htmlFor="prod-desc" className="block text-xs font-semibold text-hi mb-1">
+              Descripción (Opcional)
+            </label>
             <textarea
               id="prod-desc"
               rows={2}
               maxLength={600}
               value={description}
-              onChange={e => { setDescription(e.target.value); setIsFormDirty(true); }}
-              placeholder=""
+              onChange={(e) => {
+                setDescription(e.target.value);
+                setIsFormDirty(true);
+              }}
+              placeholder="Detalles, materiales, tallas o características que la IA explicará al cliente..."
               className="w-full px-3 py-2.5 text-sm bg-app border border-line rounded-lg text-hi placeholder:text-muted focus:outline-none focus:border-brand focus:shadow-input-focus transition-all resize-none"
             />
             <div className="text-right mt-0.5">
@@ -642,11 +856,16 @@ export default function Products() {
             </div>
           </div>
 
+          {/* Precio y Disponibilidad */}
           <div className="grid grid-cols-2 gap-4">
             <div>
-              <label htmlFor="prod-price" className="block text-xs font-semibold text-hi mb-1">Precio (S/.) <span className="text-red-500">*</span></label>
+              <label htmlFor="prod-price" className="block text-xs font-semibold text-hi mb-1">
+                Precio (S/.) <span className="text-red-500">*</span>
+              </label>
               <div className="relative">
-                <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted text-sm font-bold select-none">S/.</span>
+                <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted text-sm font-bold select-none">
+                  S/.
+                </span>
                 <input
                   id="prod-price"
                   type="number"
@@ -654,7 +873,10 @@ export default function Products() {
                   step="0.01"
                   min="0"
                   value={price}
-                  onChange={e => { setPrice(e.target.value); setIsFormDirty(true); }}
+                  onChange={(e) => {
+                    setPrice(e.target.value);
+                    setIsFormDirty(true);
+                  }}
                   placeholder="0.00"
                   className="w-full pl-10 pr-3 py-2.5 rounded-lg border border-line bg-app text-sm text-hi font-mono focus:outline-none focus:border-brand focus:shadow-input-focus transition-all"
                 />
@@ -667,7 +889,10 @@ export default function Products() {
                 <input
                   type="checkbox"
                   checked={isAvailable}
-                  onChange={e => { setIsAvailable(e.target.checked); setIsFormDirty(true); }}
+                  onChange={(e) => {
+                    setIsAvailable(e.target.checked);
+                    setIsFormDirty(true);
+                  }}
                   className="rounded border-line text-brand focus:ring-brand w-4 h-4"
                 />
                 <span className="text-sm font-medium text-mid">Disponible para venta</span>
@@ -681,7 +906,10 @@ export default function Products() {
               <input
                 type="checkbox"
                 checked={hasPromo}
-                onChange={e => { setHasPromo(e.target.checked); setIsFormDirty(true); }}
+                onChange={(e) => {
+                  setHasPromo(e.target.checked);
+                  setIsFormDirty(true);
+                }}
                 className="rounded border-line text-brand focus:ring-brand w-4 h-4"
               />
               <span className="text-sm font-semibold text-hi">Activar Promoción Temporal</span>
@@ -690,7 +918,9 @@ export default function Products() {
             {hasPromo && (
               <div className="grid grid-cols-3 gap-3">
                 <div>
-                  <label htmlFor="prod-promo-price" className="block text-[10px] font-semibold text-lo mb-1">Precio Oferta (S/.)</label>
+                  <label htmlFor="prod-promo-price" className="block text-[10px] font-semibold text-lo mb-1">
+                    Precio Oferta (S/.)
+                  </label>
                   <input
                     id="prod-promo-price"
                     type="number"
@@ -698,29 +928,42 @@ export default function Products() {
                     min="0"
                     required={hasPromo}
                     value={promotionalPrice}
-                    onChange={e => { setPromotionalPrice(e.target.value); setIsFormDirty(true); }}
+                    onChange={(e) => {
+                      setPromotionalPrice(e.target.value);
+                      setIsFormDirty(true);
+                    }}
                     className="w-full px-3 py-2.5 rounded-lg border border-line bg-app text-xs text-hi font-mono focus:outline-none focus:border-brand"
                   />
                 </div>
                 <div>
-                  <label htmlFor="prod-promo-start" className="block text-[10px] font-semibold text-lo mb-1">Fecha Inicio</label>
+                  <label htmlFor="prod-promo-start" className="block text-[10px] font-semibold text-lo mb-1">
+                    Fecha Inicio
+                  </label>
                   <input
                     id="prod-promo-start"
                     type="date"
                     required={hasPromo}
                     value={promoStartDate}
-                    onChange={e => { setPromoStartDate(e.target.value); setIsFormDirty(true); }}
+                    onChange={(e) => {
+                      setPromoStartDate(e.target.value);
+                      setIsFormDirty(true);
+                    }}
                     className="w-full px-3 py-2.5 rounded-lg border border-line bg-app text-xs text-hi focus:outline-none focus:border-brand"
                   />
                 </div>
                 <div>
-                  <label htmlFor="prod-promo-end" className="block text-[10px] font-semibold text-lo mb-1">Fecha Fin</label>
+                  <label htmlFor="prod-promo-end" className="block text-[10px] font-semibold text-lo mb-1">
+                    Fecha Fin
+                  </label>
                   <input
                     id="prod-promo-end"
                     type="date"
                     required={hasPromo}
                     value={promoEndDate}
-                    onChange={e => { setPromoEndDate(e.target.value); setIsFormDirty(true); }}
+                    onChange={(e) => {
+                      setPromoEndDate(e.target.value);
+                      setIsFormDirty(true);
+                    }}
                     className="w-full px-3 py-2.5 rounded-lg border border-line bg-app text-xs text-hi focus:outline-none focus:border-brand"
                   />
                 </div>
@@ -728,37 +971,164 @@ export default function Products() {
             )}
           </div>
 
-          {/* Subida de Imagen */}
-          <div>
-            <span className="block text-xs font-semibold text-hi mb-1">Imagen del Producto</span>
+          {/* SECCIÓN 1: Imagen Principal / Portada */}
+          <div className="border-t border-line pt-4 space-y-2">
+            <div className="flex items-center justify-between">
+              <span className="block text-xs font-semibold text-hi">
+                Imagen Principal (Portada)
+              </span>
+              <span className="text-[10px] text-lo">Foto principal enviada en cotizaciones</span>
+            </div>
+
             <div className="flex items-center gap-4">
-              <label className="flex-1 flex flex-col items-center justify-center border-2 border-dashed border-line-strong hover:border-brand bg-app rounded-xl py-4 px-3 cursor-pointer text-center group transition-colors">
+              <label className="flex-1 flex flex-col items-center justify-center border-2 border-dashed border-line hover:border-brand bg-app rounded-xl py-3 px-3 cursor-pointer text-center group transition-colors">
                 <UploadSimple size={20} className="text-muted group-hover:text-brand mb-1" />
-                <span className="text-2xs font-semibold text-hi group-hover:text-brand">Subir archivo</span>
-                <span className="text-[10px] text-lo mt-0.5">JPG, PNG o WEBP</span>
+                <span className="text-2xs font-semibold text-hi group-hover:text-brand">
+                  {mainImagePreview ? 'Cambiar Portada' : 'Subir Portada'}
+                </span>
+                <span className="text-[10px] text-lo mt-0.5">JPG, PNG o WEBP (Optimización automática)</span>
                 <input
                   type="file"
                   accept="image/*"
-                  onChange={handleImageChange}
+                  onChange={handleMainImageChange}
                   className="sr-only"
                 />
               </label>
-              
-              {/* Previsualización */}
-              {imagePreview && (
-                <div className="w-20 h-20 bg-app rounded-xl border border-line overflow-hidden relative flex items-center justify-center flex-shrink-0">
-                  <img src={imagePreview} alt="Vista previa" className="w-full h-full object-cover" />
+
+              {mainImagePreview && (
+                <div className="relative w-20 h-20 bg-app rounded-xl border border-line overflow-hidden flex items-center justify-center flex-shrink-0 shadow-sm">
+                  <img src={mainImagePreview} alt="Portada" className="w-full h-full object-cover" />
+                  <span className="absolute bottom-0 inset-x-0 bg-brand/90 text-white text-[8px] font-bold text-center py-0.5">
+                    PORTADA
+                  </span>
                   <button
                     type="button"
-                    onClick={() => { setImageFile(null); setImagePreview(null); }}
+                    onClick={() => {
+                      setMainImageFile(null);
+                      setMainImagePreview(null);
+                      setRemoveMainImage(true);
+                      setIsFormDirty(true);
+                    }}
                     className="absolute top-1 right-1 p-0.5 rounded-full bg-hi/80 text-card hover:bg-hi transition-colors cursor-pointer"
-                    title="Quitar imagen"
+                    title="Quitar portada"
                   >
                     <X size={10} weight="bold" />
                   </button>
                 </div>
               )}
             </div>
+          </div>
+
+          {/* SECCIÓN 2: Galería de Fotos Adicionales (Hasta 3 fotos) */}
+          <div className="border-t border-line pt-4 space-y-2">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-1.5">
+                <Images size={16} className="text-brand" />
+                <span className="text-xs font-semibold text-hi">Galería de Fotos Adicionales</span>
+              </div>
+              <span className="text-[10px] text-lo font-mono">{galleryItems.length} / 3 fotos</span>
+            </div>
+
+            <p className="text-[11px] text-lo">
+              Fotos secundarias (otros ángulos, detalles o variantes) que la IA despachará si el cliente pide ver más fotos.
+            </p>
+
+            <div className="grid grid-cols-4 gap-3 pt-1">
+              {/* Miniaturas de la galería */}
+              {galleryItems.map((item, index) => (
+                <div
+                  key={item.id || index}
+                  className="relative aspect-square rounded-xl border border-line bg-app overflow-hidden flex items-center justify-center shadow-sm group"
+                >
+                  <img src={item.previewUrl} alt={`Galería ${index + 1}`} className="w-full h-full object-cover" />
+                  <button
+                    type="button"
+                    onClick={() => handleRemoveGalleryItem(index)}
+                    className="absolute top-1 right-1 p-0.5 rounded-full bg-hi/80 text-card hover:bg-red-600 transition-colors cursor-pointer"
+                    title="Eliminar de galería"
+                  >
+                    <X size={10} weight="bold" />
+                  </button>
+                  <span className="absolute bottom-1 left-1 text-[8px] font-mono font-bold bg-black/60 text-white px-1 rounded">
+                    #{index + 1}
+                  </span>
+                </div>
+              ))}
+
+              {/* Botón para añadir foto adicional */}
+              {galleryItems.length < 3 && (
+                <label className="aspect-square flex flex-col items-center justify-center border-2 border-dashed border-line hover:border-brand bg-app rounded-xl cursor-pointer text-center group transition-colors">
+                  <Plus size={18} className="text-muted group-hover:text-brand mb-0.5" />
+                  <span className="text-[10px] font-semibold text-lo group-hover:text-brand">Añadir foto</span>
+                  <input
+                    type="file"
+                    accept="image/*"
+                    multiple
+                    onChange={handleAddGalleryImages}
+                    disabled={isCompressingImages}
+                    className="sr-only"
+                  />
+                </label>
+              )}
+            </div>
+            {isCompressingImages && (
+              <p className="text-[10px] text-brand animate-pulse">Optimizando imágenes para subida rápida...</p>
+            )}
+          </div>
+
+          {/* SECCIÓN 3: Video Demostrativo (Opcional) */}
+          <div className="border-t border-line pt-4 space-y-2">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-1.5">
+                <VideoCamera size={16} className="text-blue-500" />
+                <span className="text-xs font-semibold text-hi">Video Demostrativo (Opcional)</span>
+              </div>
+              <span className="text-[10px] text-lo">Máx 15 MB / 45 seg</span>
+            </div>
+
+            <p className="text-[11px] text-lo">
+              Sube un video corto demostrando el funcionamiento del producto. La IA lo enviará cuando el cliente pregunte cómo funciona o solicite un video.
+            </p>
+
+            {!videoPreview ? (
+              <label className="flex flex-col items-center justify-center border-2 border-dashed border-line hover:border-blue-500 bg-app rounded-xl py-4 px-3 cursor-pointer text-center group transition-colors">
+                <FilmStrip size={22} className="text-muted group-hover:text-blue-500 mb-1" />
+                <span className="text-2xs font-semibold text-hi group-hover:text-blue-500">
+                  {isValidatingVideo ? 'Validando video...' : 'Subir Video Demostrativo'}
+                </span>
+                <span className="text-[10px] text-lo mt-0.5">MP4, WEBM o MOV (Máximo 15 MB, 45s)</span>
+                <input
+                  type="file"
+                  accept="video/mp4,video/webm,video/quicktime"
+                  onChange={handleVideoChange}
+                  disabled={isValidatingVideo}
+                  className="sr-only"
+                />
+              </label>
+            ) : (
+              <div className="relative rounded-xl border border-line bg-black/90 p-2 overflow-hidden flex flex-col items-center">
+                <video
+                  src={videoPreview}
+                  controls
+                  className="w-full max-h-48 rounded-lg object-contain bg-black"
+                />
+                <div className="w-full flex items-center justify-between mt-2 px-1 text-xs">
+                  <span className="text-[11px] text-zinc-300 font-mono flex items-center gap-1">
+                    <PlayCircle size={14} className="text-blue-400" />
+                    {videoMeta?.sizeMb ? `${videoMeta.sizeMb} MB` : 'Video adjunto'}
+                    {videoMeta?.duration ? ` • ${videoMeta.duration}s` : ''}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={handleRemoveVideo}
+                    className="text-[11px] font-semibold text-red-400 hover:text-red-300 flex items-center gap-1 cursor-pointer"
+                  >
+                    <Trash size={12} />
+                    <span>Quitar video</span>
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
 
           {/* Footer */}
@@ -772,10 +1142,19 @@ export default function Products() {
             </button>
             <button
               type="submit"
-              disabled={saving || !name || price === ''}
-              className="px-4 py-2 text-xs font-bold bg-brand text-white hover:bg-brand-hover rounded-lg shadow cursor-pointer disabled:opacity-50"
+              disabled={saving || isCompressingImages || isValidatingVideo || !name || price === ''}
+              className="px-5 py-2 text-xs font-bold bg-brand text-white hover:bg-brand-hover rounded-lg shadow cursor-pointer disabled:opacity-50 flex items-center gap-2"
             >
-              {saving ? 'Guardando...' : (editingProduct ? 'Actualizar Producto' : 'Guardar Producto')}
+              {saving ? (
+                <>
+                  <ArrowsClockwise size={14} className="animate-spin" />
+                  <span>Guardando...</span>
+                </>
+              ) : editingProduct ? (
+                'Actualizar Producto'
+              ) : (
+                'Guardar Producto'
+              )}
             </button>
           </div>
         </form>
@@ -787,7 +1166,7 @@ export default function Products() {
         onClose={() => setProductToDelete(null)}
         onConfirm={handleConfirmDeleteProduct}
         title="Eliminar Producto"
-        message="¿Está seguro que desea eliminar este producto? Esta acción no se puede deshacer."
+        message="¿Está seguro que desea eliminar este producto? Se eliminarán también las fotos de la galería y el video demostrativo asociado."
         confirmText="Eliminar"
         cancelText="Cancelar"
         isLoading={isDeleting}
@@ -797,9 +1176,12 @@ export default function Products() {
       {toast && (
         <div
           className={`fixed bottom-6 right-6 z-50 flex items-center gap-3 px-4 py-3 rounded-lg border shadow-card-md text-sm font-medium
-            ${toast.type === 'success'
-              ? 'bg-card border-emerald-200 text-emerald-700'
-              : 'bg-card border-red-200 text-danger'
+            ${
+              toast.type === 'success'
+                ? 'bg-card border-emerald-200 text-emerald-700'
+                : toast.type === 'error'
+                ? 'bg-card border-red-200 text-danger'
+                : 'bg-card border-blue-200 text-blue-700'
             }
           `}
           role="status"

@@ -11,6 +11,8 @@ import {
   Circle,
   WarningCircle,
   ArrowClockwise,
+  Check,
+  Checks,
 } from '@phosphor-icons/react';
 import * as chatService from '../services/chatService';
 import { io } from 'socket.io-client';
@@ -38,7 +40,21 @@ function getAvatarStyle(name = '', index = 0) {
   return { initials, colorCls };
 }
 
-/* ─── Burbuja de mensaje ─── */
+/* ─── Icono de Estado de Mensaje (Ticks) ─── */
+function StatusIcon({ status }) {
+  if (status === 'read') {
+    return <Checks size={13} className="text-sky-300 inline-block" weight="bold" title="Leído (Meta)" />;
+  }
+  if (status === 'delivered') {
+    return <Checks size={13} className="text-white/70 inline-block" title="Entregado" />;
+  }
+  if (status === 'failed') {
+    return <WarningCircle size={12} className="text-red-300 inline-block" weight="bold" title="Error en envío" />;
+  }
+  // status === 'sent' o default
+  return <Check size={12} className="text-white/60 inline-block" title="Enviado" />;
+}
+
 /* ─── Renderizador Multimedia Inteligente ─── */
 function renderMessageContent(text, onImageClick) {
   if (!text) return null;
@@ -81,7 +97,7 @@ function renderMessageContent(text, onImageClick) {
   return <p className="text-sm leading-relaxed break-words whitespace-pre-wrap">{text}</p>;
 }
 
-/* ─── Burbuja de mensaje ─── */
+/* ─── Burbuja de mensaje con estados ─── */
 function Bubble({ msg, onImageClick }) {
   const isClient = msg.from === 'client';
   return (
@@ -105,17 +121,20 @@ function Bubble({ msg, onImageClick }) {
           />
         )}
         {msg.text && renderMessageContent(msg.text, onImageClick)}
-        <p className={`text-[10px] mt-1 text-right ${isClient ? 'text-muted' : 'text-white/60'}`}>
-          {msg.time}
-        </p>
+        <div className={`text-[10px] mt-1 flex items-center justify-end gap-1 ${isClient ? 'text-muted' : 'text-white/70'}`}>
+          <span>{msg.time}</span>
+          {!isClient && <StatusIcon status={msg.status} />}
+        </div>
       </div>
     </div>
   );
 }
 
-/* ─── Tarjeta de chat ─── */
+/* ─── Tarjeta de chat con indicador de proveedor y ventana ─── */
 function ChatItem({ chat, index, isActive, onClick }) {
   const { initials, colorCls } = getAvatarStyle(chat.name, index);
+  const isMetaClosed = chat.provider === 'META' && chat.isWindowOpen === false;
+
   return (
     <button
       onClick={onClick}
@@ -139,7 +158,21 @@ function ChatItem({ chat, index, isActive, onClick }) {
           <p className={`text-sm font-semibold truncate ${isActive ? 'text-brand' : 'text-hi'}`}>
             {chat.name}
           </p>
-          <span className="text-2xs text-muted flex-shrink-0">{chat.time}</span>
+          <div className="flex items-center gap-1.5 flex-shrink-0">
+            {chat.provider === 'META' && (
+              <span
+                className={`px-1.5 py-0.2 rounded text-[9px] font-bold ${
+                  chat.isWindowOpen
+                    ? 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400'
+                    : 'bg-amber-500/15 text-amber-600 dark:text-amber-400'
+                }`}
+                title={chat.isWindowOpen ? 'Ventana Meta 24h activa' : 'Ventana Meta 24h expirada'}
+              >
+                {chat.isWindowOpen ? '24h' : '24h exp'}
+              </span>
+            )}
+            <span className="text-2xs text-muted">{chat.time}</span>
+          </div>
         </div>
         <div className="flex items-center justify-between gap-2 mt-0.5">
           <p className="text-xs text-lo truncate">{chat.lastMsg}</p>
@@ -153,6 +186,7 @@ function ChatItem({ chat, index, isActive, onClick }) {
     </button>
   );
 }
+
 
 /* ─── Panel de conversación (Área del Chat) ─── */
 function ConversationPanel({ chat, index, messages, isLoadingMessages, onSendMessage, onBack, isMobile, onImageClick, onResumeBot }) {
@@ -235,20 +269,46 @@ function ConversationPanel({ chat, index, messages, isLoadingMessages, onSendMes
             <p className="text-sm font-semibold text-hi leading-tight">{chat.name}</p>
             <p className="text-xs text-lo font-mono">{chat.phone || 'Sin número'}</p>
           </div>
-          {chat.isBotPaused && (
-            <div className="flex items-center gap-2 mt-1 sm:mt-0 sm:ml-4">
-              <span className="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-bold bg-amber-50 text-amber-700 border border-amber-200">
-                Bot Pausado
-              </span>
-              <button
-                onClick={onResumeBot}
-                className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded bg-brand/10 hover:bg-brand/20 text-brand text-[10px] font-bold transition-all border border-brand/20 cursor-pointer"
-              >
-                <Play size={10} className="fill-brand text-brand" />
-                Reactivar Bot
-              </button>
-            </div>
-          )}
+
+          {/* Badges de Estado */}
+          <div className="flex flex-wrap items-center gap-2 mt-1 sm:mt-0 sm:ml-2">
+            {chat.isBotPaused && (
+              <div className="flex items-center gap-2">
+                <span className="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-bold bg-amber-50 text-amber-700 border border-amber-200">
+                  Bot Pausado
+                </span>
+                <button
+                  onClick={onResumeBot}
+                  className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded bg-brand/10 hover:bg-brand/20 text-brand text-[10px] font-bold transition-all border border-brand/20 cursor-pointer"
+                >
+                  <Play size={10} className="fill-brand text-brand" />
+                  Reactivar Bot
+                </button>
+              </div>
+            )}
+
+            {chat.provider === 'META' && (
+              <div>
+                {chat.isWindowOpen ? (
+                  <span
+                    title={`Ventana Meta 24h activa. Expira en aprox. ${Math.ceil((chat.windowRemainingMinutes || 1440) / 60)}h`}
+                    className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-50 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800"
+                  >
+                    <Circle size={6} weight="fill" className="text-emerald-500 animate-pulse" />
+                    Meta 24h Activa (~{Math.ceil((chat.windowRemainingMinutes || 1440) / 60)}h)
+                  </span>
+                ) : (
+                  <span
+                    title="Han transcurrido más de 24h desde el último mensaje del cliente. Meta prohíbe el envío de mensajes de texto libre."
+                    className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-bold bg-amber-50 text-amber-700 dark:bg-amber-950/40 dark:text-amber-300 border border-amber-200 dark:border-amber-800"
+                  >
+                    <WarningCircle size={11} weight="bold" className="text-amber-600" />
+                    Ventana 24h Cerrada
+                  </span>
+                )}
+              </div>
+            )}
+          </div>
         </div>
 
         <div className="flex items-center gap-1 flex-shrink-0">
@@ -282,6 +342,17 @@ function ConversationPanel({ chat, index, messages, isLoadingMessages, onSendMes
           </>
         )}
       </div>
+
+      {/* Banner de Ventana 24h de Meta Cerrada */}
+      {isMetaWindowClosed && (
+        <div className="bg-amber-50 dark:bg-amber-950/50 border-t border-amber-200 dark:border-amber-800/80 px-4 py-2.5 flex items-start sm:items-center gap-2.5 text-xs text-amber-800 dark:text-amber-200 flex-shrink-0">
+          <WarningCircle size={18} className="text-amber-600 dark:text-amber-400 flex-shrink-0 mt-0.5 sm:mt-0" weight="bold" />
+          <div className="flex-1">
+            <p className="font-bold">Ventana de 24 horas de Meta cerrada</p>
+            <p className="text-[11px] opacity-90">Han transcurrido más de 24h desde el último mensaje de este cliente. Meta exige que el cliente vuelva a escribir para responderle con texto libre.</p>
+          </div>
+        </div>
+      )}
 
       {/* Previsualización del archivo adjunto */}
       {attachment && (
@@ -351,28 +422,30 @@ function ConversationPanel({ chat, index, messages, isLoadingMessages, onSendMes
 
           <button
             type="button"
+            disabled={isMetaWindowClosed}
             onClick={() => setShowAttachMenu(!showAttachMenu)}
-            className="flex-shrink-0 flex items-center justify-center w-9 h-9 rounded-lg border border-line text-lo hover:text-hi hover:bg-app hover:border-line-strong transition-all cursor-pointer mb-0.5"
+            className="flex-shrink-0 flex items-center justify-center w-9 h-9 rounded-lg border border-line text-lo hover:text-hi hover:bg-app hover:border-line-strong transition-all cursor-pointer mb-0.5 disabled:opacity-40 disabled:cursor-not-allowed"
           >
             <Paperclip size={17} />
           </button>
 
-          <div className="flex-1 rounded-xl border border-line bg-app px-3.5 py-2 focus-within:border-brand focus-within:shadow-input-focus transition-all duration-fast">
+          <div className={`flex-1 rounded-xl border border-line bg-app px-3.5 py-2 focus-within:border-brand focus-within:shadow-input-focus transition-all duration-fast ${isMetaWindowClosed ? 'opacity-60 bg-muted/20' : ''}`}>
             <textarea
               ref={textareaRef}
               rows={1}
               value={input}
+              disabled={isMetaWindowClosed}
               onChange={e => setInput(e.target.value)}
               onKeyDown={handleKeyDown}
-              placeholder="Escribe un mensaje... (Enter para enviar)"
-              className="w-full resize-none bg-transparent text-sm text-hi placeholder:text-muted focus:outline-none leading-relaxed overflow-hidden"
+              placeholder={isMetaWindowClosed ? "Ventana 24h de Meta cerrada. Esperando que el cliente escriba..." : "Escribe un mensaje... (Enter para enviar)"}
+              className={`w-full resize-none bg-transparent text-sm text-hi placeholder:text-muted focus:outline-none leading-relaxed overflow-hidden ${isMetaWindowClosed ? 'cursor-not-allowed' : ''}`}
               style={{ maxHeight: '120px' }}
             />
           </div>
 
           <button
             onClick={handleSend}
-            disabled={(!input.trim() && !attachment) || isLoadingMessages}
+            disabled={isMetaWindowClosed || (!input.trim() && !attachment) || isLoadingMessages}
             className="flex-shrink-0 flex items-center justify-center w-9 h-9 rounded-lg bg-brand text-white hover:bg-brand-hover shadow-card transition-all cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed mb-0.5"
           >
             <PaperPlaneRight size={16} weight="bold" />
@@ -388,14 +461,11 @@ function SidebarSkeleton() {
   return (
     <div className="divide-y divide-line">
       {[1, 2, 3, 4].map(n => (
-        <div key={n} className="flex gap-3 px-4 py-3.5 animate-pulse">
+        <div key={n} className="flex items-start gap-3 px-4 py-3.5 animate-pulse">
           <div className="w-10 h-10 rounded-full bg-line flex-shrink-0" />
           <div className="flex-1 space-y-2 py-1">
-            <div className="flex justify-between">
-              <div className="h-3 w-24 bg-line rounded" />
-              <div className="h-2 w-8 bg-line rounded" />
-            </div>
-            <div className="h-2.5 w-36 bg-line rounded" />
+            <div className="h-3.5 bg-line rounded w-1/2" />
+            <div className="h-3 bg-line rounded w-3/4" />
           </div>
         </div>
       ))}
@@ -481,28 +551,32 @@ export default function ChatPage() {
       console.log('🔌 [Socket.IO] Conectado al servidor de WebSocket en tiempo real.');
     });
 
+    // ── 1. Mensajes Nuevos en Tiempo Real ──
     socket.on('new_whatsapp_message', (msg) => {
       console.log('📩 [Socket.IO] Evento de mensaje recibido:', msg);
+      const isIncoming = msg.type === 'incoming';
 
       // Si el mensaje es de la conversación seleccionada, añadirlo al chat activo
       if (msg.chatId === activeChatIdRef.current) {
         const formattedMsg = {
-          id: msg.id || `socket-${Date.now()}`,
-          from: msg.type === 'incoming' ? 'client' : 'business',
+          id: msg.messageId || msg.id || `socket-${Date.now()}`,
+          externalId: msg.externalId || null,
+          status: msg.status || (isIncoming ? 'delivered' : 'sent'),
+          from: isIncoming ? 'client' : 'business',
           text: msg.mediaType === 'image' ? '' : msg.text,
           image: msg.mediaType === 'image' ? msg.text : undefined,
           time: new Date(msg.timestamp || Date.now()).toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' }),
         };
 
         setActiveChatMessages(prev => {
-          // Evitar registrar duplicados óptimistas o re-enviados
-          const exists = prev.some(m => m.text === formattedMsg.text && m.from === formattedMsg.from);
+          // Evitar duplicados
+          const exists = prev.some(m => (m.externalId && formattedMsg.externalId && m.externalId === formattedMsg.externalId) || (m.text === formattedMsg.text && m.from === formattedMsg.from));
           if (exists) return prev;
           return [...prev, formattedMsg];
         });
       }
 
-      // Actualizar información y último mensaje en la barra lateral
+      // Actualizar información, último mensaje y ventana de 24h en la barra lateral
       setChats(prev => {
         return prev.map(c => {
           if (c.id === msg.chatId) {
@@ -510,12 +584,27 @@ export default function ChatPage() {
               ...c,
               lastMsg: msg.mediaType === 'image' ? '📸 Imagen' : msg.text,
               time: new Date(msg.timestamp || Date.now()).toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' }),
-              unread: c.id === activeChatIdRef.current ? c.unread : (c.unread || 0) + 1
+              unread: c.id === activeChatIdRef.current ? c.unread : (c.unread || 0) + 1,
+              isWindowOpen: isIncoming ? true : c.isWindowOpen,
+              windowRemainingMinutes: isIncoming ? 1440 : c.windowRemainingMinutes
             };
           }
           return c;
         });
       });
+    });
+
+    // ── 2. Actualización de Estados de Entrega y Lectura (Meta / Evolution statuses) ──
+    socket.on('message_status_updated', (data) => {
+      console.log('📊 [Socket.IO] Estado de mensaje actualizado:', data);
+      setActiveChatMessages(prev =>
+        prev.map(m => {
+          if (m.id === data.messageId || (data.externalId && m.externalId === data.externalId)) {
+            return { ...m, status: data.status };
+          }
+          return m;
+        })
+      );
     });
 
     return () => {

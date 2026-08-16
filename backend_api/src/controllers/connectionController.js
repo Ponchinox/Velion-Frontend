@@ -3,6 +3,107 @@ import prisma from '../db.js';
 import { validateAndRegisterWhatsAppConnection } from '../services/antiFraudService.js';
 
 /**
+ * POST /api/connections/meta
+ * Guarda o actualiza las credenciales de Meta Cloud API para el Tenant.
+ * Crea o actualiza el registro en RegisteredWhatsAppNumber con provider='META'.
+ */
+export async function saveMeta(req, res) {
+  try {
+    const tenantId = req.user?.tenantId;
+    if (!tenantId) {
+      return res.status(400).json({ error: 'El usuario no está asociado a ningún Tenant.' });
+    }
+
+    const { metaPhoneNumberId, metaWabaId, metaAccessToken, phoneNumber } = req.body;
+
+    if (!metaPhoneNumberId || !metaWabaId || !metaAccessToken) {
+      return res.status(400).json({
+        error: 'Faltan campos requeridos: metaPhoneNumberId, metaWabaId y metaAccessToken son obligatorios.',
+      });
+    }
+
+    // Buscar registro previo del tenant con proveedor META
+    const existing = await prisma.registeredWhatsAppNumber.findFirst({
+      where: { tenantId, provider: 'META' },
+    });
+
+    const phoneLabel = phoneNumber || metaPhoneNumberId;
+
+    let record;
+    if (existing) {
+      // Actualizar credenciales existentes
+      record = await prisma.registeredWhatsAppNumber.update({
+        where: { id: existing.id },
+        data: {
+          phoneNumber: phoneLabel,
+          metaPhoneNumberId,
+          metaWabaId,
+          metaAccessToken,
+          updatedAt: new Date(),
+        },
+      });
+      console.log(`✅ [Meta Connection] Credenciales actualizadas para Tenant: ${tenantId}`);
+    } else {
+      // Crear nuevo registro Meta
+      record = await prisma.registeredWhatsAppNumber.create({
+        data: {
+          phoneNumber: phoneLabel,
+          provider: 'META',
+          metaPhoneNumberId,
+          metaWabaId,
+          metaAccessToken,
+          tenantId,
+        },
+      });
+      console.log(`✅ [Meta Connection] Nueva conexión Meta registrada para Tenant: ${tenantId}`);
+    }
+
+    return res.json({
+      success: true,
+      message: 'Conexión con Meta Cloud API guardada correctamente.',
+      provider: 'META',
+      phoneNumberId: record.metaPhoneNumberId,
+    });
+  } catch (error) {
+    console.error('❌ [Meta Connection] Error al guardar credenciales Meta:', error.message);
+    return res.status(500).json({ error: 'Error interno al guardar la conexión de Meta.' });
+  }
+}
+
+/**
+ * GET /api/connections/provider
+ * Retorna el proveedor activo y metadatos de la conexión del Tenant.
+ */
+export async function getProvider(req, res) {
+  try {
+    const tenantId = req.user?.tenantId;
+    if (!tenantId) return res.status(400).json({ error: 'Sin Tenant.' });
+
+    const connection = await prisma.registeredWhatsAppNumber.findFirst({
+      where: { tenantId },
+      orderBy: { createdAt: 'desc' },
+      select: {
+        provider: true,
+        phoneNumber: true,
+        metaPhoneNumberId: true,
+        metaWabaId: true,
+        // metaAccessToken intencionalmente omitido por seguridad
+      },
+    });
+
+    return res.json({
+      provider: connection?.provider || 'EVOLUTION',
+      phoneNumber: connection?.phoneNumber || null,
+      metaPhoneNumberId: connection?.metaPhoneNumberId || null,
+      metaWabaId: connection?.metaWabaId || null,
+    });
+  } catch (error) {
+    console.error('❌ [Provider] Error al obtener proveedor:', error.message);
+    return res.status(500).json({ error: 'Error al obtener información del proveedor.' });
+  }
+}
+
+/**
  * Helper para generar los headers de autenticación de Evolution API
  */
 function getEvoHeaders() {

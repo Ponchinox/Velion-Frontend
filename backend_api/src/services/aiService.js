@@ -167,17 +167,19 @@ async function processMediaBase64(rawBase64) {
 
 
 /**
- * Ejecuta la llamada al motor principal: Google Gemini Gen 3
+ * Ejecuta la llamada al motor principal: Google Gemini
+ * Cascada optimizada por costo: de menor consumo de cuota a mayor capacidad (último recurso).
  * Soporta texto e imágenes/audio/video multimodales de forma nativa en alta velocidad.
  */
 async function callGemini(systemPrompt, messages, mediaItems = []) {
   const clients = getGeminiClients();
   const GEMINI_MODELS = [
-    'gemini-3.5-flash-lite',
-    'gemini-3.6-flash',
-    'gemini-3.1-flash-lite',
-    'gemini-1.5-flash-latest',
-    'gemini-1.5-flash'
+    'gemini-3.5-flash-lite', // 1️⃣ Más barato: Siempre primero → agota menos cuota (99% del trabajo)
+    'gemini-3.1-flash-lite', // 2️⃣ Barato: Solo si el primero falla
+    'gemini-3.5-flash',      // 3️⃣ Medio: Solo si los dos anteriores fallan
+    'gemini-3.6-flash',      // 4️⃣ Medio-alto: Solo si los tres anteriores fallan
+    'gemini-2.5-flash-lite', // 5️⃣ Medio: Solo en emergencia
+    'gemini-2.5-flash'       // 6️⃣ Más caro: Último recurso absoluto
   ];
 
   // Estructurar el historial y contenido para el SDK de Google Generative AI
@@ -337,8 +339,8 @@ async function callOpenRouter(systemPrompt, messages) {
 
 /**
  * Cascada de resiliencia (Failover Chain)
- * 1. Slot #1: Google Gemini (gemini-1.5-flash) - Motor Principal (Texto + Visión Multimodal)
- * 2. Slot #2: OpenRouter (DeepSeek Chat Free) - Fallback Secundario para texto
+ * 1. Slot #1: Google Gemini (gemini-3.5-flash-lite a gemini-2.5-flash) - Motor Principal (Texto + Visión + Audio)
+ * 2. Slot #2: OpenRouter (Llama Free) - Fallback Secundario para texto
  */
 async function callAiProviderCascade(systemPrompt, messages, mediaItems = []) {
   let lastError = null;
@@ -346,7 +348,7 @@ async function callAiProviderCascade(systemPrompt, messages, mediaItems = []) {
   // #1: Google Gemini (Motor Principal)
   if (process.env.GEMINI_API_KEY) {
     try {
-      console.log('🤖 [Google Gemini] Ejecutando petición con gemini-1.5-flash (Texto + Visión + Audio)...');
+      console.log('🤖 [Google Gemini] Ejecutando petición con jerarquía optimizada (gemini-3.5-flash-lite → backup)...');
       const text = await callGemini(systemPrompt, messages, mediaItems);
       if (text) {
         console.log('✅ [Google Gemini] Respuesta generada exitosamente.');

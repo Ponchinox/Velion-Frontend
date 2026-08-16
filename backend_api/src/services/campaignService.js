@@ -2,6 +2,7 @@ import OpenAI from 'openai';
 import { generateAIResponse } from './aiService.js';
 import prisma from '../db.js';
 import axios from 'axios';
+import { sendText as gatewaySendText, sendMedia as gatewaySendMedia, resolveGatewayCtx } from './whatsappGateway.js';
 
 let openaiClient = null;
 
@@ -46,6 +47,10 @@ export async function processCampaign(campaignId, targetContacts, instance) {
     const tenant = await prisma.tenant.findUnique({
       where: { id: campaign.tenantId }
     });
+
+    // Resolver contexto del Gateway una sola vez para toda la campaña
+    const gatewayCtx = await resolveGatewayCtx(campaign.tenantId);
+    console.log(`[Campaign Service] Proveedor activo para campana: ${gatewayCtx.provider}`);
 
     for (const contact of targetContacts) {
       // Re-verificar si la campaña ha sido cancelada o si el status cambió
@@ -137,51 +142,31 @@ export async function processCampaign(campaignId, targetContacts, instance) {
           .replace(/\{Nombre\}/gi, contact.name);
       }
 
-      // Enviar a través de Evolution API
+      // ─── GATEWAY: Enviar por el proveedor activo del Tenant ───
       let success = false;
       let errorMsg = null;
 
       try {
+        const cleanPhone = contact.phone.replace(/\D/g, '');
         if (campaign.media) {
-          await axios.post(
-            `${evoUrl}/message/sendMedia/${instance}`,
-            {
-              number: contact.phone,
-              mediatype: 'image',
-              media: campaign.media,
-              caption: personalizedMessage
-            },
-            {
-              headers: {
-                apikey: evoKey,
-                'Content-Type': 'application/json'
-              }
-            }
-          );
+          await gatewaySendMedia({
+            ...gatewayCtx,
+            to: cleanPhone,
+            url: campaign.media,
+            caption: personalizedMessage,
+          });
         } else {
-          const cleanPhone = contact.phone.replace(/\D/g, '');
-          await axios.post(
-            `${evoUrl}/message/sendText/${instance}`,
-            {
-              number: cleanPhone,
-              text: personalizedMessage,
-              options: {
-                delay: 0
-              }
-            },
-            {
-              headers: {
-                apikey: evoKey,
-                'Content-Type': 'application/json'
-              }
-            }
-          );
+          await gatewaySendText({
+            ...gatewayCtx,
+            to: cleanPhone,
+            text: personalizedMessage,
+          });
         }
         success = true;
-        console.log(`✅ [Campaign Service] Mensaje enviado a +${contact.phone}`);
-      } catch (evoError) {
+        console.log(`✅ [Campaign Service | ${gatewayCtx.provider}] Mensaje enviado a +${contact.phone}`);
+      } catch (sendError) {
         success = false;
-        errorMsg = evoError.response?.data?.message || evoError.message;
+        errorMsg = sendError.response?.data?.message || sendError.message;
         console.error(`❌ [Campaign Service] Error al enviar a +${contact.phone}:`, errorMsg);
       }
 
