@@ -1005,12 +1005,15 @@ export async function receiveWebhook(req, res) {
         existingQueue.text += '\n' + userMessageText;
         if (mediaItems.length > 0) {
           if (!existingQueue.mediaItems) existingQueue.mediaItems = [];
-          existingQueue.mediaItems.push(...mediaItems);
+          const remaining = 3 - existingQueue.mediaItems.length;
+          if (remaining > 0) {
+            existingQueue.mediaItems.push(...mediaItems.slice(0, remaining));
+          }
         }
         console.log(`🔒 [Processing Lock] IA ocupada para +${clientNumber}. Mensaje encolado en pendingQueue (acumulado).`);
       } else {
         pendingQueues.set(remoteJid, {
-          remoteJid, clientNumber, text: userMessageText, mediaItems: [...mediaItems],
+          remoteJid, clientNumber, text: userMessageText, mediaItems: mediaItems.slice(0, 3),
           tenant, contact, chat, instance, requestApiKey, provider,
           metaPhoneNumberId: metaNumberRecord?.metaPhoneNumberId,
           metaAccessToken: metaNumberRecord?.metaAccessToken,
@@ -1028,7 +1031,16 @@ export async function receiveWebhook(req, res) {
       existingBuffer.text += '\n' + userMessageText;
       if (mediaItems.length > 0) {
         if (!existingBuffer.mediaItems) existingBuffer.mediaItems = [];
-        existingBuffer.mediaItems.push(...mediaItems);
+        // Tope duro: máximo 3 imágenes por ráfaga para evitar consumo excesivo de tokens
+        const remaining = 3 - existingBuffer.mediaItems.length;
+        if (remaining > 0) {
+          existingBuffer.mediaItems.push(...mediaItems.slice(0, remaining));
+          if (mediaItems.length > remaining) {
+            console.warn(`⚠️ [Image Cap] ${mediaItems.length - remaining} imagen(es) descartada(s) por límite de seguridad (máx 3 por ráfaga).`);
+          }
+        } else {
+          console.warn(`⚠️ [Image Cap] ${mediaItems.length} imagen(es) descartada(s): ya hay 3 imágenes en el buffer actual.`);
+        }
       }
       existingBuffer.timer = setTimeout(() => {
         processBufferedMessage(remoteJid);
@@ -1039,7 +1051,7 @@ export async function receiveWebhook(req, res) {
         remoteJid,
         clientNumber,
         text: userMessageText,
-        mediaItems: [...mediaItems],
+        mediaItems: mediaItems.slice(0, 3),
         tenant,
         contact,
         chat,

@@ -201,9 +201,10 @@ async function callGemini(systemPrompt, messages, mediaItems = []) {
 
     const parts = [{ text: textContent || 'Analiza esta información' }];
 
-    // Si es el último mensaje del usuario y hay multimedia adjunta, procesar y enviar
+    // Si es el último mensaje del usuario y hay multimedia adjunta, procesar y enviar (tope seguro máx 3)
     if (isUser && mediaItems && mediaItems.length > 0 && i === messages.length - 1) {
-      for (const item of mediaItems) {
+      const safeMediaItems = mediaItems.slice(0, 3);
+      for (const item of safeMediaItems) {
         const { data, mimeType } = await processMediaBase64(item);
         parts.push({
           inlineData: {
@@ -221,7 +222,8 @@ async function callGemini(systemPrompt, messages, mediaItems = []) {
   if (contents.length === 0) {
     const parts = [{ text: 'Hola' }];
     if (mediaItems && mediaItems.length > 0) {
-      for (const item of mediaItems) {
+      const safeMediaItems = mediaItems.slice(0, 3);
+      for (const item of safeMediaItems) {
         const { data, mimeType } = await processMediaBase64(item);
         parts.push({
           inlineData: {
