@@ -251,7 +251,8 @@ export async function getQrCode(req, res) {
             byEvents: false,
             webhookByEvents: false,
             events: [
-              "MESSAGES_UPSERT"
+              "MESSAGES_UPSERT",
+              "CONNECTION_UPDATE"
             ]
           }
         },
@@ -279,7 +280,8 @@ export async function getQrCode(req, res) {
             byEvents: false,
             webhookByEvents: false,
             events: [
-              "MESSAGES_UPSERT"
+              "MESSAGES_UPSERT",
+              "CONNECTION_UPDATE"
             ]
           }
         },

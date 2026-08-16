@@ -173,9 +173,11 @@ export default function ConexionesPage() {
     try {
       const data = await connectionService.getStatus();
       setInstanceName(data.instanceName || '');
-      if (data.status === 'open' || data.status === 'CONNECTED') {
+      
+      // Asegurar que solo consideramos CONNECTED si ya hay un número de teléfono válido devuelto por Evolution
+      if ((data.status === 'open' || data.status === 'CONNECTED') && data.phone) {
         setStatus('CONNECTED');
-        setPhone(data.phone || '');
+        setPhone(data.phone);
         setShowNewConnectionModal((prev) => {
           if (prev) showToast('¡WhatsApp vinculado exitosamente!');
           return false;
@@ -184,8 +186,10 @@ export default function ConexionesPage() {
           clearInterval(pollIntervalRef.current);
           pollIntervalRef.current = null;
         }
+        await loadProvider(); // Actualizar conteo de conexiones de forma inmediata
         return 'CONNECTED';
       } else {
+        // Mantenemos DISCONNECTED si está close, o si está open pero aún no devuelve phone
         setStatus('DISCONNECTED');
         setPhone('');
         return 'DISCONNECTED';
@@ -300,6 +304,7 @@ export default function ConexionesPage() {
       setStatus('CONNECTED');
       setShowNewConnectionModal(false);
       showToast('✅ Conexión con Meta Cloud API guardada correctamente.');
+      await loadProvider(); // Actualizar conteo de conexiones de forma inmediata
     } catch (err) {
       showToast(err.message || 'Error al guardar la conexión de Meta.', 'error');
     } finally {
@@ -319,6 +324,7 @@ export default function ConexionesPage() {
       setMetaPhoneNumberIdSaved(null);
       setShowDisconnectModal(false);
       showToast('Sesión de WhatsApp desconectada correctamente.');
+      await loadProvider(); // Actualizar conteo a la baja
     } catch (err) {
       showToast(err.message || 'Error al desconectar.', 'error');
     } finally {

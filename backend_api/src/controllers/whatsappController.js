@@ -270,7 +270,8 @@ export async function connectDevice(req, res) {
           byEvents: false,
           webhookByEvents: false,
           events: [
-            "MESSAGES_UPSERT"
+            "MESSAGES_UPSERT",
+            "CONNECTION_UPDATE"
           ]
         }
       },
@@ -304,7 +305,8 @@ export async function connectDevice(req, res) {
           byEvents: false,
           webhookByEvents: false,
           events: [
-            "MESSAGES_UPSERT"
+            "MESSAGES_UPSERT",
+            "CONNECTION_UPDATE"
           ]
         }
       },
@@ -687,6 +689,26 @@ export async function receiveWebhook(req, res) {
     // ── 3B. EVOLUTION API ──
     requestApiKey = (req.query?.apikey || req.headers?.apikey || req.body?.apikey || req.headers?.['x-api-key'] || '').trim();
     instance = req.body?.instance;
+    
+    // Interceptar CONNECTION_UPDATE para asegurar persistencia
+    if (req.body?.event === 'connection.update') {
+      const state = req.body?.data?.state || req.body?.state;
+      const phone = req.body?.data?.phone || req.body?.phone;
+      console.log(`🔌 [Webhook] Connection Update: Instancia ${instance} -> State: ${state}, Phone: ${phone || 'N/A'}`);
+      
+      if (state === 'open' && phone) {
+        // Encontrar tenant por nombre de instancia
+        const tenantPrefix = instance.replace('bot_prod_', '');
+        const tenants = await prisma.tenant.findMany({ select: { id: true, name: true, connLimit: true } });
+        const matchingTenant = tenants.find(t => t.id.toLowerCase().startsWith(tenantPrefix.toLowerCase()));
+        
+        if (matchingTenant) {
+           await validateAndRegisterWhatsAppConnection(matchingTenant.id, instance, phone);
+        }
+      }
+      return; // Fin del procesamiento para este evento
+    }
+
     const evoNorm = await normalizeEvolution(req.body, requestApiKey);
     if (!evoNorm) {
       return;
