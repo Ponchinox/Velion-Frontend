@@ -1291,6 +1291,21 @@ RENDICIÓN ELEGANTE: Si no hay nada en esa categoría, discúlpate brevemente y 
 
 MONEDA (OBLIGATORIO): Usa SIEMPRE "S/." para precios. El símbolo "$" está TOTALMENTE PROHIBIDO.
 
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+🔐 AUDITORÍA DE COMPROBANTES DE PAGO (REGLA CRÍTICA — CERO EXCEPCIONES)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Cuando un cliente envíe una imagen que parezca un comprobante de pago (Yape, Plin, transferencia, depósito, etc.), DEBES seguir este protocolo sin omitir ningún paso:
+
+1. LEER EL MONTO: Identifica el monto exacto transferido que aparece en la captura (ej. S/. 5.00, S/. 50.00). Si el monto no es legible con claridad, solicita una captura nítida antes de continuar.
+2. VERIFICAR EL DESTINATARIO: Confirma visualmente que la transferencia está dirigida al negocio (nombre/número correcto). Si el destinatario no corresponde al negocio, RECHAZA el comprobante indicando que no se realizó al número correcto.
+3. COMPARAR CON EL PEDIDO: Compara el monto de la captura con el PRECIO TOTAL del producto o pedido que el cliente va a comprar (según el catálogo).
+4. REGLAS DE DECISIÓN (OBLIGATORIAS):
+   a. Si el monto coincide con el total → Continúa con normalidad y recoge los datos de envío (nombre, dirección, teléfono).
+   b. Si el monto es MENOR al total → Responde: "Recibí tu comprobante por S/. [monto_captura], pero el total del pedido es S/. [precio_producto]. Por favor completa los S/. [diferencia] restantes para poder procesar tu envío. 🙏"
+   c. Si el comprobante no es legible o parece manipulado → Responde: "No pude leer claramente el comprobante. ¿Podrías enviar una captura más clara y completa?"
+5. PROHIBICIÓN ABSOLUTA: ESTÁ TERMINANTEMENTE PROHIBIDO emitir la etiqueta [ORDER_CONFIRMED] hasta que el monto del comprobante sea IGUAL O MAYOR al total del pedido y el destinatario sea correcto. NO hay excepciones a esta regla.
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
 FORMATO Y CONCISIÓN (OBLIGATORIO):
 1. Respuestas EXTREMADAMENTE concisas. Sin muros de texto. Párrafos de máx. 2-3 líneas.
 2. Usa viñetas con guión simple (- Producto) para listas. NUNCA uses • ni caracteres especiales raros.
@@ -1363,7 +1378,7 @@ Si necesitas ejecutar una acción del sistema, usa ÚNICAMENTE las siguientes et
     systemCommands += `- [SEND_VIDEO: nombre_exacto]: Envía el video demostrativo del producto ÚNICAMENTE si el cliente te pide expresamente ver un video o demostración de cómo funciona.\n`;
     
     if (tenantDetails?.notifySalesWhatsApp === true) {
-      systemCommands += `- [ORDER_CONFIRMED: Producto, Cantidad, Total]: Úsalo ÚNICAMENTE cuando el cliente afirme EXPLÍCITAMENTE que ya pagó (ej. 'ya te deposité'). Promesas futuras no cuentan.\n`;
+      systemCommands += `- [ORDER_CONFIRMED: Producto, Cantidad, Total]: AUDITORÍA OBLIGATORIA ANTES DE USAR:\n  1. Si el cliente envió un comprobante de imagen: DEBES leer el monto visible y compararlo con el precio del pedido. Si el monto es menor al total, RECHAZA amablemente indicando la diferencia exacta. JAMÁS emitas esta etiqueta si los montos no coinciden.\n  2. Si el cliente confirma pago en efectivo/contra entrega: Úsalo solo cuando haya dado nombre completo, dirección/ciudad y teléfono de contacto.\n  3. Si el cliente solo promete pagar luego: NO la uses. Promesas futuras no cuentan.\n`;
     }
     
     systemCommands += `- [HUMAN_HANDOFF: Motivo]: Transfiere a un humano si el cliente insiste agresivamente o presenta quejas complejas, pero SOLO después de haber ofrecido tu ayuda primero.\n`;
@@ -1587,6 +1602,24 @@ ${inventarioTexto}
           orderNotificationDebounceMap.set(cacheKey, now);
           for (const summary of orderSummaries) {
             const notificationText = `🚨 *NUEVO PEDIDO CONFIRMADO por IA*\n\n📱 *Cliente:* +${clientNumber} (${customer.name || 'Sin Nombre'})\n📋 *Resumen:* ${summary}\n\n⚡ _Velion Agent Auto-Notification_`;
+
+            // Persistir el pedido como Alerta en DB SIEMPRE (antes de intentar WhatsApp)
+            // para que nunca se pierda aunque el gateway de notificación falle.
+            try {
+              await prisma.alert.create({
+                data: {
+                  type: 'NEW_ORDER',
+                  severity: 'INFO',
+                  message: `📦 PEDIDO CONFIRMADO | Cliente: +${clientNumber} (${customer.name || 'Sin Nombre'}) | ${summary}`,
+                  tenantId: tenant.id
+                }
+              });
+              console.log(`💾 [Pedido] Orden persistida en DB correctamente para +${clientNumber}.`);
+            } catch (dbErr) {
+              console.error(`❌ [Pedido] Error al persistir orden en DB:`, dbErr.message);
+            }
+
+            // Intentar notificar por WhatsApp (ya tiene reintentos automáticos en el gateway)
             try {
               await gatewaySendText({
                 tenantId: tenant.id,
@@ -1595,7 +1628,7 @@ ${inventarioTexto}
               });
               console.log(`📲 [Notificación de Venta] Enviada exitosamente a +${destPhone} vía Gateway`);
             } catch (notifyErr) {
-              console.error(`❌ [Notificación de Venta] Error al enviar a +${destPhone}:`, notifyErr.message);
+              console.error(`❌ [Notificación de Venta] Falló tras reintentos para +${destPhone}: ${notifyErr.message}. El pedido ya está guardado en el Dashboard.`);
             }
           }
         }

@@ -120,18 +120,37 @@ export async function sendText(opts) {
 
   const evoUrl = process.env.EVOLUTION_API_URL || 'http://localhost:8080';
   const evoInstance = instance || getEvoInstanceName(tenantId || '');
-  try {
-    const res = await axios.post(
-      `${evoUrl}/message/sendText/${evoInstance}`,
-      { number: cleanTo, text, options: { delay: 0 } },
-      getEvoHeaders(apiKey)
-    );
-    const msgId = res.data?.key?.id || null;
-    console.log(`[WA Gateway EVOLUTION] Texto enviado a +${cleanTo} (msgId: ${msgId})`);
-    return msgId;
-  } catch (err) {
-    console.error(`[WA Gateway EVOLUTION] Error al enviar texto a +${cleanTo}:`, err.response?.data || err.message);
-    throw err;
+
+  // Reintento automático ante errores transitorios (Connection Closed, 500, 503)
+  const MAX_RETRIES = 2;
+  const RETRY_DELAY_MS = 2000;
+
+  for (let attempt = 1; attempt <= MAX_RETRIES + 1; attempt++) {
+    try {
+      const res = await axios.post(
+        `${evoUrl}/message/sendText/${evoInstance}`,
+        { number: cleanTo, text, options: { delay: 0 } },
+        getEvoHeaders(apiKey)
+      );
+      const msgId = res.data?.key?.id || null;
+      console.log(`[WA Gateway EVOLUTION] Texto enviado a +${cleanTo} (msgId: ${msgId})`);
+      return msgId;
+    } catch (err) {
+      const status = err.response?.status;
+      const isTransient = !status || status === 500 || status === 503 ||
+        (err.message || '').toLowerCase().includes('connection closed') ||
+        (err.message || '').toLowerCase().includes('econnreset') ||
+        (err.message || '').toLowerCase().includes('econnrefused');
+
+      if (isTransient && attempt <= MAX_RETRIES) {
+        console.warn(`⚠️ [WA Gateway EVOLUTION] Intento ${attempt}/${MAX_RETRIES} falló (${status || err.code || err.message}). Reintentando en ${RETRY_DELAY_MS / 1000}s...`);
+        await new Promise(resolve => setTimeout(resolve, RETRY_DELAY_MS));
+        continue;
+      }
+
+      console.error(`[WA Gateway EVOLUTION] Error definitivo al enviar texto a +${cleanTo} tras ${attempt} intento(s):`, err.response?.data || err.message);
+      throw err;
+    }
   }
 }
 
