@@ -69,6 +69,8 @@ export async function registerAccount(req, res) {
           name: result.tenant.name,
           plan: result.tenant.plan,
           planId: null,
+          connLimit: result.tenant.connLimit,
+          msgLimit: result.tenant.msgLimit,
           hasPlan: false,
         }
       }
@@ -177,6 +179,8 @@ export async function loginAccount(req, res) {
           name: user.tenant.name,
           plan: user.tenant.plan,
           planId: user.tenant.planId,
+          connLimit: user.tenant.connLimit,
+          msgLimit: user.tenant.msgLimit,
           hasPlan,
         } : null,
       },

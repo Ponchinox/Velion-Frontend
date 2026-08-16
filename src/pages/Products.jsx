@@ -250,37 +250,17 @@ export default function Products() {
   const indexOfFirstItem = indexOfLastItem - itemsPerPage;
   const currentItems = filteredProducts.slice(indexOfFirstItem, indexOfLastItem);
 
-  // Manejar cambio de Imagen Principal (con compresión ligera en cliente)
-  const handleMainImageChange = async (e) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-
-    try {
-      setIsCompressingImages(true);
-      const compressed = await compressImageFile(file);
-      setMainImageFile(compressed);
-      setMainImagePreview(URL.createObjectURL(compressed));
-      setRemoveMainImage(false);
-      setIsFormDirty(true);
-    } catch (err) {
-      console.error('Error al optimizar imagen:', err);
-      setMainImageFile(file);
-      setMainImagePreview(URL.createObjectURL(file));
-      setRemoveMainImage(false);
-      setIsFormDirty(true);
-    } finally {
-      setIsCompressingImages(false);
-    }
-  };
-
-  // Manejar adición de fotos a la galería secundaria
-  const handleAddGalleryImages = async (e) => {
+  // Manejar adición unificada de fotos
+  const handleAddUnifiedImages = async (e) => {
     const files = Array.from(e.target.files || []);
     if (files.length === 0) return;
 
-    const availableSlots = 3 - galleryItems.length;
+    const currentMainPreview = mainImagePreview;
+    const currentGalleryCount = galleryItems.length;
+    const availableSlots = 4 - (currentMainPreview ? 1 : 0) - currentGalleryCount;
+
     if (availableSlots <= 0) {
-      showToast('Máximo 3 fotos adicionales permitidas en la galería.', 'error');
+      showToast('Máximo 4 fotos permitidas en total.', 'error');
       return;
     }
 
@@ -288,34 +268,59 @@ export default function Products() {
     setIsCompressingImages(true);
 
     try {
-      const newItems = await Promise.all(
-        filesToAdd.map(async (file) => {
-          const compressed = await compressImageFile(file);
-          return {
-            id: `new_${Date.now()}_${Math.random()}`,
-            file: compressed,
-            previewUrl: URL.createObjectURL(compressed),
-            isExisting: false,
-          };
-        })
-      );
+      let firstNewFile = filesToAdd[0];
+      let restNewFiles = filesToAdd.slice(1);
+      let newGalleryFiles = [];
 
-      setGalleryItems((prev) => [...prev, ...newItems]);
+      if (!currentMainPreview) {
+        const compressedMain = await compressImageFile(firstNewFile);
+        setMainImageFile(compressedMain);
+        setMainImagePreview(URL.createObjectURL(compressedMain));
+        setRemoveMainImage(false);
+        newGalleryFiles = restNewFiles;
+      } else {
+        newGalleryFiles = filesToAdd;
+      }
+
+      if (newGalleryFiles.length > 0) {
+        const newItems = await Promise.all(
+          newGalleryFiles.map(async (file) => {
+            const compressed = await compressImageFile(file);
+            return {
+              id: `new_${Date.now()}_${Math.random()}`,
+              file: compressed,
+              previewUrl: URL.createObjectURL(compressed),
+              isExisting: false,
+            };
+          })
+        );
+        setGalleryItems((prev) => [...prev, ...newItems]);
+      }
+
       setIsFormDirty(true);
       if (files.length > availableSlots) {
-        showToast(`Se añadieron ${availableSlots} foto(s). Límite de 3 alcanzado.`, 'info');
+        showToast(`Se añadieron las fotos que cabían. Límite de 4 alcanzado.`, 'info');
       }
     } catch (err) {
-      console.error('Error al comprimir imágenes:', err);
-      showToast('Error al procesar imágenes de galería.', 'error');
+      console.error('Error al procesar imágenes:', err);
+      showToast('Error al procesar las imágenes.', 'error');
     } finally {
       setIsCompressingImages(false);
     }
   };
 
-  // Remover foto individual de la galería
-  const handleRemoveGalleryItem = (index) => {
-    setGalleryItems((prev) => prev.filter((_, i) => i !== index));
+  const handleRemoveUnifiedImage = (index) => {
+    if (mainImagePreview) {
+      if (index === 0) {
+        setMainImageFile(null);
+        setMainImagePreview(null);
+        setRemoveMainImage(true);
+      } else {
+        setGalleryItems((prev) => prev.filter((_, i) => i !== index - 1));
+      }
+    } else {
+      setGalleryItems((prev) => prev.filter((_, i) => i !== index));
+    }
     setIsFormDirty(true);
   };
 
@@ -353,6 +358,41 @@ export default function Products() {
     setRemoveVideo(true);
     setVideoMeta(null);
     setIsFormDirty(true);
+  };
+
+  const handleEdit = (prod) => {
+    setEditingProduct(prod);
+    setName(prod.name || '');
+    setDescription(prod.description || '');
+    setPrice(prod.price || '');
+    setIsAvailable(prod.isAvailable !== false);
+    
+    setMainImageFile(null);
+    setMainImagePreview(prod.imageUrl || null);
+    setRemoveMainImage(false);
+
+    if (prod.images && Array.isArray(prod.images)) {
+      setGalleryItems(prod.images.map((url, i) => ({
+        id: `existing_${i}_${Date.now()}`,
+        previewUrl: url,
+        isExisting: true
+      })));
+    } else {
+      setGalleryItems([]);
+    }
+
+    setVideoFile(null);
+    setVideoPreview(prod.videoUrl || null);
+    setRemoveVideo(false);
+    setVideoMeta(null);
+
+    setHasPromo(prod.promotionalPrice !== null && prod.promotionalPrice !== undefined);
+    setPromotionalPrice(prod.promotionalPrice || '');
+    setPromoStartDate(prod.promoStartDate ? prod.promoStartDate.split('T')[0] : '');
+    setPromoEndDate(prod.promoEndDate ? prod.promoEndDate.split('T')[0] : '');
+
+    setIsFormDirty(false);
+    setShowModal(true);
   };
 
   // Limpiar estados y cerrar modal de producto
@@ -971,100 +1011,55 @@ export default function Products() {
             )}
           </div>
 
-          {/* SECCIÓN 1: Imagen Principal / Portada */}
-          <div className="border-t border-line pt-4 space-y-2">
+          {/* SECCIÓN: Imágenes Unificadas */}
+          <div className="border-t border-line pt-4 space-y-3">
             <div className="flex items-center justify-between">
               <span className="block text-xs font-semibold text-hi">
-                Imagen Principal (Portada)
+                Imágenes (Máx. 4)
               </span>
-              <span className="text-[10px] text-lo">Foto principal enviada en cotizaciones</span>
+              <span className="text-[10px] text-lo font-mono">{(mainImagePreview ? 1 : 0) + galleryItems.length} / 4 fotos</span>
             </div>
 
-            <div className="flex items-center gap-4">
-              <label className="flex-1 flex flex-col items-center justify-center border-2 border-dashed border-line hover:border-brand bg-app rounded-xl py-3 px-3 cursor-pointer text-center group transition-colors">
-                <UploadSimple size={20} className="text-muted group-hover:text-brand mb-1" />
-                <span className="text-2xs font-semibold text-hi group-hover:text-brand">
-                  {mainImagePreview ? 'Cambiar Portada' : 'Subir Portada'}
-                </span>
-                <span className="text-[10px] text-lo mt-0.5">JPG, PNG o WEBP (Optimización automática)</span>
-                <input
-                  type="file"
-                  accept="image/*"
-                  onChange={handleMainImageChange}
-                  className="sr-only"
-                />
-              </label>
+            <div className="grid grid-cols-4 gap-3">
+              {/* Lista combinada */}
+              {(() => {
+                const combined = [];
+                if (mainImagePreview) combined.push({ id: 'main', previewUrl: mainImagePreview, isMain: true });
+                galleryItems.forEach((item) => combined.push({ ...item, isMain: false }));
 
-              {mainImagePreview && (
-                <div className="relative w-20 h-20 bg-app rounded-xl border border-line overflow-hidden flex items-center justify-center flex-shrink-0 shadow-sm">
-                  <img src={mainImagePreview} alt="Portada" className="w-full h-full object-cover" />
-                  <span className="absolute bottom-0 inset-x-0 bg-brand/90 text-white text-[8px] font-bold text-center py-0.5">
-                    PORTADA
-                  </span>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setMainImageFile(null);
-                      setMainImagePreview(null);
-                      setRemoveMainImage(true);
-                      setIsFormDirty(true);
-                    }}
-                    className="absolute top-1 right-1 p-0.5 rounded-full bg-hi/80 text-card hover:bg-hi transition-colors cursor-pointer"
-                    title="Quitar portada"
+                return combined.map((item, index) => (
+                  <div
+                    key={item.id || index}
+                    className="relative aspect-square rounded-xl border border-line bg-app overflow-hidden flex items-center justify-center shadow-sm group"
                   >
-                    <X size={10} weight="bold" />
-                  </button>
-                </div>
-              )}
-            </div>
-          </div>
+                    <img src={item.previewUrl} alt={`Foto ${index + 1}`} className="w-full h-full object-cover" />
+                    <button
+                      type="button"
+                      onClick={() => handleRemoveUnifiedImage(index)}
+                      className="absolute top-1 right-1 p-1 rounded-full bg-hi/80 text-card hover:bg-red-600 transition-colors cursor-pointer"
+                      title="Eliminar foto"
+                    >
+                      <X size={10} weight="bold" />
+                    </button>
+                    {index === 0 && (
+                      <span className="absolute bottom-1 left-1 text-[9px] font-bold bg-brand/90 text-white px-1.5 py-0.5 rounded shadow-sm">
+                        PORTADA
+                      </span>
+                    )}
+                  </div>
+                ));
+              })()}
 
-          {/* SECCIÓN 2: Galería de Fotos Adicionales (Hasta 3 fotos) */}
-          <div className="border-t border-line pt-4 space-y-2">
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-1.5">
-                <Images size={16} className="text-brand" />
-                <span className="text-xs font-semibold text-hi">Galería de Fotos Adicionales</span>
-              </div>
-              <span className="text-[10px] text-lo font-mono">{galleryItems.length} / 3 fotos</span>
-            </div>
-
-            <p className="text-[11px] text-lo">
-              Fotos secundarias (otros ángulos, detalles o variantes) que la IA despachará si el cliente pide ver más fotos.
-            </p>
-
-            <div className="grid grid-cols-4 gap-3 pt-1">
-              {/* Miniaturas de la galería */}
-              {galleryItems.map((item, index) => (
-                <div
-                  key={item.id || index}
-                  className="relative aspect-square rounded-xl border border-line bg-app overflow-hidden flex items-center justify-center shadow-sm group"
-                >
-                  <img src={item.previewUrl} alt={`Galería ${index + 1}`} className="w-full h-full object-cover" />
-                  <button
-                    type="button"
-                    onClick={() => handleRemoveGalleryItem(index)}
-                    className="absolute top-1 right-1 p-0.5 rounded-full bg-hi/80 text-card hover:bg-red-600 transition-colors cursor-pointer"
-                    title="Eliminar de galería"
-                  >
-                    <X size={10} weight="bold" />
-                  </button>
-                  <span className="absolute bottom-1 left-1 text-[8px] font-mono font-bold bg-black/60 text-white px-1 rounded">
-                    #{index + 1}
-                  </span>
-                </div>
-              ))}
-
-              {/* Botón para añadir foto adicional */}
-              {galleryItems.length < 3 && (
+              {/* Botón para añadir foto(s) */}
+              {((mainImagePreview ? 1 : 0) + galleryItems.length) < 4 && (
                 <label className="aspect-square flex flex-col items-center justify-center border-2 border-dashed border-line hover:border-brand bg-app rounded-xl cursor-pointer text-center group transition-colors">
-                  <Plus size={18} className="text-muted group-hover:text-brand mb-0.5" />
-                  <span className="text-[10px] font-semibold text-lo group-hover:text-brand">Añadir foto</span>
+                  <Plus size={18} className="text-muted group-hover:text-brand mb-1" />
+                  <span className="text-[10px] font-semibold text-lo group-hover:text-brand">Añadir fotos</span>
                   <input
                     type="file"
                     accept="image/*"
                     multiple
-                    onChange={handleAddGalleryImages}
+                    onChange={handleAddUnifiedImages}
                     disabled={isCompressingImages}
                     className="sr-only"
                   />
@@ -1072,31 +1067,22 @@ export default function Products() {
               )}
             </div>
             {isCompressingImages && (
-              <p className="text-[10px] text-brand animate-pulse">Optimizando imágenes para subida rápida...</p>
+              <p className="text-[10px] text-brand animate-pulse">Optimizando imágenes...</p>
             )}
           </div>
 
-          {/* SECCIÓN 3: Video Demostrativo (Opcional) */}
-          <div className="border-t border-line pt-4 space-y-2">
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-1.5">
-                <VideoCamera size={16} className="text-blue-500" />
-                <span className="text-xs font-semibold text-hi">Video Demostrativo (Opcional)</span>
-              </div>
-              <span className="text-[10px] text-lo">Máx 15 MB / 45 seg</span>
-            </div>
-
-            <p className="text-[11px] text-lo">
-              Sube un video corto demostrando el funcionamiento del producto. La IA lo enviará cuando el cliente pregunte cómo funciona o solicite un video.
-            </p>
+          {/* SECCIÓN: Video Demostrativo */}
+          <div className="border-t border-line pt-4 space-y-3">
+            <span className="block text-xs font-semibold text-hi">
+              Video demostrativo (Opcional - Máx. 15 MB / 45s)
+            </span>
 
             {!videoPreview ? (
               <label className="flex flex-col items-center justify-center border-2 border-dashed border-line hover:border-blue-500 bg-app rounded-xl py-4 px-3 cursor-pointer text-center group transition-colors">
-                <FilmStrip size={22} className="text-muted group-hover:text-blue-500 mb-1" />
+                <VideoCamera size={22} className="text-muted group-hover:text-blue-500 mb-1" />
                 <span className="text-2xs font-semibold text-hi group-hover:text-blue-500">
-                  {isValidatingVideo ? 'Validando video...' : 'Subir Video Demostrativo'}
+                  {isValidatingVideo ? 'Validando video...' : 'Subir Video'}
                 </span>
-                <span className="text-[10px] text-lo mt-0.5">MP4, WEBM o MOV (Máximo 15 MB, 45s)</span>
                 <input
                   type="file"
                   accept="video/mp4,video/webm,video/quicktime"
@@ -1116,7 +1102,6 @@ export default function Products() {
                   <span className="text-[11px] text-zinc-300 font-mono flex items-center gap-1">
                     <PlayCircle size={14} className="text-blue-400" />
                     {videoMeta?.sizeMb ? `${videoMeta.sizeMb} MB` : 'Video adjunto'}
-                    {videoMeta?.duration ? ` • ${videoMeta.duration}s` : ''}
                   </span>
                   <button
                     type="button"

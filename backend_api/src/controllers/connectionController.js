@@ -79,10 +79,16 @@ export async function getProvider(req, res) {
     const tenantId = req.user?.tenantId;
     if (!tenantId) return res.status(400).json({ error: 'Sin Tenant.' });
 
-    const connection = await prisma.registeredWhatsAppNumber.findFirst({
+    const tenant = await prisma.tenant.findUnique({
+      where: { id: tenantId },
+      select: { connLimit: true }
+    });
+
+    const connections = await prisma.registeredWhatsAppNumber.findMany({
       where: { tenantId },
       orderBy: { createdAt: 'desc' },
       select: {
+        id: true,
         provider: true,
         phoneNumber: true,
         metaPhoneNumberId: true,
@@ -91,11 +97,17 @@ export async function getProvider(req, res) {
       },
     });
 
+    const activeConnectionsCount = connections.length;
+
     return res.json({
-      provider: connection?.provider || 'EVOLUTION',
-      phoneNumber: connection?.phoneNumber || null,
-      metaPhoneNumberId: connection?.metaPhoneNumberId || null,
-      metaWabaId: connection?.metaWabaId || null,
+      connections,
+      // Mantenemos estos campos para compatibilidad por si alguna otra parte del código los espera del primer registro
+      provider: connections[0]?.provider || 'EVOLUTION',
+      phoneNumber: connections[0]?.phoneNumber || null,
+      metaPhoneNumberId: connections[0]?.metaPhoneNumberId || null,
+      metaWabaId: connections[0]?.metaWabaId || null,
+      connLimit: tenant?.connLimit || 1,
+      activeConnectionsCount,
     });
   } catch (error) {
     console.error('❌ [Provider] Error al obtener proveedor:', error.message);
@@ -392,8 +404,10 @@ export async function logoutDevice(req, res) {
       }
     }
 
-    // Nota: prisma.whatsappConnection no existe en el schema actual.
     // La limpieza de conexiones se gestiona a través de RegisteredWhatsAppNumber.
+    await prisma.registeredWhatsAppNumber.deleteMany({
+      where: { tenantId }
+    });
 
     return res.json({
       status: 'DISCONNECTED',

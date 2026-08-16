@@ -164,9 +164,9 @@ export default function ConexionesPage() {
     setTimeout(() => setToast(null), 4500);
   };
 
-  const connLimit = user?.tenant?.connLimit || user?.connLimit || 1;
+  const [connLimit, setConnLimit] = useState(1);
+  const [activeConnectionsCount, setActiveConnectionsCount] = useState(0);
   const isConnected = status === 'CONNECTED';
-  const activeConnectionsCount = isConnected ? 1 : 0;
 
   // Consultar estado + proveedor activo
   const checkStatus = async () => {
@@ -201,6 +201,8 @@ export default function ConexionesPage() {
       const pData = await connectionService.getProvider();
       setActiveProvider(pData.provider || 'EVOLUTION');
       setMetaPhoneNumberIdSaved(pData.metaPhoneNumberId || null);
+      if (pData.connLimit) setConnLimit(pData.connLimit);
+      if (pData.activeConnectionsCount !== undefined) setActiveConnectionsCount(pData.activeConnectionsCount);
     } catch {}
   };
 
@@ -309,9 +311,7 @@ export default function ConexionesPage() {
   const executeDisconnect = async () => {
     setIsDisconnecting(true);
     try {
-      if (activeProvider === 'EVOLUTION') {
-        await connectionService.logout();
-      }
+      await connectionService.logout();
       setStatus('DISCONNECTED');
       setQrBase64('');
       setPhone('');
