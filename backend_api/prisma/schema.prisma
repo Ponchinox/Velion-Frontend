@@ -260,6 +260,8 @@ model RegisteredWhatsAppNumber {
   metaWabaId         String?  // WhatsApp Business Account ID
   metaAccessToken    String?  @db.Text // Token de acceso (puede ser largo)
 
+  instanceName       String?  // Nombre único de la instancia en Evolution API
+
   tenantId    String
   tenant      Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   createdAt   DateTime @default(now())

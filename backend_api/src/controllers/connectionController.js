@@ -93,6 +93,7 @@ export async function getProvider(req, res) {
         phoneNumber: true,
         metaPhoneNumberId: true,
         metaWabaId: true,
+        instanceName: true,
         // metaAccessToken intencionalmente omitido por seguridad
       },
     });
@@ -155,7 +156,11 @@ export async function getStatus(req, res) {
       return res.status(400).json({ error: 'El usuario no está asociado a ningún Tenant.' });
     }
 
-    const instanceName = getEvoInstanceName(tenantId);
+    let instanceName = req.query.instanceName;
+    if (!instanceName) {
+      // Fallback para legacy o chequeo general
+      instanceName = getEvoInstanceName(tenantId);
+    }
     const evoUrl = process.env.EVOLUTION_API_URL || 'http://localhost:8080';
 
     const response = await axios.get(
@@ -211,7 +216,15 @@ export async function getQrCode(req, res) {
       return res.status(400).json({ error: 'El usuario no está asociado a ningún Tenant.', message: 'El usuario no está asociado a ningún Tenant.' });
     }
 
-    const instanceName = getEvoInstanceName(tenantId);
+    let instanceName = req.query.instanceName;
+
+    // Si no pasan un instanceName específico (por ejemplo, para generar una nueva conexión),
+    // verificamos primero las instancias registradas en la DB.
+    // Si queremos obligar a crear una nueva, la UI no pasaría instanceName.
+    if (!instanceName) {
+      instanceName = `bot_prod_${tenantId.slice(0, 8)}_${Date.now()}`;
+    }
+
     const evoUrl = process.env.EVOLUTION_API_URL || 'http://localhost:8080';
 
     // 0. Verificar primero si la instancia ya se encuentra conectada (state === open)
@@ -225,6 +238,7 @@ export async function getQrCode(req, res) {
           status: 'open',
           message: 'La instancia ya está conectada y activa.',
           phone: stateRes.data?.instance?.phone || null,
+          instanceName
         });
       }
     } catch (stateErr) {
@@ -340,6 +354,7 @@ export async function getQrCode(req, res) {
 
     return res.json({
       qr: qrBase64,
+      instanceName
     });
   } catch (error) {
     const errorMsg = error.response?.data || error.message || '';
@@ -377,7 +392,10 @@ export async function logoutDevice(req, res) {
       return res.status(400).json({ error: 'El usuario no está asociado a ningún Tenant.' });
     }
 
-    const instanceName = getEvoInstanceName(tenantId);
+    let instanceName = req.body.instanceName;
+    if (!instanceName) {
+      instanceName = getEvoInstanceName(tenantId);
+    }
     const evoUrl = process.env.EVOLUTION_API_URL || 'http://localhost:8080';
 
     // 1. Petición HTTP DELETE a Evolution API para cerrar sesión (logout)
@@ -406,10 +424,16 @@ export async function logoutDevice(req, res) {
       }
     }
 
-    // La limpieza de conexiones se gestiona a través de RegisteredWhatsAppNumber.
-    await prisma.registeredWhatsAppNumber.deleteMany({
-      where: { tenantId }
-    });
+    // Si se pasa un instanceName, borrar solo ese. Si no, borrar todos (legacy)
+    if (req.body.instanceName) {
+      await prisma.registeredWhatsAppNumber.deleteMany({
+        where: { tenantId, instanceName: req.body.instanceName }
+      });
+    } else {
+      await prisma.registeredWhatsAppNumber.deleteMany({
+        where: { tenantId }
+      });
+    }
 
     return res.json({
       status: 'DISCONNECTED',

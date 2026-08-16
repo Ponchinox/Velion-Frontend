@@ -50,7 +50,14 @@ export async function validateAndRegisterWhatsAppConnection(tenantId, instanceNa
       }
 
       // 3. ESCENARIO B: Verificación de Límite de Conexiones Simultáneas de acuerdo al Plan
-      if (!registered) {
+      if (registered) {
+        // Actualizar el instanceName si el número ya estaba registrado para este tenant
+        console.log(`🔄 [ANTI-FRAUDE] Actualizando instanceName de +${cleanPhone} a '${instanceName}'.`);
+        await tx.registeredWhatsAppNumber.update({
+          where: { id: registered.id },
+          data: { instanceName }
+        });
+      } else {
         const registeredCount = await tx.registeredWhatsAppNumber.count({
           where: { tenantId }
         });
@@ -70,7 +77,8 @@ export async function validateAndRegisterWhatsAppConnection(tenantId, instanceNa
         await tx.registeredWhatsAppNumber.create({
           data: {
             phoneNumber: cleanPhone,
-            tenantId: tenantId
+            tenantId: tenantId,
+            instanceName: instanceName
           }
         });
       }

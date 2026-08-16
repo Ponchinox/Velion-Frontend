@@ -134,11 +134,12 @@ export default function ConexionesPage() {
   const [activeProvider, setActiveProvider] = useState('EVOLUTION');
   const [metaPhoneNumberIdSaved, setMetaPhoneNumberIdSaved] = useState(null);
 
-  // Modal nueva conexión
   const [showNewConnectionModal, setShowNewConnectionModal] = useState(false);
   const [showUpsellModal, setShowUpsellModal] = useState(false);
   const [showDisconnectModal, setShowDisconnectModal] = useState(false);
   const [isDisconnecting, setIsDisconnecting] = useState(false);
+  const [disconnectInstanceName, setDisconnectInstanceName] = useState(null);
+  const [connections, setConnections] = useState([]);
 
   // Selector de proveedor en el modal
   const [selectedProvider, setSelectedProvider] = useState('EVOLUTION');
@@ -168,10 +169,9 @@ export default function ConexionesPage() {
   const [activeConnectionsCount, setActiveConnectionsCount] = useState(0);
   const isConnected = status === 'CONNECTED';
 
-  // Consultar estado + proveedor activo
-  const checkStatus = async () => {
+  const checkStatus = async (currentInstanceName = instanceName) => {
     try {
-      const data = await connectionService.getStatus();
+      const data = await connectionService.getStatus(currentInstanceName);
       setInstanceName(data.instanceName || '');
       
       // Asegurar que solo consideramos CONNECTED si ya hay un número de teléfono válido devuelto por Evolution
@@ -203,6 +203,7 @@ export default function ConexionesPage() {
   const loadProvider = async () => {
     try {
       const pData = await connectionService.getProvider();
+      setConnections(pData.connections || []);
       setActiveProvider(pData.provider || 'EVOLUTION');
       setMetaPhoneNumberIdSaved(pData.metaPhoneNumberId || null);
       if (pData.connLimit) setConnLimit(pData.connLimit);
@@ -238,7 +239,7 @@ export default function ConexionesPage() {
       }
     }
     return () => { if (pollIntervalRef.current) { clearInterval(pollIntervalRef.current); pollIntervalRef.current = null; } };
-  }, [showNewConnectionModal, status, selectedProvider]);
+  }, [showNewConnectionModal, status, selectedProvider, instanceName]);
 
   const handleOpenConnectFlow = () => {
     if (activeConnectionsCount >= connLimit) {
@@ -273,6 +274,7 @@ export default function ConexionesPage() {
       } else if (res.qr) {
         const formattedQr = res.qr.startsWith('data:image') ? res.qr : `data:image/png;base64,${res.qr}`;
         setQrBase64(formattedQr);
+        setInstanceName(res.instanceName);
         setStatus('DISCONNECTED');
         showToast('Código QR generado. ¡Escanéalo con WhatsApp!');
       }
@@ -316,13 +318,13 @@ export default function ConexionesPage() {
   const executeDisconnect = async () => {
     setIsDisconnecting(true);
     try {
-      await connectionService.logout();
+      await connectionService.logout(disconnectInstanceName);
       setStatus('DISCONNECTED');
       setQrBase64('');
       setPhone('');
-      setActiveProvider('EVOLUTION');
       setMetaPhoneNumberIdSaved(null);
       setShowDisconnectModal(false);
+      setDisconnectInstanceName(null);
       showToast('Sesión de WhatsApp desconectada correctamente.');
       await loadProvider(); // Actualizar conteo a la baja
     } catch (err) {
@@ -461,19 +463,19 @@ export default function ConexionesPage() {
   );
 
   // ── Render card de conexión activa ───────────────────────────────────────
-  const renderConnectionCard = () => {
-    const isMeta = activeProvider === 'META';
+  const renderConnectionCard = (conn, index) => {
+    const isMeta = conn.provider === 'META';
     return (
-      <div className="bg-card border border-line rounded-2xl shadow-card overflow-hidden flex flex-col justify-between hover:border-brand/40 transition-all">
+      <div key={conn.id} className="bg-card border border-line rounded-2xl shadow-card overflow-hidden flex flex-col justify-between hover:border-brand/40 transition-all">
         <div className="p-5 border-b border-line flex items-center justify-between bg-app/40">
           <div className="flex items-center gap-3">
             <div className={`w-10 h-10 rounded-xl flex items-center justify-center font-bold ${isMeta ? 'bg-blue-500/15 text-blue-600' : 'bg-emerald-500/15 text-emerald-600'}`}>
               {isMeta ? <MetaLogo size={22} weight="bold" /> : <DeviceMobile size={22} weight="bold" />}
             </div>
             <div>
-              <h3 className="font-extrabold text-base text-hi leading-none">{savedName}</h3>
+              <h3 className="font-extrabold text-base text-hi leading-none">{`Instancia ${index + 1}`}</h3>
               <span className="text-xs text-lo font-mono mt-1 block">
-                {isMeta ? `Phone ID: ${metaPhoneNumberIdSaved || '—'}` : `ID: ${instanceName}`}
+                {isMeta ? `Phone ID: ${conn.metaPhoneNumberId || '—'}` : `ID: ${conn.instanceName}`}
               </span>
             </div>
           </div>
@@ -502,10 +504,10 @@ export default function ConexionesPage() {
             </p>
           </div>
 
-          {phone && !isMeta && (
+          {conn.phoneNumber && (
             <div className="flex items-center justify-between text-xs py-1 border-t border-line">
               <span className="text-lo font-medium">Número conectado:</span>
-              <span className="font-mono font-bold text-hi">+{phone}</span>
+              <span className="font-mono font-bold text-hi">+{conn.phoneNumber}</span>
             </div>
           )}
         </div>
@@ -516,9 +518,9 @@ export default function ConexionesPage() {
             <button
               onClick={() => {
                 setSelectedProvider('META');
-                setConnectionName(savedName);
-                setMetaPhoneNumberId(metaPhoneNumberIdSaved || '');
-                setMetaWabaId('');
+                setConnectionName(`Instancia ${index + 1}`);
+                setMetaPhoneNumberId(conn.metaPhoneNumberId || '');
+                setMetaWabaId(conn.metaWabaId || '');
                 setMetaAccessToken('');
                 setShowNewConnectionModal(true);
               }}
@@ -530,7 +532,10 @@ export default function ConexionesPage() {
             </button>
           )}
           <button
-            onClick={() => setShowDisconnectModal(true)}
+            onClick={() => {
+              setDisconnectInstanceName(conn.instanceName);
+              setShowDisconnectModal(true);
+            }}
             disabled={isDisconnecting}
             className="w-full flex items-center justify-center gap-2 py-2.5 px-4 rounded-xl
               bg-red-500/10 hover:bg-red-500/20 text-red-600 dark:text-red-400
@@ -598,7 +603,7 @@ export default function ConexionesPage() {
         </div>
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-          {renderConnectionCard()}
+          {connections.map((conn, index) => renderConnectionCard(conn, index))}
         </div>
       )}
 

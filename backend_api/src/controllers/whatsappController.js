@@ -386,7 +386,10 @@ export async function disconnectDevice(req, res) {
     return res.status(400).json({ error: 'El usuario no está asociado a ningún Tenant.' });
   }
 
-  const instanceName = getEvoInstanceName(tenantId);
+  let instanceName = req.body.instanceName;
+  if (!instanceName) {
+    instanceName = getEvoInstanceName(tenantId);
+  }
   const evoUrl = process.env.EVOLUTION_API_URL || 'http://localhost:8080';
 
   try {
@@ -416,8 +419,16 @@ export async function disconnectDevice(req, res) {
       }
     }
 
-    // Nota: prisma.whatsappConnection no existe en el schema actual.
     // La limpieza de conexiones se gestiona a través de RegisteredWhatsAppNumber.
+    if (req.body.instanceName) {
+      await prisma.registeredWhatsAppNumber.deleteMany({
+        where: { tenantId, instanceName: req.body.instanceName }
+      });
+    } else {
+      await prisma.registeredWhatsAppNumber.deleteMany({
+        where: { tenantId }
+      });
+    }
 
     return res.json({
       status: 'DISCONNECTED',
@@ -693,18 +704,38 @@ export async function receiveWebhook(req, res) {
     // Interceptar CONNECTION_UPDATE para asegurar persistencia
     if (req.body?.event === 'connection.update') {
       const state = req.body?.data?.state || req.body?.state;
-      const phone = req.body?.data?.phone || req.body?.phone;
-      console.log(`🔌 [Webhook] Connection Update: Instancia ${instance} -> State: ${state}, Phone: ${phone || 'N/A'}`);
+      let phone = req.body?.data?.phone || req.body?.phone || req.body?.data?.ownerJid || req.body?.data?.wuid || req.body?.data?.user || req.body?.data?.jid || req.body?.data?.owner;
       
-      if (state === 'open' && phone) {
-        // Encontrar tenant por nombre de instancia
-        const tenantPrefix = instance.replace('bot_prod_', '');
-        const tenants = await prisma.tenant.findMany({ select: { id: true, name: true, connLimit: true } });
-        const matchingTenant = tenants.find(t => t.id.toLowerCase().startsWith(tenantPrefix.toLowerCase()));
-        
-        if (matchingTenant) {
-           await validateAndRegisterWhatsAppConnection(matchingTenant.id, instance, phone);
+      if (phone && typeof phone === 'string') {
+        phone = phone.split('@')[0];
+      }
+
+      if (state === 'open') {
+        if (!phone) {
+          try {
+            const evoUrl = process.env.EVOLUTION_API_URL || 'http://localhost:8080';
+            const stateRes = await axios.get(`${evoUrl}/instance/connectionState/${instance}`, getEvoHeaders(requestApiKey));
+            phone = stateRes.data?.instance?.phone || stateRes.data?.instance?.ownerJid || null;
+            if (phone && typeof phone === 'string') phone = phone.split('@')[0];
+          } catch (e) {
+            console.error('Error fetching real phone in fallback:', e.message);
+          }
         }
+
+        console.log(`🔌 [Webhook] Connection Update: Instancia ${instance} -> State: ${state}, Phone: ${phone || 'N/A'}`);
+
+        if (phone) {
+          // Encontrar tenant por nombre de instancia
+          const tenantPrefix = instance.replace('bot_prod_', '');
+          const tenants = await prisma.tenant.findMany({ select: { id: true, name: true, connLimit: true } });
+          const matchingTenant = tenants.find(t => t.id.toLowerCase().startsWith(tenantPrefix.toLowerCase()));
+          
+          if (matchingTenant) {
+             await validateAndRegisterWhatsAppConnection(matchingTenant.id, instance, phone);
+          }
+        }
+      } else {
+        console.log(`🔌 [Webhook] Connection Update: Instancia ${instance} -> State: ${state}`);
       }
       return; // Fin del procesamiento para este evento
     }

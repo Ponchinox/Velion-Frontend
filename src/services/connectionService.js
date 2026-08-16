@@ -3,8 +3,9 @@ import { apiClient } from './api';
 /**
  * Obtiene el estado real de la conexión de la instancia desde el backend
  */
-export async function getStatus() {
-  return apiClient('/connections/status', { method: 'GET' });
+export async function getStatus(instanceName) {
+  const query = instanceName ? `?instanceName=${instanceName}` : '';
+  return apiClient(`/connections/status${query}`, { method: 'GET' });
 }
 
 /**
@@ -17,8 +18,11 @@ export async function getQrCode() {
 /**
  * Cierra la sesión de WhatsApp vinculada en el backend
  */
-export async function logout() {
-  return apiClient('/connections/logout', { method: 'POST' });
+export async function logout(instanceName) {
+  return apiClient('/connections/logout', { 
+    method: 'POST',
+    body: { instanceName }
+  });
 }
 
 /**

@@ -361,38 +361,63 @@ export default function Products() {
   };
 
   const handleEdit = (prod) => {
-    setEditingProduct(prod);
-    setName(prod.name || '');
-    setDescription(prod.description || '');
-    setPrice(prod.price || '');
-    setIsAvailable(prod.isAvailable !== false);
-    
-    setMainImageFile(null);
-    setMainImagePreview(prod.imageUrl || null);
-    setRemoveMainImage(false);
+    try {
+      setEditingProduct(prod);
+      setName(prod.name || '');
+      setDescription(prod.description || '');
+      setPrice(prod.price || '');
+      setIsAvailable(prod.isAvailable !== false);
+      
+      setMainImageFile(null);
+      setMainImagePreview(prod.imageUrl || null);
+      setRemoveMainImage(false);
 
-    if (prod.images && Array.isArray(prod.images)) {
-      setGalleryItems(prod.images.map((url, i) => ({
-        id: `existing_${i}_${Date.now()}`,
-        previewUrl: url,
-        isExisting: true
-      })));
-    } else {
-      setGalleryItems([]);
+      let parsedImages = [];
+      if (prod.images) {
+        if (Array.isArray(prod.images)) {
+          parsedImages = prod.images;
+        } else if (typeof prod.images === 'string') {
+          try {
+            parsedImages = JSON.parse(prod.images);
+          } catch (e) {
+            console.error('Error parsing prod.images:', e);
+          }
+        }
+      }
+
+      if (Array.isArray(parsedImages)) {
+        setGalleryItems(parsedImages.map((url, i) => ({
+          id: `existing_${i}_${Date.now()}`,
+          previewUrl: url,
+          isExisting: true
+        })));
+      } else {
+        setGalleryItems([]);
+      }
+
+      setVideoFile(null);
+      setVideoPreview(prod.videoUrl || null);
+      setRemoveVideo(false);
+      setVideoMeta(null);
+
+      setHasPromo(prod.promotionalPrice !== null && prod.promotionalPrice !== undefined);
+      setPromotionalPrice(prod.promotionalPrice || '');
+      
+      const safeSplit = (dateStr) => {
+        if (!dateStr) return '';
+        if (typeof dateStr.split === 'function') return dateStr.split('T')[0];
+        if (dateStr instanceof Date) return dateStr.toISOString().split('T')[0];
+        return '';
+      };
+      setPromoStartDate(safeSplit(prod.promoStartDate));
+      setPromoEndDate(safeSplit(prod.promoEndDate));
+
+      setIsFormDirty(false);
+      setShowModal(true);
+    } catch (error) {
+      console.error('Error in handleEdit:', error);
+      showToast('Error al cargar datos del producto para edición.', 'error');
     }
-
-    setVideoFile(null);
-    setVideoPreview(prod.videoUrl || null);
-    setRemoveVideo(false);
-    setVideoMeta(null);
-
-    setHasPromo(prod.promotionalPrice !== null && prod.promotionalPrice !== undefined);
-    setPromotionalPrice(prod.promotionalPrice || '');
-    setPromoStartDate(prod.promoStartDate ? prod.promoStartDate.split('T')[0] : '');
-    setPromoEndDate(prod.promoEndDate ? prod.promoEndDate.split('T')[0] : '');
-
-    setIsFormDirty(false);
-    setShowModal(true);
   };
 
   // Limpiar estados y cerrar modal de producto
