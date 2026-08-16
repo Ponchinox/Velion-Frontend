@@ -17,11 +17,12 @@ export async function getQrCode() {
 
 /**
  * Cierra la sesión de WhatsApp vinculada en el backend
+ * @param {{ instanceName?: string, connectionId: string, provider?: string }} conn
  */
-export async function logout(instanceName) {
+export async function logout(conn) {
   return apiClient('/connections/logout', { 
     method: 'POST',
-    body: { instanceName }
+    body: typeof conn === 'string' ? { instanceName: conn } : conn
   });
 }
 

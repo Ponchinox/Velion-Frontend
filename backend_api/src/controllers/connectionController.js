@@ -293,27 +293,8 @@ export async function getQrCode(req, res) {
       }
     }
 
-    // 1.5. Configurar el webhook en Evolution API
-    try {
-      await axios.post(
-        `${evoUrl}/webhook/set/${instanceName}`,
-        {
-          webhook: {
-            enabled: true,
-            url: webhookUrl,
-            byEvents: false,
-            webhookByEvents: false,
-            events: [
-              "MESSAGES_UPSERT",
-              "CONNECTION_UPDATE"
-            ]
-          }
-        },
-        getEvoHeaders()
-      );
-    } catch (webhookError) {
-      console.error('🚨 Error al configurar webhook:', webhookError.message);
-    }
+    // El webhook ya se configuró durante la creación de la instancia.
+    // No es necesario volver a llamar a /webhook/set/ aquí.
 
     // 2. Solicitar el código QR de conexión
     let connectRes;
@@ -402,47 +383,60 @@ export async function logoutDevice(req, res) {
       return res.status(400).json({ error: 'El usuario no está asociado a ningún Tenant.' });
     }
 
-    let instanceName = req.body.instanceName;
-    if (!instanceName) {
-      instanceName = getEvoInstanceName(tenantId);
-    }
+    const { instanceName: bodyInstanceName, connectionId, provider } = req.body;
     const evoUrl = process.env.EVOLUTION_API_URL || 'http://localhost:8080';
 
-    // 1. Petición HTTP DELETE a Evolution API para cerrar sesión (logout)
-    try {
-      await axios.delete(
-        `${evoUrl}/instance/logout/${instanceName}`,
-        getEvoHeaders()
-      );
-      console.log(`🔌 [Evolution API] Logout exitoso para instancia: ${instanceName}`);
-    } catch (logoutError) {
-      console.log(`ℹ️ [Evolution API] Logout aviso/ya desvinculado (${logoutError.response?.status || 'network error'}):`, logoutError.response?.data || logoutError.message);
-    }
+    // Determinar qué instancia de Evolution eliminar (solo aplica para EVOLUTION)
+    const instanceName = bodyInstanceName || (provider !== 'META' ? getEvoInstanceName(tenantId) : null);
 
-    // 2. Petición HTTP DELETE a Evolution API para destruir la instancia por completo
-    try {
-      await axios.delete(
-        `${evoUrl}/instance/delete/${instanceName}`,
-        getEvoHeaders()
-      );
-      console.log(`🗑️ [Evolution API] Instancia destruida totalmente: ${instanceName}`);
-    } catch (deleteError) {
-      if (deleteError.response && (deleteError.response.status === 404 || deleteError.response.status === 400)) {
-        console.log(`ℹ️ [Evolution API] Instancia "${instanceName}" ya no existía en el servidor (404/400).`);
-      } else {
-        console.warn(`⚠️ Error de respuesta al eliminar instancia en Evolution API:`, deleteError.response?.data || deleteError.message);
+    // Solo hacer logout/delete en Evolution API si el proveedor es EVOLUTION
+    if (provider !== 'META' && instanceName) {
+      // 1. Logout en Evolution API
+      try {
+        await axios.delete(
+          `${evoUrl}/instance/logout/${instanceName}`,
+          getEvoHeaders()
+        );
+        console.log(`🔌 [Evolution API] Logout exitoso para instancia: ${instanceName}`);
+      } catch (logoutError) {
+        console.log(`ℹ️ [Evolution API] Logout aviso (${logoutError.response?.status || 'network error'}):`, logoutError.response?.data || logoutError.message);
+      }
+
+      // 2. Destruir instancia en Evolution API
+      try {
+        await axios.delete(
+          `${evoUrl}/instance/delete/${instanceName}`,
+          getEvoHeaders()
+        );
+        console.log(`🗑️ [Evolution API] Instancia destruida totalmente: ${instanceName}`);
+      } catch (deleteError) {
+        if (deleteError.response && (deleteError.response.status === 404 || deleteError.response.status === 400)) {
+          console.log(`ℹ️ [Evolution API] Instancia "${instanceName}" ya no existía (404/400).`);
+        } else {
+          console.warn(`⚠️ Error al eliminar instancia en Evolution API:`, deleteError.response?.data || deleteError.message);
+        }
       }
     }
 
-    // Si se pasa un instanceName, borrar solo ese. Si no, borrar todos (legacy)
-    if (req.body.instanceName) {
+    // 3. Eliminar el registro en la DB:
+    //    Prioridad: por connectionId (ID exacto del registro) > por instanceName > fallback borra todos
+    if (connectionId) {
+      // Verificar que el registro pertenece a este tenant (seguridad)
       await prisma.registeredWhatsAppNumber.deleteMany({
-        where: { tenantId, instanceName: req.body.instanceName }
+        where: { id: connectionId, tenantId }
       });
+      console.log(`🗑️ [DB] Registro de conexión eliminado por ID: ${connectionId}`);
+    } else if (instanceName) {
+      await prisma.registeredWhatsAppNumber.deleteMany({
+        where: { tenantId, instanceName }
+      });
+      console.log(`🗑️ [DB] Registro de conexión eliminado por instanceName: ${instanceName}`);
     } else {
+      // Fallback legacy: eliminar todos los del tenant
       await prisma.registeredWhatsAppNumber.deleteMany({
         where: { tenantId }
       });
+      console.log(`🗑️ [DB] Todos los registros del tenant ${tenantId} eliminados (fallback).`);
     }
 
     return res.json({

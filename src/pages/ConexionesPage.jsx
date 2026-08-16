@@ -368,7 +368,11 @@ export default function ConexionesPage() {
   const executeDisconnect = async () => {
     setIsDisconnecting(true);
     try {
-      await connectionService.logout(disconnectInstanceName);
+      await connectionService.logout({
+        instanceName: disconnectInstanceName?.instanceName || null,
+        connectionId: disconnectInstanceName?.connectionId || null,
+        provider: disconnectInstanceName?.provider || null,
+      });
       setStatus('DISCONNECTED');
       setQrBase64('');
       setPhone('');
@@ -583,7 +587,11 @@ export default function ConexionesPage() {
           )}
           <button
             onClick={() => {
-              setDisconnectInstanceName(conn.instanceName);
+              setDisconnectInstanceName({
+                instanceName: conn.instanceName || null,
+                connectionId: conn.id,
+                provider: conn.provider,
+              });
               setShowDisconnectModal(true);
             }}
             disabled={isDisconnecting}
