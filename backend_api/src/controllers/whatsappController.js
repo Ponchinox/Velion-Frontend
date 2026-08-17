@@ -1057,6 +1057,13 @@ export async function receiveWebhook(req, res) {
         chat,
         instance,
         requestApiKey,
+        // ─── Contexto de proveedor: esencial para que Meta Cloud API
+        // funcione correctamente cuando el buffer dispara tras 4s.
+        // Sin estos campos, las respuestas de IA a clientes Meta se
+        // enrutaban erróneamente a Evolution en vez de graph.facebook.com.
+        provider,
+        metaPhoneNumberId: metaNumberRecord?.metaPhoneNumberId || null,
+        metaAccessToken: metaNumberRecord?.metaAccessToken || null,
         data: normalized.rawData || null,
         reqIo: req.io,
         timer: setTimeout(() => {

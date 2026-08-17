@@ -22,6 +22,43 @@ export async function saveMeta(req, res) {
       });
     }
 
+    // ─── VALIDACIÓN EN VIVO CONTRA META GRAPH API ───────────────────────────
+    // Verifica que el token sea válido y que el Phone Number ID corresponda
+    // a una cuenta real antes de guardar en la BD.
+    try {
+      const validationRes = await axios.get(
+        `https://graph.facebook.com/v20.0/${metaPhoneNumberId}`,
+        {
+          headers: { Authorization: `Bearer ${metaAccessToken}` },
+          params: { fields: 'display_phone_number,verified_name,quality_rating' },
+          timeout: 8000
+        }
+      );
+
+      const displayPhone = validationRes.data?.display_phone_number || metaPhoneNumberId;
+      const verifiedName = validationRes.data?.verified_name || '—';
+      console.log(`✅ [Meta Validation] Credenciales verificadas: ${verifiedName} (${displayPhone})`);
+
+    } catch (validationErr) {
+      const errData = validationErr.response?.data?.error;
+      const errCode = errData?.code;
+      const errMsg = errData?.message || validationErr.message;
+
+      // Mensajes de error específicos según el código de Meta
+      let userFriendlyError = 'Token o Phone Number ID inválidos. Verifica tus credenciales en Meta Developers.';
+      if (errCode === 190) userFriendlyError = 'El Access Token expiró o es inválido. Genera un nuevo token en Meta Developers.';
+      else if (errCode === 100) userFriendlyError = 'El Phone Number ID no existe o es incorrecto. Revisa el ID numérico en la sección "API Setup" de tu app de Meta.';
+      else if (errCode === 10 || errCode === 200) userFriendlyError = 'El token no tiene los permisos necesarios (whatsapp_business_messaging). Asegúrate de que el System User tenga acceso.';
+
+      console.error(`❌ [Meta Validation] Credenciales rechazadas por Meta (Code: ${errCode}): ${errMsg}`);
+      return res.status(400).json({
+        error: userFriendlyError,
+        details: errMsg,
+        metaErrorCode: errCode || null
+      });
+    }
+    // ────────────────────────────────────────────────────────────────────────
+
     // Buscar registro previo del tenant con proveedor META
     const existing = await prisma.registeredWhatsAppNumber.findFirst({
       where: { tenantId, provider: 'META' },
@@ -31,7 +68,6 @@ export async function saveMeta(req, res) {
 
     let record;
     if (existing) {
-      // Actualizar credenciales existentes
       record = await prisma.registeredWhatsAppNumber.update({
         where: { id: existing.id },
         data: {
@@ -44,7 +80,6 @@ export async function saveMeta(req, res) {
       });
       console.log(`✅ [Meta Connection] Credenciales actualizadas para Tenant: ${tenantId}`);
     } else {
-      // Crear nuevo registro Meta
       record = await prisma.registeredWhatsAppNumber.create({
         data: {
           phoneNumber: phoneLabel,
@@ -60,7 +95,7 @@ export async function saveMeta(req, res) {
 
     return res.json({
       success: true,
-      message: 'Conexión con Meta Cloud API guardada correctamente.',
+      message: 'Conexión con Meta Cloud API guardada y verificada correctamente.',
       provider: 'META',
       phoneNumberId: record.metaPhoneNumberId,
     });
@@ -69,6 +104,7 @@ export async function saveMeta(req, res) {
     return res.status(500).json({ error: 'Error interno al guardar la conexión de Meta.' });
   }
 }
+
 
 /**
  * GET /api/connections/provider
