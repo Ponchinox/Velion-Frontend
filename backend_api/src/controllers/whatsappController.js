@@ -993,7 +993,7 @@ export async function receiveWebhook(req, res) {
 
     if (isPaused) {
       console.log(`👥 [Auto-Pausa Human Handoff] Bot pausado para +${clientNumber} (< 24h desde la última interacción).`);
-      return res.sendStatus(200);
+      return; // Respuesta 200 ya enviada al inicio del webhook.
     }
 
     // 3. Sistema de Message Buffer / Debounce + Lock de Procesamiento
