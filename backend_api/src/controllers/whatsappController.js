@@ -1799,7 +1799,7 @@ ${inventarioTexto}
 
             if (reqIo) reqIo.emit('new_whatsapp_message', {
               chatId: chat.id,
-              remoteJid,
+              remoteJid: cleanJid,
               text: item.content,
               type: 'outgoing',
               status: 'sent',
@@ -1829,7 +1829,7 @@ ${inventarioTexto}
             if (reqIo) {
               reqIo.emit('new_whatsapp_message', {
                 chatId: chat.id,
-                remoteJid,
+                remoteJid: cleanJid,
                 text: item.url,
                 type: 'outgoing',
                 mediaType: item.type,
@@ -1858,12 +1858,12 @@ ${inventarioTexto}
     // Sea cual sea el resultado (éxito o error), siempre liberamos el lock.
     // Si hay mensajes encolados en pendingQueues, los inyectamos en el buffer
     // con un pequeño delay para que el cliente sienta la conversación fluida.
-    processingLocks.delete(remoteJid);
-    console.log(`🔓 [Processing Lock] Lock liberado para ${remoteJid}.`);
+    processingLocks.delete(cleanJid);
+    console.log(`🔓 [Processing Lock] Lock liberado para ${cleanJid}.`);
 
-    const pending = pendingQueues.get(remoteJid);
+    const pending = pendingQueues.get(cleanJid);
     if (pending) {
-      pendingQueues.delete(remoteJid);
+      pendingQueues.delete(cleanJid);
       console.log(`📬 [Pending Queue] Despachando ${pending.text.length} caracteres encolados para +${pending.clientNumber} con nuevo buffer de 4000ms.`);
       // Re-inyectar como nuevo buffer con debounce fresco
       const newBufferEntry = {
