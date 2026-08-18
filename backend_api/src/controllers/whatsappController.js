@@ -1058,6 +1058,19 @@ export async function receiveWebhook(req, res) {
         console.log(`🔒 [Processing Lock] IA ocupada para +${clientNumber}. Mensaje guardado en pendingQueue.`);
       }
       // Respuesta 200 ya enviada al inicio del webhook — no re-enviar.
+      return; // ✔️ IMPORTANTE: salir ya, el mensaje fue manejado por la cola.
+    }
+
+    // ── CHECK TEMPRANO: IA deshabilitada a nivel de Tenant ──
+    // Si el dueño de la tienda desactivó la IA desde Ajustes, cortocircuitar
+    // ANTES de entrar al buffer para no consumir cuota ni ciclos de CPU.
+    const aiEnabledCheck = await prisma.tenant.findUnique({
+      where: { id: tenant.id },
+      select: { aiEnabled: true }
+    });
+    if (aiEnabledCheck?.aiEnabled === false) {
+      console.log(`🤖 [IA Desactivada] aiEnabled=false para tenant '${tenant.name}'. Se ignora el mensaje de +${clientNumber}.`);
+      return;
     }
 
     // CASO B: No hay lock activo → aplicar debounce normal de 4000ms.
