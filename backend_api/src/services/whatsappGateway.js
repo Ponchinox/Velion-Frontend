@@ -114,10 +114,10 @@ export async function sendText(opts) {
         { headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' } }
       );
       const msgId = res.data?.messages?.[0]?.id || null;
-      console.log(`[WA Gateway META] Texto enviado a +${cleanTo} (msgId: ${msgId})`);
+      console.log(`[WA Gateway META] Texto enviado a ${cleanTo} (msgId: ${msgId})`);
       return msgId;
     } catch (err) {
-      console.error(`[WA Gateway META] Error al enviar texto a +${cleanTo}:`, err.response?.data || err.message);
+      console.error(`[WA Gateway META] Error al enviar texto a ${cleanTo}:`, err.response?.data || err.message);
       throw err;
     }
   }
@@ -137,7 +137,7 @@ export async function sendText(opts) {
         getEvoHeaders(apiKey)
       );
       const msgId = res.data?.key?.id || null;
-      console.log(`[WA Gateway EVOLUTION] Texto enviado a +${cleanTo} (msgId: ${msgId})`);
+      console.log(`[WA Gateway EVOLUTION] Texto enviado a ${cleanTo} (msgId: ${msgId})`);
       return msgId;
     } catch (err) {
       const status = err.response?.status;
@@ -152,7 +152,7 @@ export async function sendText(opts) {
         continue;
       }
 
-      console.error(`[WA Gateway EVOLUTION] Error definitivo al enviar texto a +${cleanTo} tras ${attempt} intento(s):`, JSON.stringify(err.response?.data || err.message));
+      console.error(`[WA Gateway EVOLUTION] Error definitivo al enviar texto a ${cleanTo} tras ${attempt} intento(s):`, JSON.stringify(err.response?.data || err.message));
       throw err;
     }
   }
@@ -203,10 +203,10 @@ export async function sendMedia(opts) {
         { headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' } }
       );
       const msgId = res.data?.messages?.[0]?.id || null;
-      console.log(`[WA Gateway META] ${isVideo ? 'Video' : 'Imagen'} enviado a +${cleanTo} (msgId: ${msgId})`);
+      console.log(`[WA Gateway META] ${isVideo ? 'Video' : 'Imagen'} enviado a ${cleanTo} (msgId: ${msgId})`);
       return msgId;
     } catch (err) {
-      console.error(`[WA Gateway META] Error al enviar ${isVideo ? 'video' : 'imagen'} a +${cleanTo}:`, err.response?.data || err.message);
+      console.error(`[WA Gateway META] Error al enviar ${isVideo ? 'video' : 'imagen'} a ${cleanTo}:`, err.response?.data || err.message);
       throw err;
     }
   }
@@ -225,10 +225,10 @@ export async function sendMedia(opts) {
       getEvoHeaders(apiKey)
     );
     const msgId = res.data?.key?.id || null;
-    console.log(`[WA Gateway EVOLUTION] ${isVideo ? 'Video' : 'Imagen'} enviado a +${cleanTo} (msgId: ${msgId})`);
+    console.log(`[WA Gateway EVOLUTION] ${isVideo ? 'Video' : 'Imagen'} enviado a ${cleanTo} (msgId: ${msgId})`);
     return msgId;
   } catch (err) {
-    console.error(`[WA Gateway EVOLUTION] Error al enviar ${isVideo ? 'video' : 'imagen'} a +${cleanTo}:`, JSON.stringify(err.response?.data || err.message));
+    console.error(`[WA Gateway EVOLUTION] Error al enviar ${isVideo ? 'video' : 'imagen'} a ${cleanTo}:`, JSON.stringify(err.response?.data || err.message));
     throw err;
   }
 }
