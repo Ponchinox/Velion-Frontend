@@ -1723,7 +1723,7 @@ ${inventarioTexto}
       const sequenceRegex = /(\[SPLIT\]|\[MEDIA:.*?\]|\[SEND_IMAGE:.*?\]|\[SEND_GALLERY:.*?\]|\[SEND_VIDEO:.*?\])/gi;
       const tokens = visibleText.split(sequenceRegex).filter(t => t !== undefined && t !== null);
 
-      const dispatchSequence = [];
+      let dispatchSequence = [];
       let textBuffer = "";
 
       for (const fragment of tokens) {
