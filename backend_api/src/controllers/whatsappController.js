@@ -586,6 +586,10 @@ async function normalizeEvolution(body, requestApiKey) {
     }
   }
 
+  // Asegurar que no haya prefijos '+' que Meta o Evolution rechacen
+  remoteJid = remoteJid.replace(/^\+/, '');
+  sender = sender.replace(/^\+/, '');
+
   const fromMe = Boolean(key.fromMe);
 
   let text = '';
@@ -763,6 +767,7 @@ export async function receiveWebhook(req, res) {
 
   const { sender: clientNumber, text: userMessageText, pushName } = normalized;
   const remoteJid = isMeta ? clientNumber : (normalized.remoteJid || clientNumber);
+  const cleanJid = remoteJid.replace(/^\+/, '');
   let mediaItems = normalized.mediaItems || [];
   const fromMe = isMeta ? false : (normalized.fromMe || false);
 
@@ -887,10 +892,10 @@ export async function receiveWebhook(req, res) {
           where: { tenantId: tenant.id, phone: { contains: cleanPhone } },
           data: { isBotPaused: true }
         });
-        if (messageBuffers.has(remoteJid)) {
-          const buf = messageBuffers.get(remoteJid);
+        if (messageBuffers.has(cleanJid)) {
+          const buf = messageBuffers.get(cleanJid);
           if (buf?.timer) clearTimeout(buf.timer);
-          messageBuffers.delete(remoteJid);
+          messageBuffers.delete(cleanJid);
         }
         if (req.io) {
           req.io.emit('contact_updated', { contactId: contact?.id, phone: cleanPhone, botPaused: true, reason: 'HUMAN_INTERVENTION' });
@@ -1010,8 +1015,8 @@ export async function receiveWebhook(req, res) {
     // 3. Sistema de Message Buffer / Debounce + Lock de Procesamiento
     const provider = isMeta ? 'META' : 'EVOLUTION';
     
-    if (processingLocks.has(remoteJid)) {
-      const existingQueue = pendingQueues.get(remoteJid);
+    if (processingLocks.has(cleanJid)) {
+      const existingQueue = pendingQueues.get(cleanJid);
       if (existingQueue) {
         existingQueue.text += '\n' + userMessageText;
         if (mediaItems.length > 0) {
@@ -1023,8 +1028,8 @@ export async function receiveWebhook(req, res) {
         }
         console.log(`🔒 [Processing Lock] IA ocupada para +${clientNumber}. Mensaje encolado en pendingQueue (acumulado).`);
       } else {
-        pendingQueues.set(remoteJid, {
-          remoteJid, clientNumber, text: userMessageText, mediaItems: mediaItems.slice(0, 3),
+        pendingQueues.set(cleanJid, {
+          remoteJid: cleanJid, clientNumber, text: userMessageText, mediaItems: mediaItems.slice(0, 3),
           tenant, contact, chat, instance, requestApiKey, provider,
           metaPhoneNumberId: metaNumberRecord?.metaPhoneNumberId,
           metaAccessToken: metaNumberRecord?.metaAccessToken,
@@ -1036,7 +1041,7 @@ export async function receiveWebhook(req, res) {
     }
 
     // CASO B: No hay lock activo → aplicar debounce normal de 4000ms.
-    const existingBuffer = messageBuffers.get(remoteJid);
+    const existingBuffer = messageBuffers.get(cleanJid);
     if (existingBuffer) {
       clearTimeout(existingBuffer.timer);
       existingBuffer.text += '\n' + userMessageText;
@@ -1054,12 +1059,12 @@ export async function receiveWebhook(req, res) {
         }
       }
       existingBuffer.timer = setTimeout(() => {
-        processBufferedMessage(remoteJid);
+        processBufferedMessage(cleanJid);
       }, 4000);
       console.log(`⏳ [Message Buffer] Mensaje en ráfaga concatenado para +${clientNumber}. Temporizador reiniciado a 4000ms.`);
     } else {
       const bufferEntry = {
-        remoteJid,
+        remoteJid: cleanJid,
         clientNumber,
         text: userMessageText,
         mediaItems: mediaItems.slice(0, 3),
@@ -1078,10 +1083,10 @@ export async function receiveWebhook(req, res) {
         data: normalized.rawData || null,
         reqIo: req.io,
         timer: setTimeout(() => {
-          processBufferedMessage(remoteJid);
+          processBufferedMessage(cleanJid);
         }, 4000)
       };
-      messageBuffers.set(remoteJid, bufferEntry);
+      messageBuffers.set(cleanJid, bufferEntry);
       console.log(`⏳ [Message Buffer] Primer mensaje de +${clientNumber}. Esperando 4000ms de silencio absoluto antes de invocar la IA...`);
     }
     // Respuesta ya enviada al inicio (res.sendStatus(200) en línea ~649).
@@ -1094,12 +1099,12 @@ export async function receiveWebhook(req, res) {
 /**
  * Procesa la ráfaga acumulada de mensajes en el buffer tras caducar el temporizador de 4000ms
  */
-async function processBufferedMessage(remoteJid) {
-  const buffer = messageBuffers.get(remoteJid);
+async function processBufferedMessage(cleanJid) {
+  const buffer = messageBuffers.get(cleanJid);
   if (!buffer) return;
 
   // Sacar y eliminar del buffer inmediatamente para liberar slot
-  messageBuffers.delete(remoteJid);
+  messageBuffers.delete(cleanJid);
 
   const {
     text: userMessageText,
@@ -1127,7 +1132,7 @@ async function processBufferedMessage(remoteJid) {
   // Marcar al usuario como "ocupado" para que los mensajes entrantes durante
   // la generación de la IA se encolen en pendingQueues en lugar de disparar
   // una segunda llamada paralela a la IA.
-  processingLocks.add(remoteJid);
+  processingLocks.add(cleanJid);
   console.log(`🔒 [Processing Lock] Lock activado para +${clientNumber}. La IA está generando respuesta.`);
 
   try {
@@ -1138,7 +1143,7 @@ async function processBufferedMessage(remoteJid) {
       where: {
         tenantId_phone: {
           tenantId: tenant.id,
-          phone: remoteJid
+          phone: cleanJid
         }
       }
     });
@@ -1146,7 +1151,7 @@ async function processBufferedMessage(remoteJid) {
     if (!customer) {
       customer = await prisma.customer.create({
         data: {
-          phone: remoteJid,
+          phone: cleanJid,
           tenantId: tenant.id,
           name: contact?.name || 'Cliente'
         }
@@ -1186,9 +1191,9 @@ async function processBufferedMessage(remoteJid) {
     }
 
     // --- ESCUDO DE FACTURACIÓN: Rate Limiter de IA (Máximo 10 mensajes de IA por minuto por usuario) ---
-    if (remoteJid) {
+    if (cleanJid) {
       const now = Date.now();
-      const limitData = iaRateLimitCache.get(remoteJid);
+      const limitData = iaRateLimitCache.get(cleanJid);
       if (limitData) {
         if (now < limitData.resetTime) {
           if (limitData.count >= 10) {
@@ -1197,10 +1202,10 @@ async function processBufferedMessage(remoteJid) {
           }
           limitData.count += 1;
         } else {
-          iaRateLimitCache.set(remoteJid, { count: 1, resetTime: now + 60000 });
+          iaRateLimitCache.set(cleanJid, { count: 1, resetTime: now + 60000 });
         }
       } else {
-        iaRateLimitCache.set(remoteJid, { count: 1, resetTime: now + 60000 });
+        iaRateLimitCache.set(cleanJid, { count: 1, resetTime: now + 60000 });
       }
     }
 

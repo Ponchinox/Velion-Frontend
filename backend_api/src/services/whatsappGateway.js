@@ -94,8 +94,11 @@ export async function sendText(opts) {
     ({ provider, instance, apiKey, metaPhoneNumberId, metaAccessToken } = ctx);
   }
 
-  const isLid = String(to).includes('@lid');
-  const cleanTo = isLid ? String(to).trim() : String(to).replace(/\D/g, '');
+  const isJid = String(to).includes('@lid') || String(to).includes('@s.whatsapp.net');
+  let cleanTo = String(to).trim().replace(/^\+/, '');
+  if (!isJid) {
+    cleanTo = cleanTo.replace(/\D/g, '');
+  }
 
   if (provider === 'META') {
     const token = metaAccessToken || process.env.META_ACCESS_TOKEN;
@@ -172,8 +175,11 @@ export async function sendMedia(opts) {
     ({ provider, instance, apiKey, metaPhoneNumberId, metaAccessToken } = ctx);
   }
 
-  const isLid = String(to).includes('@lid');
-  const cleanTo = isLid ? String(to).trim() : String(to).replace(/\D/g, '');
+  const isJid = String(to).includes('@lid') || String(to).includes('@s.whatsapp.net');
+  let cleanTo = String(to).trim().replace(/^\+/, '');
+  if (!isJid) {
+    cleanTo = cleanTo.replace(/\D/g, '');
+  }
 
   // Detectar si es video según mediaType o extensión de URL
   const lowerUrl = url.toLowerCase();
