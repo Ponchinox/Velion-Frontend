@@ -1387,15 +1387,25 @@ REGLAS DE ORO PARA ESTE MODO:
 
     // ─── DICCIONARIO DE COMANDOS DEL SISTEMA ───
     let systemCommands = `\n🛠️ DICCIONARIO DE COMANDOS DEL SISTEMA:
-Si necesitas ejecutar una acción del sistema, usa ÚNICAMENTE las siguientes etiquetas (siempre al FINAL ABSOLUTO de tu respuesta, no en medio del texto):
-`;
+Puedes usar las siguientes etiquetas dentro de tu respuesta para ejecutar acciones. Escríbelas exactamente como se indica:\n`;
+
     if (isMultiMessageActive) {
-      systemCommands += `- [SPLIT]: Úsalo entre ideas para separar tu texto en múltiples globos de chat cortos (Ej. '¡Hola! [SPLIT] ¿Qué buscas?').\n`;
+      systemCommands += `\n🧠 DINÁMICA DE CONVERSACIÓN HUMANA (MODO MULTI-MENSAJE):
+- Tienes la capacidad de dividir tu respuesta en varios "globos de chat" usando la etiqueta [SPLIT].
+- Si tu respuesta es CORTA y SIMPLE (ej. "Sí, claro", "Entendido", un saludo), NO USES [SPLIT]. Envía un solo bloque.
+- Si tu respuesta es LARGA o COMPLEJA, divídela lógicamente en 2 o 3 mensajes usando [SPLIT] para que sea fácil de leer (no dividas por cada párrafo, divide por ideas).
+- El orden importa: Si envías una imagen o video, usa [SPLIT] para separar el texto introductorio, luego la etiqueta de la imagen, y finalmente un texto de seguimiento. Por ejemplo: "Aquí está el producto: [SEND_IMAGE: producto] [SPLIT] ¿Qué te parece?".\n\n`;
     }
-    systemCommands += `- [SEND_IMAGE: nombre_exacto]: Envía la imagen principal de portada del producto (máx 2 imágenes por respuesta). NUNCA repitas una foto ya enviada.\n`;
-    systemCommands += `- [SEND_GALLERY: nombre_exacto]: Envía las fotos adicionales del producto ÚNICAMENTE si el cliente te pide expresamente ver más fotos, ángulos o detalles.\n`;
-    systemCommands += `- [SEND_VIDEO: nombre_exacto]: Envía el video demostrativo del producto ÚNICAMENTE si el cliente te pide expresamente ver un video o demostración de cómo funciona.\n`;
     
+    systemCommands += `📦 MULTIMEDIA (Úsalas en cualquier parte de tu texto, se enviarán en ese orden exacto):
+- [SEND_IMAGE: nombre_exacto]: Envía la imagen principal del producto (máx 2 por respuesta).
+- [SEND_GALLERY: nombre_exacto]: Envía fotos adicionales SOLO si piden más detalles.
+- [SEND_VIDEO: nombre_exacto]: Envía el video demostrativo SOLO si piden verlo.
+- [MEDIA: https://url.jpg]: Envía una imagen o video externo por URL directa (NO uses Markdown).
+
+⚙️ ACCIONES INVISIBLES (Estas DEBEN ir siempre al FINAL ABSOLUTO de tu respuesta):
+`;
+
     if (tenantDetails?.notifySalesWhatsApp === true) {
       systemCommands += `- [ORDER_CONFIRMED: Producto, Cantidad, Total]: Úsalo ÚNICAMENTE para pedidos coordinados directamente con el cliente donde:
   • El método de pago y condiciones están aprobadas por la tienda (según Políticas de la empresa).
@@ -1405,7 +1415,6 @@ Si necesitas ejecutar una acción del sistema, usa ÚNICAMENTE las siguientes et
     }
     
     systemCommands += `- [HUMAN_HANDOFF: Motivo]: Transfiere a un humano si el cliente insiste agresivamente o presenta quejas complejas, pero SOLO después de haber ofrecido tu ayuda primero.\n`;
-    systemCommands += `- [MEDIA: https://url.jpg]: Envía una imagen o video externo por URL directa (NO uses Markdown).\n`;
     systemCommands += `- [SAVE_MEM: resumen]: Guarda datos clave del cliente a largo plazo (ej. preferencias, talla).\n`;
     systemCommands += `- [BAN_USER]: Usa ESTA etiqueta como tu ÚNICA respuesta si el cliente te envía groserías o contenido inapropiado.\n`;
 
@@ -1482,66 +1491,7 @@ ${inventarioTexto}
       return;
     }
 
-    const mediaRegex = /\[MEDIA:\s*(.+?)\]/g;
-    const sendImageRegex = /\[SEND_IMAGE:\s*(.+?)\]/g;
-    const sendGalleryRegex = /\[SEND_GALLERY:\s*(.+?)\]/g;
-    const sendVideoRegex = /\[SEND_VIDEO:\s*(.+?)\]/g;
-    const mediaItemsToSend = []; // Array de { url, mediaType: 'image' | 'video' }
 
-    let match;
-    while ((match = mediaRegex.exec(aiResponse)) !== null) {
-      if (match[1]) {
-        const urls = match[1].split(',').map(url => url.trim());
-        for (const u of urls) {
-          const lower = u.toLowerCase();
-          const isVid = lower.includes('.mp4') || lower.includes('.mov') || lower.includes('.webm') || lower.includes('.m4v') || lower.includes('/video/upload/');
-          mediaItemsToSend.push({ url: u, mediaType: isVid ? 'video' : 'image' });
-        }
-      }
-    }
-
-    let imageMatch;
-    while ((imageMatch = sendImageRegex.exec(aiResponse)) !== null) {
-      if (imageMatch[1]) {
-        const queryStr = imageMatch[1].trim();
-        if (queryStr.startsWith('http')) {
-          mediaItemsToSend.push({ url: queryStr, mediaType: 'image' });
-        } else {
-          const matchedProd = products.find(p => p.name.toLowerCase().includes(queryStr.toLowerCase()));
-          if (matchedProd && matchedProd.imageUrl && matchedProd.imageUrl !== 'Sin imagen') {
-            mediaItemsToSend.push({ url: matchedProd.imageUrl, mediaType: 'image' });
-          }
-        }
-      }
-    }
-
-    let galleryMatch;
-    while ((galleryMatch = sendGalleryRegex.exec(aiResponse)) !== null) {
-      if (galleryMatch[1]) {
-        const queryStr = galleryMatch[1].trim();
-        const matchedProd = products.find(p => p.name.toLowerCase().includes(queryStr.toLowerCase()));
-        if (matchedProd && Array.isArray(matchedProd.images) && matchedProd.images.length > 0) {
-          for (const gUrl of matchedProd.images) {
-            mediaItemsToSend.push({ url: gUrl, mediaType: 'image' });
-          }
-        }
-      }
-    }
-
-    let videoMatch;
-    while ((videoMatch = sendVideoRegex.exec(aiResponse)) !== null) {
-      if (videoMatch[1]) {
-        const queryStr = videoMatch[1].trim();
-        if (queryStr.startsWith('http')) {
-          mediaItemsToSend.push({ url: queryStr, mediaType: 'video' });
-        } else {
-          const matchedProd = products.find(p => p.name.toLowerCase().includes(queryStr.toLowerCase()));
-          if (matchedProd && matchedProd.videoUrl) {
-            mediaItemsToSend.push({ url: matchedProd.videoUrl, mediaType: 'video' });
-          }
-        }
-      }
-    }
 
     const saveMemRegex = /\[SAVE_MEM:\s*(.+?)\]/g;
     const newMemories = [];
@@ -1719,143 +1669,174 @@ ${inventarioTexto}
       }
     }
 
-    const cleanText = aiResponse
-      .replace(mediaRegex, '')
-      .replace(sendImageRegex, '')
-      .replace(sendGalleryRegex, '')
-      .replace(sendVideoRegex, '')
+    const visibleText = aiResponse
       .replace(saveMemRegex, '')
       .replace(orderRegex, '')
       .replace(handoffRegex, '')
       .replace(verifyPaymentRegex, '')
       .trim();
 
-    if (cleanText) {
+    if (visibleText) {
       const isMultiMsg = tenantDetails?.multiMessageMode !== false;
+      const sequenceRegex = /(\[SPLIT\]|\[MEDIA:.*?\]|\[SEND_IMAGE:.*?\]|\[SEND_GALLERY:.*?\]|\[SEND_VIDEO:.*?\])/gi;
+      const tokens = visibleText.split(sequenceRegex).filter(t => t !== undefined && t !== null);
 
-      if (isMultiMsg) {
-        // Modo Conversación Humana ACTIVO: Dividir por [SPLIT] y enviar con pausa entre mensajes
-        const messageSegments = cleanText
-          .split('[SPLIT]')
-          .map(segment => segment.trim())
-          .filter(segment => segment.length > 0);
+      const dispatchSequence = [];
+      let textBuffer = "";
 
-        console.log(`📤 [${provider} Gateway] Modo Multi-Mensaje: enviando ${messageSegments.length} segmento(s) a ${finalCleanNumber}...`);
-
-        for (let i = 0; i < messageSegments.length; i++) {
-          const msgSegment = messageSegments[i];
-          let msgId = null;
-          try {
-            msgId = await sendWhatsAppReply({ ...gatewayCtx, to: finalCleanNumber, text: msgSegment });
-            if (msgId) markMessageAsSentByAi(msgId);
-            markMessageAsSentByAi(msgSegment);
-            console.log(`✅ [${provider} Gateway] Segmento ${i + 1}/${messageSegments.length} enviado (msgId: ${msgId}).`);
-          } catch (sendErr) {
-            console.error(`❌ [${provider} Gateway] Error al enviar segmento ${i + 1}:`, sendErr.message);
+      for (const fragment of tokens) {
+        if (!fragment) continue;
+        
+        const token = fragment.trim();
+        const upperToken = token.toUpperCase();
+        
+        if (upperToken === '[SPLIT]') {
+          if (isMultiMsg && textBuffer.trim()) {
+            dispatchSequence.push({ type: 'text', content: textBuffer.trim() });
+            textBuffer = "";
+          } else if (!isMultiMsg) {
+            textBuffer += " "; // Si el modo humano está desactivado, el SPLIT se ignora como espacio
           }
-
-          const savedMsg = await prisma.message.create({
-            data: {
-              content: msgSegment,
-              senderRole: 'agent',
-              status: 'sent',
-              externalId: msgId || null,
-              chatId: chat.id,
-              tenantId: tenant.id
+        } else if (upperToken.startsWith('[SEND_IMAGE:')) {
+          if (textBuffer.trim()) {
+            dispatchSequence.push({ type: 'text', content: textBuffer.trim() });
+            textBuffer = "";
+          }
+          const queryStr = token.substring(12, token.length - 1).trim();
+          let url = null;
+          if (queryStr.startsWith('http')) {
+            url = queryStr;
+          } else {
+            const matchedProd = products.find(p => p.name.toLowerCase().includes(queryStr.toLowerCase()));
+            if (matchedProd && matchedProd.imageUrl && matchedProd.imageUrl !== 'Sin imagen') {
+              url = matchedProd.imageUrl;
             }
-          });
-
-          if (reqIo) reqIo.emit('new_whatsapp_message', {
-            chatId: chat.id,
-            remoteJid,
-            text: msgSegment,
-            type: 'outgoing',
-            status: 'sent',
-            externalId: msgId || null,
-            messageId: savedMsg.id,
-            timestamp: new Date()
-          });
-
-          // Pausa de 2.5 segundos entre segmentos para simular escritura humana
-          if (i < messageSegments.length - 1) {
-            await new Promise(resolve => setTimeout(resolve, 2500));
           }
-        }
-      } else {
-        // Modo Conversación Humana DESACTIVADO: Enviar 1 solo bloque
-        const singleMessage = cleanText
-          .replace(/\[SPLIT\]/g, ' ')
-          .replace(/\s{2,}/g, ' ')
-          .trim();
-
-        console.log(`📤 [${provider} Gateway] Modo Mensaje Único: enviando a ${finalCleanNumber}...`);
-        let msgId = null;
-        try {
-          msgId = await sendWhatsAppReply({ ...gatewayCtx, to: finalCleanNumber, text: singleMessage });
-          if (msgId) markMessageAsSentByAi(msgId);
-          markMessageAsSentByAi(singleMessage);
-          console.log(`✅ [${provider} Gateway] Mensaje único enviado a ${finalCleanNumber} (msgId: ${msgId}).`);
-        } catch (sendErr) {
-          console.error(`❌ [${provider} Gateway] Error al enviar mensaje único:`, sendErr.message);
-        }
-
-        const savedMsg = await prisma.message.create({
-          data: {
-            content: singleMessage,
-            senderRole: 'agent',
-            status: 'sent',
-            externalId: msgId || null,
-            chatId: chat.id,
-            tenantId: tenant.id
+          if (url) dispatchSequence.push({ type: 'image', url });
+        } else if (upperToken.startsWith('[SEND_VIDEO:')) {
+          if (textBuffer.trim()) {
+            dispatchSequence.push({ type: 'text', content: textBuffer.trim() });
+            textBuffer = "";
           }
-        });
-
-        if (reqIo) reqIo.emit('new_whatsapp_message', {
-          chatId: chat.id,
-          remoteJid,
-          text: singleMessage,
-          type: 'outgoing',
-          status: 'sent',
-          externalId: msgId || null,
-          messageId: savedMsg.id,
-          timestamp: new Date()
-        });
+          const queryStr = token.substring(12, token.length - 1).trim();
+          let url = null;
+          if (queryStr.startsWith('http')) {
+            url = queryStr;
+          } else {
+            const matchedProd = products.find(p => p.name.toLowerCase().includes(queryStr.toLowerCase()));
+            if (matchedProd && matchedProd.videoUrl) {
+              url = matchedProd.videoUrl;
+            }
+          }
+          if (url) dispatchSequence.push({ type: 'video', url });
+        } else if (upperToken.startsWith('[SEND_GALLERY:')) {
+          if (textBuffer.trim()) {
+            dispatchSequence.push({ type: 'text', content: textBuffer.trim() });
+            textBuffer = "";
+          }
+          const queryStr = token.substring(14, token.length - 1).trim();
+          const matchedProd = products.find(p => p.name.toLowerCase().includes(queryStr.toLowerCase()));
+          if (matchedProd && Array.isArray(matchedProd.images) && matchedProd.images.length > 0) {
+            for (const gUrl of matchedProd.images) {
+              dispatchSequence.push({ type: 'image', url: gUrl });
+            }
+          }
+        } else if (upperToken.startsWith('[MEDIA:')) {
+          if (textBuffer.trim()) {
+            dispatchSequence.push({ type: 'text', content: textBuffer.trim() });
+            textBuffer = "";
+          }
+          const urlsStr = token.substring(7, token.length - 1).trim();
+          const urls = urlsStr.split(',').map(u => u.trim());
+          for (const u of urls) {
+            const lower = u.toLowerCase();
+            const isVid = lower.includes('.mp4') || lower.includes('.mov') || lower.includes('.webm') || lower.includes('.m4v') || lower.includes('/video/upload/');
+            dispatchSequence.push({ type: isVid ? 'video' : 'image', url: u });
+          }
+        } else {
+          // Texto normal, mantenemos los espacios originales al acumular
+          textBuffer += fragment;
+        }
       }
-    }
 
-    for (const mediaItem of mediaItemsToSend) {
-      const { url, mediaType } = mediaItem;
-      if (url && url !== 'Sin imagen') {
-        try {
-          const mediaMsgId = await sendWhatsAppMedia({ ...gatewayCtx, to: finalCleanNumber, url, mediaType });
-          console.log(`✅ [${provider} Gateway] Multimedia (${mediaType}) enviado a ${finalCleanNumber} (msgId: ${mediaMsgId})`);
+      if (textBuffer.trim()) {
+        dispatchSequence.push({ type: 'text', content: textBuffer.trim() });
+      }
 
-          const savedMediaMsg = await prisma.message.create({
-            data: {
-              content: `[${mediaType === 'video' ? 'Video' : 'Imagen'}]: ${url}`,
-              senderRole: 'agent',
-              status: 'sent',
-              externalId: mediaMsgId || null,
-              chatId: chat.id,
-              tenantId: tenant.id
-            }
-          });
+      console.log(`📤 [${provider} Gateway] Secuencia de despacho: ${dispatchSequence.length} elementos para ${finalCleanNumber}.`);
 
-          if (reqIo) {
-            reqIo.emit('new_whatsapp_message', {
+      // ─── DESPACHO SECUENCIAL ───
+      for (let i = 0; i < dispatchSequence.length; i++) {
+        const item = dispatchSequence[i];
+        
+        if (item.type === 'text') {
+          try {
+            const msgId = await sendWhatsAppReply({ ...gatewayCtx, to: finalCleanNumber, text: item.content });
+            if (msgId) markMessageAsSentByAi(msgId);
+            markMessageAsSentByAi(item.content);
+            console.log(`✅ [${provider} Gateway] Texto enviado (msgId: ${msgId}).`);
+
+            const savedMsg = await prisma.message.create({
+              data: {
+                content: item.content,
+                senderRole: 'agent',
+                status: 'sent',
+                externalId: msgId || null,
+                chatId: chat.id,
+                tenantId: tenant.id
+              }
+            });
+
+            if (reqIo) reqIo.emit('new_whatsapp_message', {
               chatId: chat.id,
               remoteJid,
-              text: url,
+              text: item.content,
               type: 'outgoing',
-              mediaType: mediaType || 'image',
               status: 'sent',
-              externalId: mediaMsgId || null,
-              messageId: savedMediaMsg.id,
+              externalId: msgId || null,
+              messageId: savedMsg.id,
               timestamp: new Date()
             });
+          } catch (sendErr) {
+            console.error(`❌ [${provider} Gateway] Error al enviar texto:`, sendErr.message);
           }
-        } catch (mediaSendError) {
-          console.error(`❌ [${provider} Gateway] Error al enviar multimedia:`, mediaSendError.message);
+        } else if (item.type === 'image' || item.type === 'video') {
+          try {
+            const mediaMsgId = await sendWhatsAppMedia({ ...gatewayCtx, to: finalCleanNumber, url: item.url, mediaType: item.type });
+            console.log(`✅ [${provider} Gateway] Multimedia (${item.type}) enviado a ${finalCleanNumber} (msgId: ${mediaMsgId})`);
+
+            const savedMediaMsg = await prisma.message.create({
+              data: {
+                content: `[${item.type === 'video' ? 'Video' : 'Imagen'}]: ${item.url}`,
+                senderRole: 'agent',
+                status: 'sent',
+                externalId: mediaMsgId || null,
+                chatId: chat.id,
+                tenantId: tenant.id
+              }
+            });
+
+            if (reqIo) {
+              reqIo.emit('new_whatsapp_message', {
+                chatId: chat.id,
+                remoteJid,
+                text: item.url,
+                type: 'outgoing',
+                mediaType: item.type,
+                status: 'sent',
+                externalId: mediaMsgId || null,
+                messageId: savedMediaMsg.id,
+                timestamp: new Date()
+              });
+            }
+          } catch (mediaSendError) {
+            console.error(`❌ [${provider} Gateway] Error al enviar multimedia:`, mediaSendError.message);
+          }
+        }
+
+        // Pausa entre despachos para asegurar orden cronológico y simular escritura (2.5 seg)
+        if (i < dispatchSequence.length - 1) {
+          await new Promise(resolve => setTimeout(resolve, 2500));
         }
       }
     }

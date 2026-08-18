@@ -6,7 +6,7 @@ import { Cardholder, Check, Sparkle, WarningCircle, CircleNotch, X, Copy, QrCode
 
 // Variables estáticas para fácil modificación
 const YAPE_NUMBER = '953789363';
-const SUPPORT_WHATSAPP = '991535502';
+const SUPPORT_WHATSAPP = '984363997';
 
 export default function BillingPage() {
   const { user } = useAuth();
