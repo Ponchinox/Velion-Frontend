@@ -166,6 +166,9 @@ const pendingQueues = new Map();
 // Permite distinguir intervención humana manual desde el celular/WhatsApp Web
 const sentByAiCache = new Set();
 
+// Cache para deduplicación de webhooks entrantes (5 minutos de TTL)
+const processedWebhooksCache = new Map();
+
 export function markMessageAsSentByAi(textOrId) {
   if (!textOrId) return;
   const clean = typeof textOrId === 'string' ? textOrId.trim() : '';
@@ -783,6 +786,23 @@ export async function receiveWebhook(req, res) {
   // Ignorar mensajes sin texto
   if (!userMessageText?.trim()) return;
 
+  // ── 3.5 DEDUPLICACIÓN DE WEBHOOKS (REINTENTOS DE RED) ──
+  if (normalized.msgId) {
+    if (processedWebhooksCache.has(normalized.msgId)) {
+      console.log(`♻️ [Deduplication] Webhook duplicado ignorado (msgId: ${normalized.msgId}) de +${cleanJid}`);
+      return;
+    }
+    processedWebhooksCache.set(normalized.msgId, Date.now());
+    
+    // Auto-limpieza perezosa para evitar fugas de memoria
+    if (processedWebhooksCache.size > 1000) {
+      const now = Date.now();
+      for (const [k, v] of processedWebhooksCache.entries()) {
+        if (now - v > 5 * 60 * 1000) processedWebhooksCache.delete(k);
+      }
+    }
+  }
+
   try {
     // ── 4. RESOLUCIÓN DE TENANT ────────────────────────────────────────────────
     let tenant = null;
@@ -1308,8 +1328,8 @@ REGLA ANTI-ALUCINACIÓN (CRÍTICA, SIN EXCEPCIONES):
 Si no existe en el catálogo: "Por ahora no contamos con ese producto, pero puedo mostrarte lo que sí tenemos." No prometas condiciones no especificadas por la tienda.
 
 ASOCIACIÓN SEMÁNTICA + LÍMITES DE CATEGORÍA (CRÍTICO):
-Busca por familia semántica antes de negar: "audífonos" → AirPods/TWS/earbuds | "relojes" → smartwatch/Xiaomi Band | "parlantes" → JBL/Bluetooth Speaker | "cargadores" → USB/inalámbrico.
-LÍMITE ESTRICTO: SOLO ofrece alternativas de la MISMA categoría. NUNCA ofrezcas relojes si piden parlantes. Las categorías son compartimentos estancos.
+Busca por familia semántica antes de negar: "Categoría A" → Variante 1/Variante 2 | "Categoría B" → Variante 3.
+LÍMITE ESTRICTO: SOLO ofrece alternativas de la MISMA categoría. NUNCA ofrezcas un producto de otra categoría de forma engañosa si piden algo específico. Las categorías son compartimentos estancos.
 RENDICIÓN ELEGANTE: Si no hay nada en esa categoría, discúlpate brevemente y haz una pregunta abierta general. NUNCA dispares imágenes de productos no solicitados.
 
 MONEDA (OBLIGATORIO): Usa SIEMPRE "S/." para precios. El símbolo "$" está TOTALMENTE PROHIBIDO.
@@ -1377,17 +1397,16 @@ COMPORTAMIENTO CONTEXTUAL:
 
     let marketingInstructionRule = '';
     if (tenantDetails?.marketingModeEnabled === true) {
-      marketingInstructionRule = `\nMODO VENDEDOR PERSUASIVO (ESTRATEGIAS DE MARKETING Y CIERRE):
-Tu objetivo principal es concretar la venta de forma proactiva, persuasiva y fluida, manteniendo siempre la honestidad. Eres un experto en conversiones por WhatsApp.
+      marketingInstructionRule = `\nMODO VENDEDOR PERSUASIVO (ESTRATEGIAS DE VENTA CONSULTIVA):
+Tu objetivo principal es asistir al cliente resolviendo sus dudas con autoridad técnica y concretar la venta solo cuando el cliente esté listo, sin presionarlo. Eres un experto en ventas consultivas por WhatsApp.
 
 REGLAS DE ORO PARA ESTE MODO:
-1. VALOR ANTES DEL PRECIO, PERO RÁPIDO: Cuando pregunten el precio, destaca 1 o 2 beneficios clave de forma súper concisa y luego da el precio inmediatamente. No lo ocultes.
-2. USO LIMITADO DE EMOJIS EN MODO PERSUASIVO: Mantén un tono profesional y limpio. Usa un MÁXIMO ABSOLUTO de 1 o 2 emojis por mensaje en total para reforzar el tono emocional (ej. 🔥, ✨, 🚀). Esta regla de límite es OBLIGATORIA y no opcional.
-3. ESTRATEGIA DE PROMOCIONES Y URGENCIAS: Si la tienda te ha proporcionado promociones o descuentos, úsalos estratégicamente para incentivar el cierre rápido. Resalta el contraste (ej. 'Normalmente cuesta S/. X, pero hoy por promoción está en S/. Y 🔥').
-4. CIERRE PERSUASIVO (Prioridad Máxima): IGNORA la regla global de cierre. ESTRICTAMENTE finaliza cada mensaje con una pregunta corta para incitar a la acción y cerrar la venta.
-5. OBJECCIONES Y ALTERNATIVAS: Si el cliente duda por el precio, recuérdale el valor diferencial (envío gratis, garantía, calidad) o muéstrale rápidamente una opción más económica si existe en el catálogo.
-6. PROHIBICIÓN DE VENTA CRUZADA FORZADA (CRÍTICO): NUNCA ofrezcas productos de una categoría diferente a la que el cliente pidió como si fueran equivalentes. Si el cliente pide un parlante y no tienes, NO ofrezcas relojes ni audífonos como 'alternativa'. Eso es engañoso y destruye la confianza. Solo ofrece alternativas de la misma familia semántica o rinde elegantemente.
-7. ÉTICA ESTRICTA: NUNCA inventes características, precios, promociones ni garantías que no estén en tu base de conocimiento. Vende con urgencia y persuasión, pero solo con datos reales de la tienda.\n`;
+1. FASE DE CONSULTA (Sin presión): Si el cliente hace preguntas sobre seguridad, garantía, funcionamiento o dudas generales, respóndele con autoridad y cierra con una SOLA pregunta abierta (ej. '¿Para qué uso principal lo estás buscando?'). NUNCA presiones a pagar ni menciones medios de pago en esta fase.
+2. FASE DE CIERRE (Precisión): SOLO y ÚNICAMENTE cuando el cliente exprese explícitamente su deseo de comprar (ej. 'quiero comprar', 'dónde pago', 'pásame la cuenta', 'ya lo quiero'), proporciona las instrucciones de pago o precios de cierre. PROHIBICIÓN ABSOLUTA de enviar números de cuenta, Yape o pedir comprobantes si el cliente solo consulta precios o info.
+3. VALOR ANTES DEL PRECIO: Cuando pregunten el precio, destaca 1 o 2 beneficios clave de forma concisa y luego da el precio inmediatamente.
+4. ESTRATEGIA DE PROMOCIONES: Si la tienda te ha proporcionado promociones activas, úsalos estratégicamente para incentivar el cierre cuando el cliente muestre interés.
+5. USO LIMITADO DE EMOJIS: Usa un MÁXIMO ABSOLUTO de 1 o 2 emojis por mensaje para reforzar el tono profesional (ej. 🔥, 🚀). Esta regla es OBLIGATORIA.
+6. ÉTICA ESTRICTA: NUNCA inventes precios, características ni promociones falsas. Solo ofrece alternativas de la misma familia semántica si algo está agotado.\n`;
     }
 
     // ─── DICCIONARIO DE COMANDOS DEL SISTEMA ───
@@ -1396,10 +1415,10 @@ Puedes usar las siguientes etiquetas dentro de tu respuesta para ejecutar accion
 
     if (isMultiMessageActive) {
       systemCommands += `\n🧠 DINÁMICA DE CONVERSACIÓN HUMANA (MODO MULTI-MENSAJE):
-- Tienes la capacidad de dividir tu respuesta en varios "globos de chat" usando la etiqueta [SPLIT].
+- Tienes la capacidad de dividir tu respuesta en "globos de chat" usando la etiqueta [SPLIT].
 - Si tu respuesta es CORTA y SIMPLE (ej. "Sí, claro", "Entendido", un saludo), NO USES [SPLIT]. Envía un solo bloque.
-- Si tu respuesta es LARGA o COMPLEJA, divídela lógicamente en 2 o 3 mensajes usando [SPLIT] para que sea fácil de leer (no dividas por cada párrafo, divide por ideas).
-- El orden importa: Si envías una imagen o video, usa [SPLIT] para separar el texto introductorio, luego la etiqueta de la imagen, y finalmente un texto de seguimiento. Por ejemplo: "Aquí está el producto: [SEND_IMAGE: producto] [SPLIT] ¿Qué te parece?".\n\n`;
+- Si envías una imagen o video, usa [SPLIT] para separar el texto introductorio, luego la etiqueta de la imagen, y finalmente un texto de seguimiento. Por ejemplo: "Aquí está: [SEND_IMAGE: producto] [SPLIT] ¿Qué te parece?".
+- LÍMITE ESTRICTO DE RÁFAGA: ESTÁ ESTRICTAMENTE PROHIBIDO usar más de 2 o 3 [SPLIT] por respuesta. NUNCA envíes ráfagas largas de 4 o más mensajes. Sé conciso y agrupa tus ideas.\n\n`;
     }
     
     systemCommands += `📦 MULTIMEDIA (Úsalas en cualquier parte de tu texto, se enviarán en ese orden exacto):
@@ -1773,10 +1792,36 @@ ${inventarioTexto}
         dispatchSequence.push({ type: 'text', content: textBuffer.trim() });
       }
 
+      // ─── LÍMITE DURO DE FRAGMENTOS (MÁXIMO 3 TEXTOS) ───
+      let textCount = 0;
+      let limitedSequence = [];
+      for (const item of dispatchSequence) {
+        if (item.type === 'text') {
+          textCount++;
+          if (textCount > 3) {
+            const lastTextIndex = limitedSequence.findLastIndex(x => x.type === 'text');
+            if (lastTextIndex !== -1) {
+              limitedSequence[lastTextIndex].content += '\n\n' + item.content;
+            }
+          } else {
+            limitedSequence.push(item);
+          }
+        } else {
+          limitedSequence.push(item);
+        }
+      }
+      dispatchSequence = limitedSequence;
+
       console.log(`📤 [${provider} Gateway] Secuencia de despacho: ${dispatchSequence.length} elementos para ${finalCleanNumber}.`);
 
       // ─── DESPACHO SECUENCIAL ───
       for (let i = 0; i < dispatchSequence.length; i++) {
+        // ─── INTERRUPCIÓN DE SECUENCIA (CANCELACIÓN DE COLA) ───
+        if (pendingQueues.has(cleanJid)) {
+          console.log(`🛑 [Interrupción Activa] El usuario +${finalCleanNumber} envió un nuevo mensaje. Cancelando el envío de ${dispatchSequence.length - i} globos restantes de la ráfaga anterior...`);
+          break; // Rompe el bucle de despacho. El bloque finally procesará la nueva cola.
+        }
+
         const item = dispatchSequence[i];
         
         if (item.type === 'text') {
