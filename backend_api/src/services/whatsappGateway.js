@@ -94,7 +94,8 @@ export async function sendText(opts) {
     ({ provider, instance, apiKey, metaPhoneNumberId, metaAccessToken } = ctx);
   }
 
-  const cleanTo = String(to).replace(/\D/g, '');
+  const isLid = String(to).includes('@lid');
+  const cleanTo = isLid ? String(to).trim() : String(to).replace(/\D/g, '');
 
   if (provider === 'META') {
     const token = metaAccessToken || process.env.META_ACCESS_TOKEN;
@@ -148,7 +149,7 @@ export async function sendText(opts) {
         continue;
       }
 
-      console.error(`[WA Gateway EVOLUTION] Error definitivo al enviar texto a +${cleanTo} tras ${attempt} intento(s):`, err.response?.data || err.message);
+      console.error(`[WA Gateway EVOLUTION] Error definitivo al enviar texto a +${cleanTo} tras ${attempt} intento(s):`, JSON.stringify(err.response?.data || err.message));
       throw err;
     }
   }
@@ -171,7 +172,8 @@ export async function sendMedia(opts) {
     ({ provider, instance, apiKey, metaPhoneNumberId, metaAccessToken } = ctx);
   }
 
-  const cleanTo = String(to).replace(/\D/g, '');
+  const isLid = String(to).includes('@lid');
+  const cleanTo = isLid ? String(to).trim() : String(to).replace(/\D/g, '');
 
   // Detectar si es video según mediaType o extensión de URL
   const lowerUrl = url.toLowerCase();
@@ -220,7 +222,7 @@ export async function sendMedia(opts) {
     console.log(`[WA Gateway EVOLUTION] ${isVideo ? 'Video' : 'Imagen'} enviado a +${cleanTo} (msgId: ${msgId})`);
     return msgId;
   } catch (err) {
-    console.error(`[WA Gateway EVOLUTION] Error al enviar ${isVideo ? 'video' : 'imagen'} a +${cleanTo}:`, err.response?.data || err.message);
+    console.error(`[WA Gateway EVOLUTION] Error al enviar ${isVideo ? 'video' : 'imagen'} a +${cleanTo}:`, JSON.stringify(err.response?.data || err.message));
     throw err;
   }
 }

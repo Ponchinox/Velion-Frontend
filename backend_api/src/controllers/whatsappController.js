@@ -458,7 +458,7 @@ export async function sendMessage(req, res) {
       ? await resolveGatewayCtx(tenantId)
       : { provider: 'EVOLUTION', instance: instanceName, apiKey: (process.env.EVOLUTION_API_KEY || '').trim(), metaPhoneNumberId: null, metaAccessToken: null };
 
-    const cleanNumber = number.replace(/\D/g, '');
+    const cleanNumber = String(number).includes('@lid') ? String(number).trim() : String(number).replace(/\D/g, '');
 
     const msgId = await gatewaySendText({
       ...ctx,
@@ -573,8 +573,19 @@ async function normalizeEvolution(body, requestApiKey) {
   if (event !== 'messages.upsert') return null;
 
   const key = data?.key || {};
-  const remoteJid = key.remoteJid || '';
-  const sender = remoteJid.split('@')[0] || '';
+  let remoteJid = key.remoteJid || '';
+  let sender = remoteJid.split('@')[0] || '';
+
+  // Si viene como @lid, intentamos extraer el número telefónico real
+  if (remoteJid.includes('@lid')) {
+    if (key.remoteJidAlt) {
+      remoteJid = key.remoteJidAlt;
+      sender = remoteJid.split('@')[0] || sender;
+    } else {
+      sender = remoteJid; // Conservar el @lid completo para el gateway
+    }
+  }
+
   const fromMe = Boolean(key.fromMe);
 
   let text = '';
@@ -826,7 +837,7 @@ export async function receiveWebhook(req, res) {
     }
 
     // ── 5. PERSISTENCIA EN CRM (Contact, Chat) ────────────────────────────────
-    const cleanPhone = String(clientNumber).replace(/\D/g, '') || clientNumber;
+    const cleanPhone = String(clientNumber).includes('@lid') ? String(clientNumber).trim() : (String(clientNumber).replace(/\D/g, '') || clientNumber);
     const isOutgoing = fromMe;
 
     const extractedName = sanitizePushName(!isOutgoing ? pushName : null);
@@ -1110,7 +1121,7 @@ async function processBufferedMessage(remoteJid) {
   const gatewayCtx = { provider, instance, apiKey: requestApiKey, metaPhoneNumberId, metaAccessToken };
 
   console.log(`🤖 [Message Buffer] Procesando ráfaga acumulada para +${clientNumber} (${userMessageText.length} caracteres): "${userMessageText.replace(/\n/g, ' ')}"`);
-  const finalCleanNumber = String(clientNumber || '').replace(/[^0-9]/g, '');
+  const finalCleanNumber = String(clientNumber || '').includes('@lid') ? String(clientNumber || '').trim() : String(clientNumber || '').replace(/[^0-9]/g, '');
 
   // ─── LOCK DE PROCESAMIENTO (ANTI-PARALELISMO) ───
   // Marcar al usuario como "ocupado" para que los mensajes entrantes durante
