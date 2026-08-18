@@ -33,6 +33,7 @@ model Tenant {
   notificationPhone String?
   notifySalesWhatsApp Boolean      @default(false)
   marketingModeEnabled Boolean     @default(false)
+  aiEnabled       Boolean          @default(true)
   createdAt       DateTime         @default(now())
   updatedAt       DateTime         @updatedAt
 

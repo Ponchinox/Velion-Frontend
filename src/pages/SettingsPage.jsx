@@ -48,6 +48,7 @@ export default function SettingsPage() {
     multiMessageMode: true,
     notificationPhone: '',
     notifySalesWhatsApp: false,
+    aiEnabled: true,
   });
 
   // Estados Maqueta de Cuenta
@@ -113,6 +114,7 @@ export default function SettingsPage() {
               notificationPhone: tenantData.notificationPhone || '',
               notifySalesWhatsApp: tenantData.notifySalesWhatsApp === true,
               marketingModeEnabled: tenantData.marketingModeEnabled === true,
+              aiEnabled: tenantData.aiEnabled !== false,
             });
           }
 
@@ -696,6 +698,32 @@ export default function SettingsPage() {
                           Activa estrategias avanzadas de cierre de ventas. El bot aplicará tácticas de persuasión, venta basada en valor y seguimiento inteligente para maximizar tus conversiones.
                           <div className="absolute top-full left-1/2 -translate-x-1/2 -mt-1 border-4 border-transparent border-t-gray-900" />
                         </div>
+                      </div>
+                    </div>
+
+                    {/* Botón: Activar/Desactivar Inteligencia Artificial */}
+                    <div className="col-span-full flex items-center gap-2 pt-4 mt-2 border-t border-gray-100">
+                      <div className="flex flex-col gap-1 w-full">
+                        <div className="flex items-center justify-between">
+                          <span className="text-sm font-semibold text-gray-800">
+                            Estado de la Inteligencia Artificial
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setBotConfig(prev => ({ ...prev, aiEnabled: !prev.aiEnabled }));
+                              setIsFormDirty(true);
+                            }}
+                            className={`px-4 py-2 rounded-md text-sm font-medium transition-colors border cursor-pointer ${botConfig.aiEnabled !== false ? 'bg-white border-gray-300 text-gray-700 hover:bg-gray-50' : 'bg-gray-100 border-gray-200 text-gray-500 hover:bg-gray-200'}`}
+                          >
+                            {botConfig.aiEnabled !== false ? 'Desactivar IA' : 'Activar IA'}
+                          </button>
+                        </div>
+                        <p className="text-xs text-gray-500">
+                          {botConfig.aiEnabled !== false
+                            ? 'La Inteligencia Artificial está actualmente activada y respondiendo a los clientes.'
+                            : 'La Inteligencia Artificial está desactivada. No consumirá tokens ni responderá mensajes.'}
+                        </p>
                       </div>
                     </div>
                   </div>

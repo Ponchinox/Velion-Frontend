@@ -1451,6 +1451,11 @@ ${inventarioTexto}
 
     console.log(`🧠 [Cerebro IA] Generando respuesta para +${clientNumber} [${provider}]...`);
 
+    if (tenantDetails?.aiEnabled === false) {
+      console.log(`🤖 [Control Manual] Inteligencia Artificial deshabilitada globalmente para el tenant. Ignorando mensaje de +${clientNumber}.`);
+      return;
+    }
+
     // Indicador "escribiendo..." — solo soportado en Evolution
     if (provider === 'EVOLUTION') {
       try {

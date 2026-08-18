@@ -32,6 +32,7 @@ export async function getSettings(req, res) {
         notificationPhone: true,
         notifySalesWhatsApp: true,
         marketingModeEnabled: true,
+        aiEnabled: true,
       }
     });
 
@@ -91,7 +92,8 @@ export async function updateSettings(req, res) {
       respondInGroups,
       notificationPhone,
       notifySalesWhatsApp,
-      marketingModeEnabled
+      marketingModeEnabled,
+      aiEnabled
     } = req.body;
 
     // ── Verificación de Plan: Modo Vendedor Persuasivo permitido para todos los clientes con plan activo ──
@@ -128,7 +130,8 @@ export async function updateSettings(req, res) {
         ...(notifySalesWhatsApp !== undefined && { notifySalesWhatsApp: Boolean(notifySalesWhatsApp) }),
         ...(marketingModeEnabled !== undefined && { marketingModeEnabled: Boolean(marketingModeEnabled) }),
         ...(multiMessageMode !== undefined && { multiMessageMode: Boolean(multiMessageMode) }),
-        ...(respondInGroups !== undefined && { respondInGroups: Boolean(respondInGroups) })
+        ...(respondInGroups !== undefined && { respondInGroups: Boolean(respondInGroups) }),
+        ...(aiEnabled !== undefined && { aiEnabled: Boolean(aiEnabled) })
       }
     });
 
