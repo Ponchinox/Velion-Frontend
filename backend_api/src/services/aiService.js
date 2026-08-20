@@ -167,20 +167,27 @@ async function processMediaBase64(rawBase64) {
 
 
 /**
+ * Lista jerárquica de modelos de Google Gemini
+ */
+export const MODELOS_GEMINI = [
+  'gemini-3.7-flash',        // 🚀 #1 — Gemini 3.7 Flash (El más capaz y moderno)
+  'gemini-3.6-flash',        // ⚡ #2 — Gemini 3.6 Flash (Equilibrio de velocidad y multimodalidad)
+  'gemini-3.5-flash',        // 🧠 #3 — Gemini 3.5 Flash (Rendimiento fundamental)
+  'gemini-3.5-flash-lite',   // 💨 #4 — Gemini 3.5 Flash-Lite (Ultrarápido y máxima rentabilidad)
+  'gemini-3.1-flash-lite',   // 🏃 #5 — Gemini 3.1 Flash-Lite (Frontier a bajo coste)
+  'gemini-2.5-flash',        // 📊 #6 — Gemini 2.5 Flash (Precio/rendimiento con razonamiento)
+  'gemini-2.5-flash-lite',   // 💰 #7 — Gemini 2.5 Flash-Lite (Económico multimodal de la familia 2.5)
+  'gemini-2.5-pro'           // 🔬 #8 — Gemini 2.5 Pro (Razonamiento profundo y tareas complejas)
+];
+
+/**
  * Ejecuta la llamada al motor principal: Google Gemini
- * Cascada optimizada por costo: de menor consumo de cuota a mayor capacidad (último recurso).
+ * Cascada optimizada de modelos con rotación de tokens y failover inteligente.
  * Soporta texto e imágenes/audio/video multimodales de forma nativa en alta velocidad.
  */
 async function callGemini(systemPrompt, messages, mediaItems = []) {
   const clients = getGeminiClients();
-  const GEMINI_MODELS = [
-    'gemini-3.5-flash-lite', // 1️⃣ Más barato: Siempre primero → agota menos cuota (99% del trabajo)
-    'gemini-3.1-flash-lite', // 2️⃣ Barato: Solo si el primero falla
-    'gemini-3.5-flash',      // 3️⃣ Medio: Solo si los dos anteriores fallan
-    'gemini-3.6-flash',      // 4️⃣ Medio-alto: Solo si los tres anteriores fallan
-    'gemini-2.5-flash-lite', // 5️⃣ Medio: Solo en emergencia
-    'gemini-2.5-flash'       // 6️⃣ Más caro: Último recurso absoluto
-  ];
+  const GEMINI_MODELS = MODELOS_GEMINI;
 
   // Estructurar el historial y contenido para el SDK de Google Generative AI
   const contents = [];
@@ -341,7 +348,7 @@ async function callOpenRouter(systemPrompt, messages) {
 
 /**
  * Cascada de resiliencia (Failover Chain)
- * 1. Slot #1: Google Gemini (gemini-3.5-flash-lite a gemini-2.5-flash) - Motor Principal (Texto + Visión + Audio)
+ * 1. Slot #1: Google Gemini (gemini-3.7-flash a gemini-2.5-pro) - Motor Principal (Texto + Visión + Audio)
  * 2. Slot #2: OpenRouter (Llama Free) - Fallback Secundario para texto
  */
 async function callAiProviderCascade(systemPrompt, messages, mediaItems = []) {
@@ -350,7 +357,7 @@ async function callAiProviderCascade(systemPrompt, messages, mediaItems = []) {
   // #1: Google Gemini (Motor Principal)
   if (process.env.GEMINI_API_KEY) {
     try {
-      console.log('🤖 [Google Gemini] Ejecutando petición con jerarquía optimizada (gemini-3.5-flash-lite → backup)...');
+      console.log('🤖 [Google Gemini] Ejecutando petición con jerarquía optimizada (gemini-3.7-flash → backup)...');
       const text = await callGemini(systemPrompt, messages, mediaItems);
       if (text) {
         console.log('✅ [Google Gemini] Respuesta generada exitosamente.');

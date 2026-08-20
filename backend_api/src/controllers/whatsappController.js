@@ -1376,14 +1376,37 @@ FORMATO Y CONCISIÓN (OBLIGATORIO):
    - Usa itálicas con guión bajo: _texto_ si las necesitas.
    - Escribe texto limpio, natural y conversacional como si fuera un mensaje de WhatsApp real.
 
-CIERRE: Sé natural al despedirte. A menos que tengas instrucciones de ventas persuasivas, no hagas preguntas de seguimiento innecesarias.
+CIERRE: Sé natural al despedirte.
+
+MODO DE ATENCIÓN Y VENTAS CONSULTIVAS (REGLAS OBLIGATORIAS):
+1. FASE DE CONSULTA (CERO PRESIÓN):
+   - Si el cliente hace preguntas sobre stock, características, precios, fotos, envíos, seguridad, garantía o dudas generales, responde con amabilidad, concisión y autoridad técnica.
+   - NUNCA presiones a pagar ni menciones medios de pago en esta fase.
+   - PROHIBICIÓN ABSOLUTA de enviar números de cuenta, Yape, Plin o pedir comprobantes/transferencias si el cliente solo está consultando o mostrando interés preliminar.
+   - Cierra con una sola pregunta abierta amigable (ej. '¿Te gustaría verlo en algún color en especial?', '¿Qué te parece?').
+
+2. FASE DE CIERRE Y MICRO-CONFIRMACIONES EN CADENA (FLUJO NATURAL TODO-TERRENO):
+   - Cuando el cliente decida comprar o realizar un pedido, NO envíes cuestionarios largos ni pidas todos los datos juntos de golpe.
+   - Conduce el cierre paso a paso de forma conversacional, haciendo UNA sola pregunta a la vez:
+     • Paso 1 (Variante del Producto): Si el producto tiene variantes (talla, color, sabor, modelo, capacidad, etc.), confirma primero cuál prefiere (ej. '¡Genial! ¿En qué talla/color lo prefieres?'). Si el cliente ya lo especificó antes, avanza de inmediato sin repetir.
+     • Paso 2 (Destino / Modalidad de Entrega): Consulta la ubicación o modalidad de entrega (ej. '¿Sería para entrega en [Ciudad/Distrito] o envío a provincia?').
+     • Paso 3 (Método de Pago Preferido): Consulta qué método de pago le resulta más cómodo (ej. '¿Prefieres cancelarlo por Yape, Plin o transferencia bancaria?').
+     • Paso 4 (Datos de Pago y Confirmación): SOLO cuando el cliente confirme el método o pida el número de cuenta/Yape, proporciónale los datos exactos y solicita el comprobante para procesar su pedido.
+   - INTELIGENCIA CONTEXTUAL: Si el cliente ya te dio varios datos juntos en un solo mensaje (ej. 'Quiero el modelo X en negro para envío a Trujillo y pago por Yape'), NO hagas preguntas redundantes; reconoce los datos con entusiasmo y pasa directamente a brindar los datos de pago correspondientes.
+
+3. VALOR ANTES DEL PRECIO:
+   - Cuando pregunten el precio, destaca 1 o 2 beneficios clave de forma concisa y luego da el precio inmediatamente.
+
+4. USO LIMITADO DE EMOJIS:
+   - Usa un MÁXIMO ABSOLUTO de 1 o 2 emojis por mensaje para reforzar el tono profesional (ej. 🔥, 🚀). Prohibido saturar el texto con emojis.
+5. ÉTICA ESTRICTA:
+   - NUNCA inventes precios, características ni promociones falsas. Solo ofrece alternativas de la misma familia semántica si algo está agotado.
 
 COMPORTAMIENTO CONTEXTUAL:
 - Saludo entrante: respóndelo e invita al cliente a explicar su necesidad.
 - Varias preguntas a la vez: respóndelas todas en un solo mensaje organizado.
-- Fase consulta: empatía rápida → info directa → pregunta de cierre corta.
-- Fase pago/cierre: responde natural y al grano, sin estructura de ventas.
-- Las instrucciones específicas del tenant tienen prioridad sobre estas reglas globales.
+- Fase consulta: empatía rápida → info directa → pregunta de seguimiento amigable (sin hablar de pagos).
+- Fase pago/cierre: responde natural y al grano, con los datos de pago solo si el cliente lo pidió.
 `.trim();
 
 
@@ -1400,34 +1423,22 @@ COMPORTAMIENTO CONTEXTUAL:
       if (tenantDetails.phone) detallesExt += `\n- Teléfono de contacto: ${tenantDetails.phone}.`;
       if (tenantDetails.email) detallesExt += `\n- Email de soporte: ${tenantDetails.email}.`;
       if (tenantDetails.businessHours) detallesExt += `\n- Horarios de atención: ${tenantDetails.businessHours}.`;
-      if (tenantDetails.bankAccounts) detallesExt += `\n- Cuentas bancarias e instrucciones de pago: ${tenantDetails.bankAccounts}.`;
+      if (tenantDetails.bankAccounts) {
+        detallesExt += `\n- Cuentas bancarias e instrucciones de pago (CONFIDENCIAL - REGLA ESTRICTA: Proporcionar ÚNICAMENTE si el cliente confirmó explícitamente su decisión de pagar o comprar): ${tenantDetails.bankAccounts}.`;
+      }
       if (tenantDetails.termsAndPolicies) detallesExt += `\n- Políticas de envío, devolución y términos: ${tenantDetails.termsAndPolicies}.`;
       
       infoInstitucional += detallesExt;
     }
 
-    const isMultiMessageActive = tenantDetails?.multiMessageMode === true; 
-
-    let marketingInstructionRule = '';
-    if (tenantDetails?.marketingModeEnabled === true) {
-      marketingInstructionRule = `\nMODO VENDEDOR PERSUASIVO (ESTRATEGIAS DE VENTA CONSULTIVA):
-Tu objetivo principal es asistir al cliente resolviendo sus dudas con autoridad técnica y concretar la venta solo cuando el cliente esté listo, sin presionarlo. Eres un experto en ventas consultivas por WhatsApp.
-
-REGLAS DE ORO PARA ESTE MODO:
-1. FASE DE CONSULTA (Sin presión): Si el cliente hace preguntas sobre seguridad, garantía, funcionamiento o dudas generales, respóndele con autoridad y cierra con una SOLA pregunta abierta (ej. '¿Para qué uso principal lo estás buscando?'). NUNCA presiones a pagar ni menciones medios de pago en esta fase.
-2. FASE DE CIERRE (Precisión): SOLO y ÚNICAMENTE cuando el cliente exprese explícitamente su deseo de comprar (ej. 'quiero comprar', 'dónde pago', 'pásame la cuenta', 'ya lo quiero'), proporciona las instrucciones de pago o precios de cierre. PROHIBICIÓN ABSOLUTA de enviar números de cuenta, Yape o pedir comprobantes si el cliente solo consulta precios o info.
-3. VALOR ANTES DEL PRECIO: Cuando pregunten el precio, destaca 1 o 2 beneficios clave de forma concisa y luego da el precio inmediatamente.
-4. ESTRATEGIA DE PROMOCIONES: Si la tienda te ha proporcionado promociones activas, úsalos estratégicamente para incentivar el cierre cuando el cliente muestre interés.
-5. USO LIMITADO DE EMOJIS: Usa un MÁXIMO ABSOLUTO de 1 o 2 emojis por mensaje para reforzar el tono profesional (ej. 🔥, 🚀). Esta regla es OBLIGATORIA.
-6. ÉTICA ESTRICTA: NUNCA inventes precios, características ni promociones falsas. Solo ofrece alternativas de la misma familia semántica si algo está agotado.\n`;
-    }
+    const isMultiMessageActive = tenantDetails?.multiMessageMode !== false; 
 
     // ─── DICCIONARIO DE COMANDOS DEL SISTEMA ───
     let systemCommands = `\n🛠️ DICCIONARIO DE COMANDOS DEL SISTEMA:
 Puedes usar las siguientes etiquetas dentro de tu respuesta para ejecutar acciones. Escríbelas exactamente como se indica:\n`;
 
     if (isMultiMessageActive) {
-      systemCommands += `\n🧠 DINÁMICA DE CONVERSACIÓN HUMANA (MODO MULTI-MENSAJE):
+      systemCommands += `\n🧠 DINÁMICA DE CONVERSACIÓN HUMANA (MODO MULTI-MENSAJE NATIVO):
 - Tienes la capacidad de dividir tu respuesta en "globos de chat" usando la etiqueta [SPLIT].
 - Si tu respuesta es CORTA y SIMPLE (ej. "Sí, claro", "Entendido", un saludo), NO USES [SPLIT]. Envía un solo bloque.
 - Si envías una imagen o video, usa [SPLIT] para separar el texto introductorio, luego la etiqueta de la imagen, y finalmente un texto de seguimiento. Por ejemplo: "Aquí está: [SEND_IMAGE: producto] [SPLIT] ¿Qué te parece?".
@@ -1476,12 +1487,7 @@ ${inventarioTexto}
 
 `;
 
-    // C) Reglas de Marketing
-    if (marketingInstructionRule) {
-      finalPrompt += `${marketingInstructionRule}\n`;
-    }
-
-    // D) Guardrails Globales y Diccionario de Comandos (Al final absoluto)
+    // C) Guardrails Globales y Diccionario de Comandos (Al final absoluto)
     finalPrompt += `${globalGuardrails}\n\n${systemCommands}`;
 
     const systemPrompt = finalPrompt;

@@ -623,34 +623,8 @@ export default function SettingsPage() {
                       </div>
                     </div>
 
-                    {/* Checkbox Compacto: Modo Conversación Humana */}
-                    <div className="col-span-full flex items-center gap-2 pt-2">
-                      <label className="flex items-center gap-2.5 cursor-pointer select-none">
-                        <input
-                          type="checkbox"
-                          name="multiMessageMode"
-                          checked={botConfig.multiMessageMode !== false}
-                          onChange={(e) => {
-                            setBotConfig(prev => ({ ...prev, multiMessageMode: e.target.checked }));
-                            setIsFormDirty(true);
-                          }}
-                          className="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500 cursor-pointer"
-                        />
-                        <span className="text-sm font-semibold text-gray-800">
-                          Modo conversación humana
-                        </span>
-                      </label>
-                      <div className="group relative cursor-pointer text-gray-400 hover:text-gray-600 flex items-center">
-                        <HelpCircle size={15} />
-                        <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 hidden group-hover:block w-64 p-2.5 rounded-lg bg-gray-900 text-white shadow-xl text-xs leading-relaxed text-center z-30 pointer-events-none animate-in fade-in duration-150">
-                          La IA dividirá sus respuestas en 2 o 3 mensajes cortos para simular el comportamiento humano.
-                          <div className="absolute top-full left-1/2 -translate-x-1/2 -mt-1 border-4 border-transparent border-t-gray-900" />
-                        </div>
-                      </div>
-                    </div>
-
                     {/* Checkbox: Notificar pedidos cerrados por WhatsApp */}
-                    <div className="col-span-full flex items-center gap-2 pt-1">
+                    <div className="col-span-full flex items-center gap-2 pt-2">
                       <label className="flex items-center gap-2.5 cursor-pointer select-none">
                         <input
                           type="checkbox"
@@ -670,32 +644,6 @@ export default function SettingsPage() {
                         <HelpCircle size={15} />
                         <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 hidden group-hover:block w-64 p-2.5 rounded-lg bg-gray-900 text-white shadow-xl text-xs leading-relaxed text-center z-30 pointer-events-none animate-in fade-in duration-150">
                           A este número de WhatsApp la IA enviará un resumen automático con los datos del cliente (dirección, pedido, monto) cada vez que se concrete una venta o envío.
-                          <div className="absolute top-full left-1/2 -translate-x-1/2 -mt-1 border-4 border-transparent border-t-gray-900" />
-                        </div>
-                      </div>
-                    </div>
-
-                    {/* Checkbox: Modo Vendedor Persuasivo (Estrategias de Marketing) */}
-                    <div className="col-span-full flex items-center gap-2 pt-1">
-                      <label className="flex items-center gap-2.5 cursor-pointer select-none">
-                        <input
-                          type="checkbox"
-                          name="marketingModeEnabled"
-                          checked={botConfig.marketingModeEnabled === true}
-                          onChange={(e) => {
-                            setBotConfig(prev => ({ ...prev, marketingModeEnabled: e.target.checked }));
-                            setIsFormDirty(true);
-                          }}
-                          className="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500 cursor-pointer"
-                        />
-                        <span className="text-sm font-semibold text-gray-800">
-                          Modo Vendedor Persuasivo (Estrategias de Marketing)
-                        </span>
-                      </label>
-                      <div className="group relative cursor-pointer text-gray-400 hover:text-gray-600 flex items-center">
-                        <HelpCircle size={15} />
-                        <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 hidden group-hover:block w-72 p-2.5 rounded-lg bg-gray-900 text-white shadow-xl text-xs leading-relaxed text-center z-30 pointer-events-none animate-in fade-in duration-150">
-                          Activa estrategias avanzadas de cierre de ventas. El bot aplicará tácticas de persuasión, venta basada en valor y seguimiento inteligente para maximizar tus conversiones.
                           <div className="absolute top-full left-1/2 -translate-x-1/2 -mt-1 border-4 border-transparent border-t-gray-900" />
                         </div>
                       </div>
