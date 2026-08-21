@@ -170,14 +170,16 @@ async function processMediaBase64(rawBase64) {
  * Lista jerárquica de modelos de Google Gemini
  */
 export const MODELOS_GEMINI = [
-  'gemini-3.7-flash',        // 🚀 #1 — Gemini 3.7 Flash (El más capaz y moderno)
-  'gemini-3.6-flash',        // ⚡ #2 — Gemini 3.6 Flash (Equilibrio de velocidad y multimodalidad)
-  'gemini-3.5-flash',        // 🧠 #3 — Gemini 3.5 Flash (Rendimiento fundamental)
-  'gemini-3.5-flash-lite',   // 💨 #4 — Gemini 3.5 Flash-Lite (Ultrarápido y máxima rentabilidad)
-  'gemini-3.1-flash-lite',   // 🏃 #5 — Gemini 3.1 Flash-Lite (Frontier a bajo coste)
-  'gemini-2.5-flash',        // 📊 #6 — Gemini 2.5 Flash (Precio/rendimiento con razonamiento)
-  'gemini-2.5-flash-lite',   // 💰 #7 — Gemini 2.5 Flash-Lite (Económico multimodal de la familia 2.5)
-  'gemini-2.5-pro'           // 🔬 #8 — Gemini 2.5 Pro (Razonamiento profundo y tareas complejas)
+  'gemini-3.7-flash',        // 🚀 #1 — Gemini 3.7 Flash (Latest Stable)
+  'gemini-3.6-flash',        // ⚡ #2 — Gemini 3.6 Flash (Stable)
+  'gemini-3.5-flash',        // 🧠 #3 — Gemini 3.5 Flash (Stable)
+  'gemini-3.5-flash-lite',   // 💨 #4 — Gemini 3.5 Flash-Lite (Stable)
+  'gemini-3.1-flash-lite',   // 🏃 #5 — Gemini 3.1 Flash-Lite (Stable)
+  'gemini-2.5-flash',        // 📊 #6 — Gemini 2.5 Flash (Stable)
+  'gemini-2.5-flash-lite',   // 💰 #7 — Gemini 2.5 Flash-Lite (Stable)
+  'gemini-2.5-pro',          // 🔬 #8 — Gemini 2.5 Pro (Stable)
+  'gemini-3-flash-preview',  // ⚡ #9 — Gemini 3 Flash Preview
+  'gemini-3.1-pro-preview'   // 🔬 #10 — Gemini 3.1 Pro Preview
 ];
 
 /**
@@ -274,15 +276,15 @@ async function callGemini(systemPrompt, messages, mediaItems = []) {
         const status = err?.status || err?.response?.status;
         const errMsg = (err?.message || String(err)).toLowerCase();
         
-        // Si el error es por límite de cuota/rate limit, probamos con el siguiente token para el mismo modelo
-        if (status === 429 || errMsg.includes('429') || errMsg.includes('quota') || errMsg.includes('rate limit') || errMsg.includes('resource_exhausted')) {
-          console.warn(`⚡ [Google Gemini] Token ${c + 1} agotado (429/Quota) para el modelo '${modelSlug}'. Intentando con el siguiente token...`);
-          continue; 
-        } else {
-          // Si es otro error (503, modelo no encontrado, etc), cambiamos de variante de modelo
-          console.warn(`⚡ [Google Gemini] Slug '${modelSlug}' con token ${c + 1} devolvió error (${errMsg.slice(0, 100)}). Probando variante de modelo...`);
-          break; // Rompe el loop de clientes y pasa al siguiente modelo
+        // Si el modelo específico no existe en la API (404), pasar al siguiente modelo
+        if (status === 404 || errMsg.includes('404') || errMsg.includes('not found')) {
+          console.warn(`⚡ [Google Gemini] Slug '${modelSlug}' no encontrado (404). Pasando al siguiente modelo...`);
+          break; // Salir del loop de tokens para este modelo y probar el siguiente modelo
         }
+
+        // Si es 429, 403, 503 u otro error de token/cuota, intentar con el siguiente token de respaldo
+        console.warn(`⚡ [Google Gemini] Token ${c + 1} falló para '${modelSlug}' (${errMsg.slice(0, 80)}). Probando siguiente token...`);
+        continue;
       }
     }
   }
