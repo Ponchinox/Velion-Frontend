@@ -1,109 +1,310 @@
-import { GoogleGenerativeAI } from '@google/generative-ai';
+/**
+ * aiService.js — Motor de IA con cascada de resiliencia
+ *
+ * Arquitectura:
+ *   Slot #1: Google Gemini (gemini-3.7-flash principal, gemini-2.5-flash fallback)
+ *            Pool de claves con estado independiente, timeout 20s, round-robin,
+ *            cooldown por clave y clasificación de errores.
+ *   Slot #2: OpenRouter (Llama Free) — fallback de texto si Gemini no responde.
+ *
+ * SDK: @google/genai v2.19.0 (SDK oficial actual de Google)
+ *
+ * Parámetros eliminados vs versión anterior:
+ *   ❌ temperature     — no soportado por Gemini 3.7 Flash
+ *   ❌ topP / top_p   — no soportado por Gemini 3.7 Flash
+ *   ❌ topK / top_k   — no soportado por Gemini 3.7 Flash
+ *   ❌ candidateCount — no soportado por Gemini 3.x
+ *   ❌ thinkingBudget — sustituido por thinkingLevel nativo
+ *
+ * Parámetros de thinking:
+ *   ✅ thinkingConfig.thinkingLevel = ThinkingLevel.LOW  (= "LOW")
+ *      Soportado nativamente por @google/genai a partir de v2.x
+ *      para gemini-3.7-flash y modelos Gemini 3.x en adelante.
+ *
+ * Deduplicación:
+ *   Basada en messageId único del evento WhatsApp/Evolution (key.id).
+ *   Mismo messageId → ignorado. Mismo remoteJid + nuevo messageId → procesado.
+ */
+
+import { GoogleGenAI, ThinkingLevel } from '@google/genai';
 import OpenAI from 'openai';
 import sharp from 'sharp';
-import axios from 'axios';
-import FormData from 'form-data';
-import fs from 'fs';
-import path from 'path';
 import prisma from '../db.js';
 
+// ─────────────────────────────────────────────────────────────────────────────
+// CONSTANTES DE CONFIGURACIÓN
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** Timeout máximo por petición individual a Gemini (ms) */
+const GEMINI_TIMEOUT_MS = 20_000;
+
+/** Tiempo de cooldown al recibir un rate limit 429 (ms) */
+const COOLDOWN_RATE_LIMIT_MS = 120_000; // 2 minutos
+
+/** Tiempo de cooldown al recibir un error de servidor 5xx o timeout (ms) */
+const COOLDOWN_SERVER_ERROR_MS = 60_000; // 1 minuto
 
 /**
- * Registra una alerta de caída global si se detecta un error HTTP 429 (Límite Excedido)
+ * ThinkingLevel.LOW = "LOW" — nivel textual nativo soportado por @google/genai v2.x
+ * para gemini-3.7-flash. No usar "minimal" (no soportado por Gemini 3.7).
+ * Referencia: ThinkingConfig.thinkingLevel enum en genai.d.ts del SDK oficial.
  */
-async function handleAiError(error, providerName = 'Google Gemini') {
-  const status = error?.status || error?.response?.status;
-  const message = error?.message || String(error);
-  const is429 = status === 429 || message.includes('429') || message.toLowerCase().includes('quota') || message.toLowerCase().includes('rate limit') || message.toLowerCase().includes('resource_exhausted');
+const THINKING_LEVEL = ThinkingLevel.LOW; // = "LOW"
 
-  if (is429) {
-    console.error(`🚨 [ALERTA GLOBAL IA] Error 429 Límite de Cuota Excedido en ${providerName}:`, message);
-    try {
-      await prisma.systemConfig.upsert({
-        where: { key: 'aiStatus' },
-        update: { value: 'DOWN_429' },
-        create: { key: 'aiStatus', value: 'DOWN_429' }
-      });
-      await prisma.alert.create({
-        data: {
-          type: 'QUOTA_EXCEEDED',
-          severity: 'CRITICAL',
-          message: `¡ALERTA GLOBAL! Límite de cuota alcanzado en ${providerName}. Los bots no están respondiendo.`
-        }
-      });
-    } catch (dbErr) {
-      console.error('Error registrando alerta de caída de IA en DB:', dbErr);
-    }
-  }
-}
+/** Tokens máximos de salida por petición */
+const MAX_OUTPUT_TOKENS = 1024;
 
-let geminiClients = null;
-
-/**
- * Inicializa y retorna un array de clientes de Google Gemini de forma perezosa (Rotación de Tokens)
- */
-function getGeminiClients() {
-  if (!geminiClients) {
-    const keys = [];
-    const mainKey = (process.env.GEMINI_API_KEY || '').trim();
-    if (mainKey) keys.push(mainKey);
-    
-    // Soporte dinámico para la clave principal + hasta 15 claves de respaldo (GEMINI_KEY_1 a GEMINI_KEY_15)
-    for (let i = 1; i <= 15; i++) {
-      const backupKey = (process.env[`GEMINI_KEY_${i}`] || '').trim();
-      if (backupKey) keys.push(backupKey);
-    }
-    
-    if (keys.length === 0) {
-      throw new Error('Falta la variable de entorno GEMINI_API_KEY para inicializar Google Gemini.');
-    }
-    
-    geminiClients = keys.map(k => new GoogleGenerativeAI(k));
-  }
-  return geminiClients;
-}
-
-let openRouterClient = null;
-
-/**
- * Inicializa y retorna el cliente de OpenRouter de forma perezosa
- */
-function getOpenRouterClient() {
-  if (!openRouterClient) {
-    const apiKey = (process.env.OPENROUTER_API_KEY || process.env.OPENAI_API_KEY || process.env.GITHUB_TOKEN || 'dummy-key-to-prevent-crash').trim();
-    openRouterClient = new OpenAI({
-      baseURL: 'https://openrouter.ai/api/v1',
-      apiKey: apiKey,
-      defaultHeaders: {
-        'HTTP-Referer': 'https://velionsaas.com',
-        'X-Title': 'Velion SaaS',
-      }
-    });
-  }
-  return openRouterClient;
-}
-
-let groqClient = null;
-
-/**
- * Inicializa y retorna el cliente de Groq de forma perezosa y segura
- */
-function getGroqClient() {
-  if (!groqClient) {
-    groqClient = new OpenAI({
-      apiKey: (process.env.GROQ_API_KEY || 'dummy-key-to-prevent-crash').trim(),
-      baseURL: 'https://api.groq.com/openai/v1',
-    });
-  }
-  return groqClient;
-}
-
-// Memoria a corto plazo (Dieta de Tokens)
-const userMemories = new Map();
+/** Tamaño máximo del historial por usuario (turnos, no mensajes) */
 const MAX_HISTORIAL = 10;
 
+/** Máx. ítems multimedia por petición */
+const MAX_MEDIA_ITEMS = 3;
+
+// Estados posibles de una API Key
+const KEY_STATUS = {
+  ACTIVE:       'active',
+  RATE_LIMITED: 'rate_limited',
+  AUTH_FAILED:  'auth_failed',
+  SERVER_ERROR: 'server_error',
+  DISABLED:     'disabled',
+};
+
+// Clasificación de tipos de error
+const ERR_TYPE = {
+  TIMEOUT:       'TIMEOUT',
+  RATE_LIMIT:    'RATE_LIMIT',
+  AUTH:          'AUTH',
+  BAD_REQUEST:   'BAD_REQUEST',
+  NOT_FOUND:     'NOT_FOUND',
+  SERVER_ERROR:  'SERVER_ERROR',
+  NETWORK:       'NETWORK',
+  UNKNOWN:       'UNKNOWN',
+};
+
+// Modelo principal y fallback
+const MODELO_PRINCIPAL = 'gemini-3.7-flash';
+const MODELO_FALLBACK  = 'gemini-2.5-flash';
+
+// ─────────────────────────────────────────────────────────────────────────────
+// LOGGING ESTRUCTURADO
+// ─────────────────────────────────────────────────────────────────────────────
+
+function maskKey(key) {
+  if (!key || key.length < 8) return '***';
+  return `${key.slice(0, 4)}...${key.slice(-3)}`;
+}
+
+function geminiLog(msg) {
+  console.log(`[GEMINI] ${msg}`);
+}
+
+function geminiWarn(msg) {
+  console.warn(`[GEMINI] ⚠️  ${msg}`);
+}
+
+function geminiError(msg) {
+  console.error(`[GEMINI] ❌ ${msg}`);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// CLASIFICACIÓN DE ERRORES
+// ─────────────────────────────────────────────────────────────────────────────
+
 /**
- * Extrae y limpia el string Base64 y su MIME type
+ * Clasifica un error de la API de Gemini en un tipo semántico.
+ * Esto determina si se rota la key, se aplica cooldown o se aborta.
+ */
+function classifyError(err) {
+  if (err?.name === 'AbortError' || err?.code === 'ABORT_ERR' || err?.message?.includes('abort')) {
+    return ERR_TYPE.TIMEOUT;
+  }
+
+  const status = err?.status || err?.response?.status;
+  const msg = (err?.message || String(err)).toLowerCase();
+
+  if (status === 429 || msg.includes('429') || msg.includes('quota') ||
+      msg.includes('rate limit') || msg.includes('resource_exhausted')) {
+    return ERR_TYPE.RATE_LIMIT;
+  }
+
+  if (status === 401 || status === 403 ||
+      msg.includes('api_key_invalid') || msg.includes('unauthorized') ||
+      msg.includes('permission_denied') || msg.includes('forbidden')) {
+    return ERR_TYPE.AUTH;
+  }
+
+  if (status === 400 || msg.includes('invalid_argument') || msg.includes('bad request')) {
+    return ERR_TYPE.BAD_REQUEST;
+  }
+
+  if (status === 404 || msg.includes('not found') || msg.includes('model_not_found')) {
+    return ERR_TYPE.NOT_FOUND;
+  }
+
+  if (status === 500 || status === 503 ||
+      msg.includes('internal server') || msg.includes('service unavailable') ||
+      msg.includes('overloaded')) {
+    return ERR_TYPE.SERVER_ERROR;
+  }
+
+  if (msg.includes('network') || msg.includes('econnrefused') ||
+      msg.includes('enotfound') || msg.includes('fetch')) {
+    return ERR_TYPE.NETWORK;
+  }
+
+  return ERR_TYPE.UNKNOWN;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// GEMINI KEY POOL — Pool de claves con estado independiente
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Pool de API Keys de Gemini con:
+ *  - Estado independiente por key (active / rate_limited / auth_failed / disabled)
+ *  - Cooldown automático por key
+ *  - Rotación round-robin entre keys disponibles
+ *  - Selección inteligente: solo usa keys disponibles
+ */
+class GeminiKeyPool {
+  constructor() {
+    /** @type {Array<{rawKey: string, client: GoogleGenAI, index: number, status: string, cooldownUntil: Date|null, failCount: number, lastUsedAt: Date|null}>} */
+    this.keys = [];
+    this._roundRobinIdx = 0;
+    this._initialized = false;
+  }
+
+  /**
+   * Inicializa el pool con las claves del entorno (lazy, solo una vez).
+   * Usa @google/genai (GoogleGenAI) — SDK oficial actual de Google.
+   * Fuentes: GEMINI_API_KEY (principal) + GEMINI_KEY_1…GEMINI_KEY_15 (respaldo)
+   */
+  init() {
+    if (this._initialized) return;
+    this._initialized = true;
+
+    const rawKeys = [];
+    const main = (process.env.GEMINI_API_KEY || '').trim();
+    if (main) rawKeys.push(main);
+
+    for (let i = 1; i <= 15; i++) {
+      const k = (process.env[`GEMINI_KEY_${i}`] || '').trim();
+      if (k) rawKeys.push(k);
+    }
+
+    if (rawKeys.length === 0) {
+      throw new Error('[GEMINI] Falta GEMINI_API_KEY o GEMINI_KEY_N para inicializar el pool.');
+    }
+
+    // GoogleGenAI = SDK @google/genai (nuevo SDK oficial)
+    this.keys = rawKeys.map((rawKey, idx) => ({
+      rawKey,
+      client: new GoogleGenAI({ apiKey: rawKey }),
+      index: idx + 1,
+      status: KEY_STATUS.ACTIVE,
+      cooldownUntil: null,
+      failCount: 0,
+      lastUsedAt: null,
+    }));
+
+    geminiLog(`Pool inicializado con ${this.keys.length} key(s). SDK: @google/genai v${_GENAI_SDK_VERSION}`);
+  }
+
+  /** Devuelve solo las keys actualmente disponibles (activas y sin cooldown vigente) */
+  getAvailableKeys() {
+    const now = Date.now();
+    return this.keys.filter(k => {
+      if (k.status === KEY_STATUS.AUTH_FAILED || k.status === KEY_STATUS.DISABLED) return false;
+      if (k.cooldownUntil && k.cooldownUntil.getTime() > now) return false;
+      // Si estaba en rate_limited/server_error pero el cooldown ya expiró, volver a active
+      if (k.status !== KEY_STATUS.ACTIVE && (!k.cooldownUntil || k.cooldownUntil.getTime() <= now)) {
+        k.status = KEY_STATUS.ACTIVE;
+      }
+      return true;
+    });
+  }
+
+  /** Selecciona la siguiente key disponible en orden round-robin */
+  selectNext() {
+    const available = this.getAvailableKeys();
+    if (available.length === 0) return null;
+
+    // Avanzar el índice round-robin entre las disponibles
+    const idx = this._roundRobinIdx % available.length;
+    this._roundRobinIdx = (this._roundRobinIdx + 1) % available.length;
+
+    return available[idx];
+  }
+
+  /**
+   * Aplica consecuencias a una key según el tipo de error que devolvió.
+   * @param {object} keyEntry - Entrada del pool
+   * @param {string} errType  - Tipo de error (ERR_TYPE)
+   */
+  penalize(keyEntry, errType) {
+    keyEntry.failCount++;
+
+    switch (errType) {
+      case ERR_TYPE.TIMEOUT:
+      case ERR_TYPE.NETWORK:
+        keyEntry.status = KEY_STATUS.SERVER_ERROR;
+        keyEntry.cooldownUntil = new Date(Date.now() + COOLDOWN_SERVER_ERROR_MS);
+        geminiWarn(`Key #${keyEntry.index} (${maskKey(keyEntry.rawKey)}) → cooldown ${COOLDOWN_SERVER_ERROR_MS / 1000}s por ${errType}`);
+        break;
+
+      case ERR_TYPE.RATE_LIMIT:
+        keyEntry.status = KEY_STATUS.RATE_LIMITED;
+        keyEntry.cooldownUntil = new Date(Date.now() + COOLDOWN_RATE_LIMIT_MS);
+        geminiWarn(`Key #${keyEntry.index} (${maskKey(keyEntry.rawKey)}) → cooldown ${COOLDOWN_RATE_LIMIT_MS / 1000}s por RATE_LIMIT`);
+        break;
+
+      case ERR_TYPE.AUTH:
+        keyEntry.status = KEY_STATUS.AUTH_FAILED;
+        keyEntry.cooldownUntil = null;
+        geminiError(`Key #${keyEntry.index} (${maskKey(keyEntry.rawKey)}) → AUTH_FAILED — desactivada permanentemente`);
+        break;
+
+      case ERR_TYPE.SERVER_ERROR:
+        keyEntry.status = KEY_STATUS.SERVER_ERROR;
+        keyEntry.cooldownUntil = new Date(Date.now() + COOLDOWN_SERVER_ERROR_MS);
+        geminiWarn(`Key #${keyEntry.index} (${maskKey(keyEntry.rawKey)}) → cooldown ${COOLDOWN_SERVER_ERROR_MS / 1000}s por SERVER_ERROR`);
+        break;
+
+      case ERR_TYPE.BAD_REQUEST:
+        // No es culpa de la key — no penalizar
+        break;
+
+      default:
+        keyEntry.status = KEY_STATUS.SERVER_ERROR;
+        keyEntry.cooldownUntil = new Date(Date.now() + COOLDOWN_SERVER_ERROR_MS);
+        geminiWarn(`Key #${keyEntry.index} (${maskKey(keyEntry.rawKey)}) → cooldown ${COOLDOWN_SERVER_ERROR_MS / 1000}s por error desconocido`);
+    }
+  }
+
+  /** Registra uso exitoso de una key */
+  markSuccess(keyEntry) {
+    keyEntry.status = KEY_STATUS.ACTIVE;
+    keyEntry.failCount = 0;
+    keyEntry.cooldownUntil = null;
+    keyEntry.lastUsedAt = new Date();
+  }
+
+  /** Devuelve estadísticas resumidas para logs */
+  stats() {
+    const available = this.getAvailableKeys().length;
+    return `${available}/${this.keys.length} disponibles`;
+  }
+}
+
+// Singleton del pool
+const geminiPool = new GeminiKeyPool();
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PROCESAMIENTO DE MULTIMEDIA
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Extrae el MIME type y los datos Base64 limpios de un string raw.
  */
 function extractMimeAndBase64(rawBase64) {
   let clean = (rawBase64 || '').replace(/\s/g, '');
@@ -121,86 +322,70 @@ function extractMimeAndBase64(rawBase64) {
     }
   }
 
-  // Normalizar mimetypes comunes solo si no contiene un slash
   if (!mimeType.includes('/')) {
-    if (mimeType.includes('png')) mimeType = 'image/png';
-    else if (mimeType.includes('webp')) mimeType = 'image/webp';
-    else if (mimeType.includes('gif')) mimeType = 'image/gif';
-    else mimeType = 'image/jpeg';
+    if (mimeType.includes('png'))        mimeType = 'image/png';
+    else if (mimeType.includes('webp'))  mimeType = 'image/webp';
+    else if (mimeType.includes('gif'))   mimeType = 'image/gif';
+    else                                 mimeType = 'image/jpeg';
   }
 
   return { data: clean, mimeType };
 }
 
 /**
- * Procesa multimedia Base64 antes de enviarlo a Gemini.
- * Si es imagen, redimensiona y comprime. Si es audio/video, lo devuelve intacto.
- * @param {string} rawBase64 - Multimedia en Base64 (con o sin prefijo data:)
- * @returns {Promise<{data: string, mimeType: string}>}
+ * Comprime imágenes con Sharp antes de enviarlas a Gemini.
+ * Audio y video se devuelven intactos para procesamiento nativo.
  */
 async function processMediaBase64(rawBase64) {
   const { data: rawData, mimeType: origMime } = extractMimeAndBase64(rawBase64);
 
-  // Si es audio o video, devolver intacto para que Gemini lo procese nativamente
   if (origMime.startsWith('audio/') || origMime.startsWith('video/')) {
     return { data: rawData, mimeType: origMime };
   }
 
   try {
     const inputBuffer = Buffer.from(rawData, 'base64');
-
     const compressedBuffer = await sharp(inputBuffer)
       .resize({ width: 768, height: 768, fit: 'inside', withoutEnlargement: true })
       .jpeg({ quality: 75 })
       .toBuffer();
 
-    const originalKb = Math.round(inputBuffer.length / 1024);
+    const originalKb   = Math.round(inputBuffer.length / 1024);
     const compressedKb = Math.round(compressedBuffer.length / 1024);
-    const savings = originalKb > 0 ? Math.round((1 - compressedKb / originalKb) * 100) : 0;
+    const savings      = originalKb > 0 ? Math.round((1 - compressedKb / originalKb) * 100) : 0;
     console.log(`📉 [Sharp] Imagen comprimida: ${originalKb}KB → ${compressedKb}KB (ahorro ${savings}%)`);
 
     return { data: compressedBuffer.toString('base64'), mimeType: 'image/jpeg' };
   } catch (sharpErr) {
-    console.warn(`⚠️ [Sharp] Compresión falló (${sharpErr.message}). Enviando archivo original como plan B.`);
+    console.warn(`⚠️ [Sharp] Compresión falló (${sharpErr.message}). Enviando original.`);
     return { data: rawData, mimeType: origMime };
   }
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// CONSTRUCCIÓN DEL HISTORIAL
+// ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * Lista jerárquica de modelos de Google Gemini
+ * Convierte el array de mensajes al formato de Gemini (contents).
+ * - Roles correctos: 'user' y 'model' (nunca 'assistant')
+ * - Multimedia adjunta solo al último mensaje del usuario
+ * - El historial NUNCA termina con un turno 'model' prellenado artificialmente
+ *
+ * @param {Array<{role: string, content: string|Array}>} messages
+ * @param {string[]} mediaItems - Array de strings Base64
+ * @returns {Promise<Array>} contents para la API de Gemini
  */
-export const MODELOS_GEMINI = [
-  'gemini-3.7-flash',        // 🚀 #1 — Gemini 3.7 Flash (Latest Stable)
-  'gemini-3.6-flash',        // ⚡ #2 — Gemini 3.6 Flash (Stable)
-  'gemini-3.5-flash',        // 🧠 #3 — Gemini 3.5 Flash (Stable)
-  'gemini-3.5-flash-lite',   // 💨 #4 — Gemini 3.5 Flash-Lite (Stable)
-  'gemini-3.1-flash-lite',   // 🏃 #5 — Gemini 3.1 Flash-Lite (Stable)
-  'gemini-2.5-flash',        // 📊 #6 — Gemini 2.5 Flash (Stable)
-  'gemini-2.5-flash-lite',   // 💰 #7 — Gemini 2.5 Flash-Lite (Stable)
-  'gemini-2.5-pro',          // 🔬 #8 — Gemini 2.5 Pro (Stable)
-  'gemini-3-flash-preview',  // ⚡ #9 — Gemini 3 Flash Preview
-  'gemini-3.1-pro-preview'   // 🔬 #10 — Gemini 3.1 Pro Preview
-];
-
-/**
- * Ejecuta la llamada al motor principal: Google Gemini
- * Cascada optimizada de modelos con rotación de tokens y failover inteligente.
- * Soporta texto e imágenes/audio/video multimodales de forma nativa en alta velocidad.
- */
-async function callGemini(systemPrompt, messages, mediaItems = []) {
-  const clients = getGeminiClients();
-  const GEMINI_MODELS = MODELOS_GEMINI;
-
-  // Estructurar el historial y contenido para el SDK de Google Generative AI
+async function buildGeminiContents(messages, mediaItems = []) {
   const contents = [];
 
   for (let i = 0; i < messages.length; i++) {
     const msg = messages[i];
-    // Gemini roles: 'user' o 'model'
-    const isUser = msg.role === 'user';
-    const role = isUser ? 'user' : 'model';
 
+    // Normalizar rol — Gemini solo acepta 'user' o 'model'
+    const role = (msg.role === 'user') ? 'user' : 'model';
+
+    // Extraer texto del mensaje
     let textContent = '';
     if (typeof msg.content === 'string') {
       textContent = msg.content;
@@ -209,114 +394,271 @@ async function callGemini(systemPrompt, messages, mediaItems = []) {
       textContent = textPart ? textPart.text : '';
     }
 
-    const parts = [{ text: textContent || 'Analiza esta información' }];
+    const parts = [{ text: textContent || '.' }];
 
-    // Si es el último mensaje del usuario y hay multimedia adjunta, procesar y enviar (tope seguro máx 3)
-    if (isUser && mediaItems && mediaItems.length > 0 && i === messages.length - 1) {
-      const safeMediaItems = mediaItems.slice(0, 3);
-      for (const item of safeMediaItems) {
+    // Adjuntar multimedia solo al último turno del usuario
+    const isLastUserMsg = role === 'user' && i === messages.length - 1;
+    if (isLastUserMsg && mediaItems.length > 0) {
+      const safeMedia = mediaItems.slice(0, MAX_MEDIA_ITEMS);
+      for (const item of safeMedia) {
         const { data, mimeType } = await processMediaBase64(item);
-        parts.push({
-          inlineData: {
-            data,
-            mimeType,
-          },
-        });
+        parts.push({ inlineData: { data, mimeType } });
       }
     }
 
     contents.push({ role, parts });
   }
 
-  // Si no había ningún mensaje, crear uno por defecto
+  // Garantizar que hay al menos un turno de usuario
   if (contents.length === 0) {
     const parts = [{ text: 'Hola' }];
-    if (mediaItems && mediaItems.length > 0) {
-      const safeMediaItems = mediaItems.slice(0, 3);
-      for (const item of safeMediaItems) {
+    if (mediaItems.length > 0) {
+      const safeMedia = mediaItems.slice(0, MAX_MEDIA_ITEMS);
+      for (const item of safeMedia) {
         const { data, mimeType } = await processMediaBase64(item);
-        parts.push({
-          inlineData: {
-            data,
-            mimeType,
-          },
-        });
+        parts.push({ inlineData: { data, mimeType } });
       }
     }
     contents.push({ role: 'user', parts });
   }
 
+  // Validación: el historial DEBE terminar con un turno 'user' (nunca 'model')
+  // Si por alguna razón el último turno es 'model', se añade un turno vacío de usuario
+  if (contents[contents.length - 1]?.role === 'model') {
+    geminiWarn('El historial terminaba en turno "model". Se añadió turno "user" para evitar error de API.');
+    contents.push({ role: 'user', parts: [{ text: 'Continúa.' }] });
+  }
+
+  return contents;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// LLAMADA A GEMINI CON TIMEOUT Y ROTACIÓN INTELIGENTE DE CLAVES
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** Versión del SDK @google/genai instalado */
+const _GENAI_SDK_VERSION = '2.19.0';
+
+/**
+ * Genera una respuesta usando Google Gemini con:
+ *  - SDK @google/genai (oficial actual de Google)
+ *  - ThinkingLevel.LOW nativo (string "LOW") para gemini-3.7-flash
+ *  - Pool de claves con estado independiente y round-robin
+ *  - Timeout de 20s vía AbortSignal nativo del SDK
+ *  - Clasificación diferenciada de errores (400 no rota keys)
+ *  - Modelo principal: gemini-3.7-flash
+ *  - Modelo fallback: gemini-2.5-flash
+ *
+ * @param {string}   systemPrompt - Instrucción del sistema
+ * @param {Array}    messages     - Historial de conversación [{role, content}]
+ * @param {string[]} mediaItems   - Items multimedia en Base64
+ * @returns {Promise<string>}
+ */
+async function callGemini(systemPrompt, messages, mediaItems = []) {
+  geminiPool.init();
+
+  const modelos = [MODELO_PRINCIPAL, MODELO_FALLBACK];
   let lastErr = null;
-  for (const modelSlug of GEMINI_MODELS) {
-    for (let c = 0; c < clients.length; c++) {
-      const client = clients[c];
+
+  // Construir el historial una sola vez (operación async con Sharp)
+  const contents = await buildGeminiContents(messages, mediaItems);
+
+  for (const modelSlug of modelos) {
+    const isMainModel = modelSlug === MODELO_PRINCIPAL;
+
+    // Configuración base — sin temperature, topP, topK, candidateCount
+    const config = {
+      maxOutputTokens: MAX_OUTPUT_TOKENS,
+      systemInstruction: systemPrompt,
+    };
+
+    // thinkingConfig con ThinkingLevel.LOW nativo — solo para modelos que lo soporten
+    // ThinkingLevel.LOW = "LOW" está definido en el enum del SDK @google/genai v2.x
+    // gemini-3.7-flash soporta thinkingLevel; gemini-2.5-flash usa thinkingBudget (legacy)
+    if (isMainModel) {
+      config.thinkingConfig = {
+        thinkingLevel: THINKING_LEVEL, // ThinkingLevel.LOW = "LOW"
+      };
+    } else {
+      // gemini-2.5-flash: usa thinkingBudget numérico (API anterior)
+      config.thinkingConfig = {
+        thinkingBudget: 1024,
+      };
+    }
+
+    // Intentar con cada key disponible para este modelo
+    let modelAttempts = 0;
+    const maxAttemptsPerModel = Math.max(geminiPool.keys.length, 1);
+
+    while (modelAttempts < maxAttemptsPerModel) {
+      modelAttempts++;
+
+      const keyEntry = geminiPool.selectNext();
+      if (!keyEntry) {
+        geminiError(`No hay keys disponibles para el modelo ${modelSlug}.`);
+        break;
+      }
+
+      const maskedKey = maskKey(keyEntry.rawKey);
+      const availableStats = geminiPool.stats();
+
+      geminiLog('═'.repeat(60));
+      geminiLog(`NUEVA PETICIÓN`);
+      geminiLog(`Modelo: ${modelSlug} | Thinking: ${isMainModel ? 'LOW (ThinkingLevel.LOW)' : 'budget=1024'} | Timeout: ${GEMINI_TIMEOUT_MS / 1000}s`);
+      geminiLog(`Keys disponibles: ${availableStats}`);
+      geminiLog(`Key #${keyEntry.index} (${maskedKey}) → iniciando petición`);
+
+      const startTime = Date.now();
+
+      // AbortController para el timeout — el nuevo SDK soporta abortSignal en config
+      const controller = new AbortController();
+      const timeoutHandle = setTimeout(() => controller.abort(), GEMINI_TIMEOUT_MS);
+
       try {
-        const model = client.getGenerativeModel({
-          model: modelSlug,
-          systemInstruction: systemPrompt,
-          generationConfig: {
-            temperature: 0.7,
-            maxOutputTokens: 1024,
-          },
+        // API del nuevo SDK: ai.models.generateContent({ model, contents, config })
+        // AbortSignal se pasa directamente en config.abortSignal
+        const response = await keyEntry.client.models.generateContent({
+          model:    modelSlug,
+          contents,
+          config:   { ...config, abortSignal: controller.signal },
         });
+        clearTimeout(timeoutHandle);
 
-        const result = await model.generateContent({ contents });
-        const response = await result.response;
-        const rawAiText = response.text() || '';
+        const latencyMs = Date.now() - startTime;
 
-        const aiText = rawAiText
+        // En @google/genai, el texto está en response.text (getter)
+        const rawText = response.text || '';
+
+        // Limpiar etiquetas de thinking si las hubiera en el texto de salida
+        const aiText = rawText
           .replace(/<think>[\s\S]*?<\/think>/gi, '')
           .replace(/^\s*\.{3,}\s*/m, '')
           .trim();
 
-        if (aiText) {
-          return aiText;
-        }
-      } catch (err) {
-        lastErr = err;
-        const status = err?.status || err?.response?.status;
-        const errMsg = (err?.message || String(err)).toLowerCase();
-        
-        // Si el modelo específico no existe en la API (404), pasar al siguiente modelo
-        if (status === 404 || errMsg.includes('404') || errMsg.includes('not found')) {
-          console.warn(`⚡ [Google Gemini] Slug '${modelSlug}' no encontrado (404). Pasando al siguiente modelo...`);
-          break; // Salir del loop de tokens para este modelo y probar el siguiente modelo
+        if (!aiText) {
+          geminiWarn(`Key #${keyEntry.index} → respuesta vacía. Intentando siguiente key.`);
+          continue;
         }
 
-        // Si es 429, 403, 503 u otro error de token/cuota, intentar con el siguiente token de respaldo
-        console.warn(`⚡ [Google Gemini] Token ${c + 1} falló para '${modelSlug}' (${errMsg.slice(0, 80)}). Probando siguiente token...`);
-        continue;
+        // Log de éxito con métricas
+        const usageMeta    = response.usageMetadata || {};
+        const inputTokens  = usageMeta.promptTokenCount      || '?';
+        const outputTokens = usageMeta.candidatesTokenCount  || '?';
+        const totalTokens  = usageMeta.totalTokenCount       || '?';
+        const finishReason = response.candidates?.[0]?.finishReason || 'STOP';
+
+        geminiLog(`Key #${keyEntry.index} → ✅ OK`);
+        geminiLog(`Latencia: ${(latencyMs / 1000).toFixed(2)}s | input=${inputTokens} output=${outputTokens} total=${totalTokens} | FinishReason: ${finishReason}`);
+
+        geminiPool.markSuccess(keyEntry);
+        return aiText;
+
+      } catch (err) {
+        clearTimeout(timeoutHandle);
+        lastErr = err;
+
+        const latencyMs = Date.now() - startTime;
+        const errType   = classifyError(err);
+        const errMsg    = (err?.message || String(err)).slice(0, 120);
+
+        if (errType === ERR_TYPE.TIMEOUT) {
+          geminiError(`Key #${keyEntry.index} → TIMEOUT (${GEMINI_TIMEOUT_MS / 1000}s)`);
+        } else {
+          geminiError(`Key #${keyEntry.index} → ${errType} después de ${(latencyMs / 1000).toFixed(2)}s — ${errMsg}`);
+        }
+
+        // ── REGLA CRÍTICA: BAD_REQUEST (400) no rota keys ──────────────────
+        // Un error 400 indica petición mal formada. Cambiar de key no lo soluciona.
+        // Abortar inmediatamente sin probar Key #2, Key #3, etc.
+        if (errType === ERR_TYPE.BAD_REQUEST) {
+          geminiError(`Error 400 BAD_REQUEST — Abortando sin rotar más keys. El problema es la petición.`);
+          throw err;
+        }
+
+        // NOT_FOUND (404): este modelo slug no existe → pasar al siguiente modelo
+        if (errType === ERR_TYPE.NOT_FOUND) {
+          geminiWarn(`Modelo '${modelSlug}' no encontrado (404). Pasando al modelo fallback.`);
+          break; // salir del while de keys y probar el siguiente modelo
+        }
+
+        // Todos los demás errores (AUTH, RATE_LIMIT, SERVER_ERROR, TIMEOUT, NETWORK):
+        // penalizar la key y pasar a la siguiente
+        geminiPool.penalize(keyEntry, errType);
+
+        if (geminiPool.getAvailableKeys().length === 0) {
+          geminiError(`Todas las keys fallaron para el modelo '${modelSlug}'.`);
+          break;
+        }
+
+        geminiLog(`Intentando siguiente key disponible...`);
       }
     }
   }
 
-  throw lastErr || new Error('Todos los slugs y tokens de Google Gemini fallaron.');
+  geminiError('Todas las API Keys y modelos de Google Gemini fallaron. Ejecutando fallback.');
+  throw lastErr || new Error('Todos los modelos y claves de Google Gemini fallaron.');
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// CLIENTE OPENROUTER (FALLBACK SECUNDARIO)
+// ─────────────────────────────────────────────────────────────────────────────
+
+let openRouterClient = null;
+
+function getOpenRouterClient() {
+  if (!openRouterClient) {
+    const apiKey = (process.env.OPENROUTER_API_KEY || process.env.OPENAI_API_KEY || process.env.GITHUB_TOKEN || 'dummy-key-to-prevent-crash').trim();
+    openRouterClient = new OpenAI({
+      baseURL: 'https://openrouter.ai/api/v1',
+      apiKey,
+      defaultHeaders: {
+        'HTTP-Referer': 'https://velionsaas.com',
+        'X-Title': 'Velion SaaS',
+      },
+    });
+  }
+  return openRouterClient;
+}
+
+let groqClient = null;
+
+function getGroqClient() {
+  if (!groqClient) {
+    groqClient = new OpenAI({
+      apiKey: (process.env.GROQ_API_KEY || 'dummy-key-to-prevent-crash').trim(),
+      baseURL: 'https://api.groq.com/openai/v1',
+    });
+  }
+  return groqClient;
 }
 
 /**
- * Ejecuta la llamada de respaldo secundario: OpenRouter con modelos gratuitos de roca sólida
- * Usado exclusivamente como fallback de texto si Gemini no está disponible.
+ * Fallback secundario: OpenRouter con modelos Llama gratuitos.
+ * Usado solo si Gemini (principal + fallback) no está disponible.
  */
 async function callOpenRouter(systemPrompt, messages) {
   const client = getOpenRouterClient();
   const models = [
     'meta-llama/llama-3.1-8b-instruct:free',
-    'meta-llama/llama-3.3-70b-instruct:free'
+    'meta-llama/llama-3.3-70b-instruct:free',
   ];
 
   let lastError = null;
 
   for (const model of models) {
     try {
-      console.log(`🤖 [OpenRouter Fallback] Intentando modelo activo: ${model}...`);
+      console.log(`🤖 [OpenRouter Fallback] Intentando modelo: ${model}...`);
       const formattedMessages = [
         { role: 'system', content: systemPrompt },
         ...messages.map(msg => ({
-          role: msg.role === 'assistant' || msg.role === 'model' ? 'assistant' : 'user',
-          content: typeof msg.content === 'string' ? msg.content : (msg.content?.find?.(p => p.type === 'text')?.text || 'Consulta')
-        }))
+          role: (msg.role === 'assistant' || msg.role === 'model') ? 'assistant' : 'user',
+          content: typeof msg.content === 'string'
+            ? msg.content
+            : (msg.content?.find?.(p => p.type === 'text')?.text || 'Consulta'),
+        })),
       ];
 
+      // temperature es válido para modelos OpenRouter/OpenAI — se conserva aquí
       const response = await client.chat.completions.create({
         model,
         messages: formattedMessages,
@@ -324,21 +666,21 @@ async function callOpenRouter(systemPrompt, messages) {
         max_tokens: 512,
       });
 
-      const rawAiText = response.choices[0]?.message?.content?.trim() || '';
-      const aiText = rawAiText
+      const rawText = response.choices[0]?.message?.content?.trim() || '';
+      const aiText  = rawText
         .replace(/<think>[\s\S]*?<\/think>/gi, '')
         .replace(/^\s*\.{3,}\s*/m, '')
         .trim();
 
       if (aiText) {
-        console.log(`✅ [OpenRouter Fallback] Respuesta obtenida exitosamente desde: ${model}`);
+        console.log(`✅ [OpenRouter Fallback] Respuesta desde: ${model}`);
         return aiText;
       }
     } catch (err) {
-      const errStatus = err?.status || err?.response?.status;
+      const status = err?.status || err?.response?.status;
       const errMsg = err?.message || String(err);
-      if (errStatus === 404 || errStatus === 503 || errMsg.includes('404') || errMsg.includes('No endpoints')) {
-        console.warn(`⚡ [OpenRouter Fallback] Modelo '${model}' devolvió ${errStatus || 'error de cuota'}. Saltando al siguiente...`);
+      if (status === 404 || status === 503 || errMsg.includes('404') || errMsg.includes('No endpoints')) {
+        console.warn(`⚡ [OpenRouter Fallback] Modelo '${model}' no disponible (${status || 'quota'}). Saltando...`);
       } else {
         console.warn(`⚠️ [OpenRouter Fallback] Modelo '${model}' falló (${errMsg}). Saltando...`);
       }
@@ -349,40 +691,76 @@ async function callOpenRouter(systemPrompt, messages) {
   throw lastError || new Error('Todos los modelos de OpenRouter en fallback fallaron.');
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// ALERTA GLOBAL DE CAÍDA DE IA
+// ─────────────────────────────────────────────────────────────────────────────
+
 /**
- * Cascada de resiliencia (Failover Chain)
- * 1. Slot #1: Google Gemini (gemini-3.7-flash a gemini-2.5-pro) - Motor Principal (Texto + Visión + Audio)
- * 2. Slot #2: OpenRouter (Llama Free) - Fallback Secundario para texto
+ * Registra una alerta de caída global en DB si se detecta un error crítico de cuota.
+ */
+async function handleAiError(error, providerName = 'Google Gemini') {
+  const status  = error?.status || error?.response?.status;
+  const message = error?.message || String(error);
+  const is429   = status === 429 || message.includes('429') ||
+                  message.toLowerCase().includes('quota') ||
+                  message.toLowerCase().includes('rate limit') ||
+                  message.toLowerCase().includes('resource_exhausted');
+
+  if (is429) {
+    console.error(`🚨 [ALERTA GLOBAL IA] Error 429 en ${providerName}: ${message}`);
+    try {
+      await prisma.systemConfig.upsert({
+        where:  { key: 'aiStatus' },
+        update: { value: 'DOWN_429' },
+        create: { key: 'aiStatus', value: 'DOWN_429' },
+      });
+      await prisma.alert.create({
+        data: {
+          type:     'QUOTA_EXCEEDED',
+          severity: 'CRITICAL',
+          message:  `¡ALERTA GLOBAL! Límite de cuota alcanzado en ${providerName}. Los bots no están respondiendo.`,
+        },
+      });
+    } catch (dbErr) {
+      console.error('Error registrando alerta de caída de IA en DB:', dbErr);
+    }
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// CASCADA DE PROVEEDORES
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Cascada de resiliencia:
+ *   #1 → Google Gemini (gemini-3.7-flash principal, gemini-2.5-flash fallback)
+ *   #2 → OpenRouter (Llama Free) — solo texto
  */
 async function callAiProviderCascade(systemPrompt, messages, mediaItems = []) {
   let lastError = null;
 
-  // #1: Google Gemini (Motor Principal)
-  if (process.env.GEMINI_API_KEY) {
+  // ── Slot #1: Google Gemini ──────────────────────────────────────────────────
+  if (process.env.GEMINI_API_KEY || process.env.GEMINI_KEY_1) {
     try {
-      console.log('🤖 [Google Gemini] Ejecutando petición con jerarquía optimizada (gemini-3.7-flash → backup)...');
       const text = await callGemini(systemPrompt, messages, mediaItems);
-      if (text) {
-        console.log('✅ [Google Gemini] Respuesta generada exitosamente.');
-        return text;
-      }
+      if (text) return text;
     } catch (err) {
-      console.warn(`⚠️ [Google Gemini] Falló (${err.message}). Conmutando al siguiente proveedor de respaldo...`);
+      geminiWarn(`Gemini falló completamente (${err.message?.slice(0, 80)}). Conmutando a OpenRouter...`);
       lastError = err;
       await handleAiError(err, 'Google Gemini');
     }
   } else {
-    console.warn('⚠️ GEMINI_API_KEY no configurada en entorno. Saltando a OpenRouter...');
+    geminiWarn('No hay GEMINI_API_KEY configurada. Saltando a OpenRouter...');
   }
 
-  // #2: OpenRouter (Fallback Secundario para texto)
+  // ── Slot #2: OpenRouter ─────────────────────────────────────────────────────
   const openRouterKey = process.env.OPENROUTER_API_KEY || process.env.OPENAI_API_KEY;
   if (openRouterKey) {
     try {
       console.log('🤖 [OpenRouter Fallback] Conmutando a modelos gratuitos de OpenRouter...');
       const text = await callOpenRouter(systemPrompt, messages);
       if (text) {
-        console.log('✅ [OpenRouter Fallback] Respuesta obtenida con éxito.');
+        console.log('✅ [OpenRouter Fallback] Respuesta obtenida.');
         return text;
       }
     } catch (err) {
@@ -392,42 +770,131 @@ async function callAiProviderCascade(systemPrompt, messages, mediaItems = []) {
     }
   }
 
-  throw lastError || new Error('Todos los proveedores de IA configurados fallaron o no hay claves API válidas.');
+  throw lastError || new Error('Todos los proveedores de IA configurados fallaron.');
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// MEMORIA A CORTO PLAZO (HISTORIAL POR USUARIO)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Mapa de historial en memoria por remoteJid.
+ * Almacena roles como 'user' y 'model' para compatibilidad nativa con Gemini.
+ * El rol 'model' es el equivalente de 'assistant' en la API de Gemini.
+ */
+const userMemories = new Map();
+
+// ─────────────────────────────────────────────────────────────────────────────
+// DEDUPLICACIÓN DE PETICIONES (ANTI-DUPLICADOS POR messageId)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Set de messageIds ya procesados o en proceso.
+ *
+ * Deduplicación basada en el identificador único del evento WhatsApp (key.id):
+ *   - mismo messageId → webhook duplicado → ignorar
+ *   - mismo remoteJid + nuevo messageId → nuevo mensaje del usuario → procesar
+ *
+ * Esto permite que el mismo usuario envíe múltiples mensajes legítimos
+ * mientras una respuesta anterior se está generando.
+ *
+ * TTL: 5 minutos por messageId (limpieza automática para evitar memory leaks).
+ */
+const processedMessageIds = new Set();
+const MESSAGE_ID_TTL_MS   = 5 * 60 * 1000; // 5 minutos
+
+/**
+ * Registra un messageId como procesado y programa su limpieza automática.
+ */
+function markMessageId(messageId) {
+  processedMessageIds.add(messageId);
+  setTimeout(() => processedMessageIds.delete(messageId), MESSAGE_ID_TTL_MS);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// API PÚBLICA
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Cola de promesas por remoteJid para procesar mensajes secuencialmente.
+ * Garantiza que si un usuario envía múltiples mensajes rápidamente,
+ * la IA los procese en orden sin perder el contexto ni desordenar el historial.
+ */
+const userQueues = new Map();
+
+/**
+ * Genera una respuesta de IA con cascada de resiliencia y memoria conversacional.
+ *
+ * @param {string}   prompt      - Instrucción del sistema
+ * @param {Array}    context     - Contexto/historial [{role, content}]
+ * @param {string[]} mediaItems  - Multimedia en Base64 (opcional)
+ * @param {string}   remoteJid   - ID único del usuario para memoria FIFO (opcional)
+ * @param {string}   messageId   - ID único del mensaje WhatsApp/Evolution para deduplicación
+ *                                 (key.id de Evolution o wamid de Meta). Si se provee,
+ *                                 mensajes con el mismo ID se ignoran automáticamente.
+ * @returns {Promise<string>}
+ */
+export async function generateAIResponse(prompt, context = [], mediaItems = [], remoteJid = null, messageId = null) {
+  // ── Deduplicación por messageId ────────────────────────────────────────────
+  // Se deduplica por el ID único del mensaje.
+  if (messageId) {
+    if (processedMessageIds.has(messageId)) {
+      console.warn(`⚠️ [AI] Mensaje duplicado detectado (messageId: ${messageId}). Ignorando.`);
+      return '';
+    }
+    markMessageId(messageId); // registrar inmediatamente para bloquear reentrada
+  }
+
+  // Si no hay remoteJid, procesar directamente sin cola
+  if (!remoteJid) {
+    return _processAIRequest(prompt, context, mediaItems, null);
+  }
+
+  // ── Cola de procesamiento secuencial por remoteJid ───────────────────────
+  // Si llegan varios mensajes legítimos (diferente messageId) del mismo usuario
+  // mientras la IA procesa, se encolan para procesarse en orden.
+  const prevTask = userQueues.get(remoteJid) || Promise.resolve();
+  
+  const nextTask = (async () => {
+    // Esperar a que termine la generación anterior sin importar si falló
+    await prevTask.catch(() => {});
+    return _processAIRequest(prompt, context, mediaItems, remoteJid);
+  })();
+
+  userQueues.set(remoteJid, nextTask);
+
+  // Limpieza para no saturar memoria
+  nextTask.finally(() => {
+    if (userQueues.get(remoteJid) === nextTask) {
+      userQueues.delete(remoteJid);
+    }
+  });
+
+  return nextTask;
 }
 
 /**
- * Genera una respuesta de IA utilizando cascada de resiliencia (Failover automático)
- * @param {string} prompt - Prompt de sistema o instrucciones base
- * @param {Array} context - Historial o contexto de la conversación [{ role, content }]
- * @param {string} mediaBase64 - Multimedia en Base64 para el flujo de visión/audio (opcional)
- * @param {string} remoteJid - ID de usuario único para memoria FIFO (opcional)
- * @param {string} customerPreferences - Resumen de preferencias históricas del cliente en el CRM (opcional)
- * @returns {Promise<string>}
+ * Función interna que ejecuta la petición real.
  */
-export async function generateAIResponse(prompt, context = [], mediaItems = [], remoteJid = null) {
+async function _processAIRequest(prompt, context, mediaItems, remoteJid) {
   try {
-    let systemContent = prompt;
-
-    // Obtener historial de la memoria FIFO
-    let history = [];
-    if (remoteJid) {
-      history = userMemories.get(remoteJid) || [];
-    }
-
-    // Unir el historial de memoria con el mensaje actual
+    // ── Historial FIFO en memoria ───────────────────────────────────────────
+    // Se obtiene el historial JUSTO ANTES de procesar este mensaje (así incluye los anteriores)
+    const history     = remoteJid ? (userMemories.get(remoteJid) || []) : [];
     const fullContext = [...history, ...context];
 
-    // Ejecutar llamada a la cascada de proveedores (Google Gemini como Slot #1)
-    const aiText = await callAiProviderCascade(systemContent, fullContext, mediaItems);
+    // ── Llamada a la cascada ────────────────────────────────────────────────
+    const aiText = await callAiProviderCascade(prompt, fullContext, mediaItems);
 
-    // Guardar en el historial de forma optimizada (dieta de tokens sin Base64)
+    // ── Guardar en memoria (sin Base64 para ahorrar tokens) ─────────────────
     if (remoteJid && aiText) {
-      const lastUserMsg = context.find(m => m.role === 'user') || { content: '' };
+      const lastUserMsg    = context.find(m => m.role === 'user') || { content: '' };
       let savedUserContent = '';
+
       if (typeof lastUserMsg.content === 'string') {
         savedUserContent = lastUserMsg.content;
       } else if (Array.isArray(lastUserMsg.content)) {
-        const textPart = lastUserMsg.content.find(p => p.type === 'text');
+        const textPart   = lastUserMsg.content.find(p => p.type === 'text');
         savedUserContent = textPart ? textPart.text : 'Analiza esta multimedia';
       }
 
@@ -436,8 +903,9 @@ export async function generateAIResponse(prompt, context = [], mediaItems = [], 
       }
 
       const userHistory = userMemories.get(remoteJid) || [];
-      userHistory.push({ role: 'user', content: savedUserContent });
-      userHistory.push({ role: 'assistant', content: aiText });
+      // Usar 'model' (no 'assistant') para compatibilidad nativa con Gemini
+      userHistory.push({ role: 'user',  content: savedUserContent });
+      userHistory.push({ role: 'model', content: aiText });
 
       while (userHistory.length > MAX_HISTORIAL) {
         userHistory.shift();
@@ -453,3 +921,32 @@ export async function generateAIResponse(prompt, context = [], mediaItems = [], 
   }
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// EXPORTACIONES ADICIONALES (COMPATIBILIDAD CON CÓDIGO EXISTENTE)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Lista de modelos Gemini en uso.
+ * Exportado para compatibilidad con cualquier código que lo importe.
+ */
+export const MODELOS_GEMINI = [MODELO_PRINCIPAL, MODELO_FALLBACK];
+
+/**
+ * Expone el estado del pool de keys para diagnóstico / dashboard.
+ * @returns {Array<{index: number, maskedKey: string, status: string, cooldownUntil: Date|null, failCount: number}>}
+ */
+export function getGeminiPoolStatus() {
+  try {
+    geminiPool.init();
+  } catch {
+    return [];
+  }
+  return geminiPool.keys.map(k => ({
+    index:        k.index,
+    maskedKey:    maskKey(k.rawKey),
+    status:       k.status,
+    cooldownUntil: k.cooldownUntil,
+    failCount:    k.failCount,
+    lastUsedAt:   k.lastUsedAt,
+  }));
+}

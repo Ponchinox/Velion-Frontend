@@ -1521,7 +1521,8 @@ ${inventarioTexto}
       systemPrompt, 
       [{ role: 'user', content: userMessageText }],
       mediaItems,
-      clientNumber
+      clientNumber,
+      normalized.msgId // ID del mensaje para deduplicación
     );
 
     if (!aiResponse || aiResponse === '...') {
