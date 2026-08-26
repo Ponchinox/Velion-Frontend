@@ -534,8 +534,12 @@ async function callGemini(systemPrompt, messages, mediaItems = [], tools = [], t
           try {
             const apiResponse = await toolsHandler(call.name, call.args);
             
-            // Adjuntar a contents para mantener el estado
-            contents.push({ role: 'model', parts: [{ functionCall: call }] });
+            // Adjuntar el content completo devuelto por el modelo (preserva thought_signature, functionCall, etc.)
+            const modelContent = response.candidates && response.candidates.length > 0 
+                ? response.candidates[0].content 
+                : { role: 'model', parts: [{ functionCall: call }] };
+            contents.push(modelContent);
+            
             contents.push({ role: 'user', parts: [{ functionResponse: { name: call.name, response: apiResponse } }] });
 
             geminiLog(`Ejecución de herramienta completada. Generando respuesta final...`);
@@ -834,7 +838,7 @@ async function _processAIRequest(prompt, context, mediaItems, remoteJid, tools, 
     return aiText;
   } catch (error) {
     console.error('❌ Error final en generateAIResponse tras agotar cascada:', error);
-    throw new Error('Fallo al procesar la respuesta de la IA en todos los proveedores.');
+    return null;
   }
 }
 
