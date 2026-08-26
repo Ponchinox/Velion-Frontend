@@ -130,8 +130,8 @@ export default function Sidebar() {
   // Plan features del usuario logueado
   const planFeatures = user?.planFeatures || null;
 
-  // Lógica de Avatar y saludo
-  const rawName = (user?.name || user?.displayName || '').trim();
+  // Lógica de Avatar y saludo — prefiere el nombre de la empresa sobre el nombre de usuario
+  const rawName = (user?.tenantName || user?.companyName || user?.name || user?.displayName || '').trim();
   const logoUrl = tenantData?.logoUrl || user?.tenantLogo || user?.logoUrl;
 
   let avatarMode = 'logo';
