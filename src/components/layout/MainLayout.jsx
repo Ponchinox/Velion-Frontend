@@ -23,18 +23,18 @@ export default function MainLayout() {
   };
 
   return (
-    <div className="flex min-h-dvh bg-app">
+    <div className={`flex ${isChatRoute ? 'h-dvh max-h-dvh overflow-hidden' : 'min-h-dvh'} bg-app`}>
 
       {/* Sidebar: visible on desktop, hidden on mobile */}
       <Sidebar />
 
       {/* Main content area */}
       <div
-        className="
-          flex-1 flex flex-col min-h-dvh
+        className={`
+          flex-1 flex flex-col ${isChatRoute ? 'h-dvh max-h-dvh overflow-hidden' : 'min-h-dvh'}
           w-full
           md:ml-[var(--sidebar-w)]
-        "
+        `}
       >
         {impersonatedTenantId && (
           <div className="bg-amber-600 text-white py-2.5 px-6 flex items-center justify-between text-xs font-semibold shadow-md border-b border-amber-700 z-50">
@@ -62,13 +62,13 @@ export default function MainLayout() {
         <main
           id="main-content"
           tabIndex={-1}
-          className={`flex-1 ${isChatRoute ? 'overflow-hidden pt-16 md:pt-0' : 'overflow-y-auto pt-16 md:pt-8'}`}
+          className={`flex-1 flex flex-col ${isChatRoute ? 'h-[calc(100dvh-64px)] max-h-[calc(100dvh-64px)] md:h-screen md:max-h-screen overflow-hidden pt-16 md:pt-0' : 'overflow-y-auto pt-16 md:pt-8'}`}
         >
           {/* Bento navigation: visible on mobile, hidden on desktop */}
           <MobileNav />
 
           {/* Page content */}
-          <div className={isChatRoute ? 'h-full w-full' : 'px-4 py-5 md:px-8 md:py-8'}>
+          <div className={isChatRoute ? 'flex-1 h-full w-full overflow-hidden flex flex-col' : 'px-4 py-5 md:px-8 md:py-8'}>
             <Outlet />
           </div>
         </main>

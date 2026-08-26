@@ -250,7 +250,7 @@ function ConversationPanel({ chat, index, messages, isLoadingMessages, onSendMes
   };
 
   return (
-    <div className="flex-1 h-full flex flex-col bg-card">
+    <div className="flex-1 h-full max-h-full flex flex-col bg-card overflow-hidden">
       {/* Header del chat */}
       <div className="flex items-center gap-3 px-4 py-3.5 border-b border-line bg-card flex-shrink-0">
         {isMobile && (
@@ -329,7 +329,7 @@ function ConversationPanel({ chat, index, messages, isLoadingMessages, onSendMes
 
       {/* Mensajes */}
       <div
-        className="flex-1 overflow-y-auto overflow-x-hidden px-4 py-5 space-y-3 bg-app/40"
+        className="flex-1 overflow-y-auto overflow-x-hidden px-3 sm:px-4 py-4 space-y-3 bg-app/40 overscroll-contain"
         role="log"
         aria-live="polite"
       >
@@ -689,7 +689,7 @@ export default function ChatPage() {
 
   return (
     <div
-      className="flex overflow-hidden bg-card w-full h-[calc(100vh-64px)] md:h-screen"
+      className="flex overflow-hidden bg-card w-full h-full max-h-full"
     >
       {/* ── Columna izquierda: Lista de chats ── */}
       <div className={`
