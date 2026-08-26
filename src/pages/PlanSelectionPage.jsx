@@ -45,7 +45,7 @@ export default function PlanSelectionPage() {
     setError('');
 
     try {
-      const res = await fetch(`${API_BASE_URL}/api/tenant/assign-plan`, {
+      const res = await fetch(`${API_BASE_URL}/api/tenant/dashboard/assign-plan`, {
         method: 'POST',
         headers: authHeaders,
         body: JSON.stringify({ planId: plan.id }),
