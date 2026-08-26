@@ -48,7 +48,8 @@ function getGeminiClients() {
     const mainKey = (process.env.GEMINI_API_KEY || '').trim();
     if (mainKey) keys.push(mainKey);
     
-    for (let i = 1; i <= 6; i++) {
+    // Soporte dinámico para la clave principal + hasta 15 claves de respaldo (GEMINI_KEY_1 a GEMINI_KEY_15)
+    for (let i = 1; i <= 15; i++) {
       const backupKey = (process.env[`GEMINI_KEY_${i}`] || '').trim();
       if (backupKey) keys.push(backupKey);
     }
