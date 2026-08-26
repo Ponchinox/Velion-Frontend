@@ -201,6 +201,9 @@ function ConversationPanel({ chat, index, messages, isLoadingMessages, onSendMes
 
   const { initials, colorCls } = getAvatarStyle(chat.name, index);
 
+  // Variable derivada: la ventana de 24h de Meta está cerrada cuando el proveedor es META y isWindowOpen es false
+  const isMetaWindowClosed = chat.provider === 'META' && chat.isWindowOpen === false;
+
   /* Auto-scroll */
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
