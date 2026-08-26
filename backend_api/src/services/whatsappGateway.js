@@ -38,7 +38,7 @@ export async function resolveGatewayCtx(tenantId) {
 
   return {
     provider: 'EVOLUTION',
-    instance: getEvoInstanceName(tenantId),
+    instance: connection?.instanceName || getEvoInstanceName(tenantId),
     apiKey: (process.env.EVOLUTION_API_KEY || '').trim(),
     metaPhoneNumberId: null,
     metaAccessToken: null,
