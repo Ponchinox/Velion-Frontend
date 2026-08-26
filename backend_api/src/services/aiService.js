@@ -2,10 +2,9 @@
  * aiService.js — Motor de IA con cascada de resiliencia
  *
  * Arquitectura:
- *   Slot #1: Google Gemini (gemini-3.7-flash principal, gemini-2.5-flash fallback)
+ *   Slot #1: Google Gemini (Modelo Principal + Alternativo)
  *            Pool de claves con estado independiente, timeout 20s, round-robin,
  *            cooldown por clave y clasificación de errores.
- *   Slot #2: OpenRouter (Llama Free) — fallback de texto si Gemini no responde.
  *
  * SDK: @google/genai v2.19.0 (SDK oficial actual de Google)
  *
@@ -454,7 +453,7 @@ const _GENAI_SDK_VERSION = '2.19.0';
  * @param {string[]} mediaItems   - Items multimedia en Base64
  * @returns {Promise<string>}
  */
-async function callGemini(systemPrompt, messages, mediaItems = []) {
+async function callGemini(systemPrompt, messages, mediaItems = [], tools = [], toolsHandler = null) {
   geminiPool.init();
 
   const modelos = [MODELO_PRINCIPAL, MODELO_FALLBACK];
@@ -471,6 +470,10 @@ async function callGemini(systemPrompt, messages, mediaItems = []) {
       maxOutputTokens: MAX_OUTPUT_TOKENS,
       systemInstruction: systemPrompt,
     };
+
+    if (tools && tools.length > 0) {
+      config.tools = tools;
+    }
 
     // thinkingConfig con ThinkingLevel.LOW nativo — solo para modelos que lo soporten
     // ThinkingLevel.LOW = "LOW" está definido en el enum del SDK @google/genai v2.x
@@ -517,11 +520,36 @@ async function callGemini(systemPrompt, messages, mediaItems = []) {
       try {
         // API del nuevo SDK: ai.models.generateContent({ model, contents, config })
         // AbortSignal se pasa directamente en config.abortSignal
-        const response = await keyEntry.client.models.generateContent({
+        let response = await keyEntry.client.models.generateContent({
           model:    modelSlug,
           contents,
           config:   { ...config, abortSignal: controller.signal },
         });
+
+        // Revisar Function Calling (Uso de Herramientas)
+        if (response.functionCalls && response.functionCalls.length > 0 && toolsHandler) {
+          const call = response.functionCalls[0];
+          geminiLog(`Herramienta invocada por la IA: ${call.name}`);
+          
+          try {
+            const apiResponse = await toolsHandler(call.name, call.args);
+            
+            // Adjuntar a contents para mantener el estado
+            contents.push({ role: 'model', parts: [{ functionCall: call }] });
+            contents.push({ role: 'user', parts: [{ functionResponse: { name: call.name, response: apiResponse } }] });
+
+            geminiLog(`Ejecución de herramienta completada. Generando respuesta final...`);
+            // Volver a llamar a Gemini con los resultados de la función
+            response = await keyEntry.client.models.generateContent({
+              model:    modelSlug,
+              contents,
+              config:   { ...config, abortSignal: controller.signal },
+            });
+          } catch (funcErr) {
+            geminiWarn(`Error en toolsHandler para ${call.name}: ${funcErr.message}`);
+          }
+        }
+
         clearTimeout(timeoutHandle);
 
         const latencyMs = Date.now() - startTime;
@@ -600,98 +628,6 @@ async function callGemini(systemPrompt, messages, mediaItems = []) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// CLIENTE OPENROUTER (FALLBACK SECUNDARIO)
-// ─────────────────────────────────────────────────────────────────────────────
-
-let openRouterClient = null;
-
-function getOpenRouterClient() {
-  if (!openRouterClient) {
-    const apiKey = (process.env.OPENROUTER_API_KEY || process.env.OPENAI_API_KEY || process.env.GITHUB_TOKEN || 'dummy-key-to-prevent-crash').trim();
-    openRouterClient = new OpenAI({
-      baseURL: 'https://openrouter.ai/api/v1',
-      apiKey,
-      defaultHeaders: {
-        'HTTP-Referer': 'https://velionsaas.com',
-        'X-Title': 'Velion SaaS',
-      },
-    });
-  }
-  return openRouterClient;
-}
-
-let groqClient = null;
-
-function getGroqClient() {
-  if (!groqClient) {
-    groqClient = new OpenAI({
-      apiKey: (process.env.GROQ_API_KEY || 'dummy-key-to-prevent-crash').trim(),
-      baseURL: 'https://api.groq.com/openai/v1',
-    });
-  }
-  return groqClient;
-}
-
-/**
- * Fallback secundario: OpenRouter con modelos Llama gratuitos.
- * Usado solo si Gemini (principal + fallback) no está disponible.
- */
-async function callOpenRouter(systemPrompt, messages) {
-  const client = getOpenRouterClient();
-  const models = [
-    'meta-llama/llama-3.1-8b-instruct:free',
-    'meta-llama/llama-3.3-70b-instruct:free',
-  ];
-
-  let lastError = null;
-
-  for (const model of models) {
-    try {
-      console.log(`🤖 [OpenRouter Fallback] Intentando modelo: ${model}...`);
-      const formattedMessages = [
-        { role: 'system', content: systemPrompt },
-        ...messages.map(msg => ({
-          role: (msg.role === 'assistant' || msg.role === 'model') ? 'assistant' : 'user',
-          content: typeof msg.content === 'string'
-            ? msg.content
-            : (msg.content?.find?.(p => p.type === 'text')?.text || 'Consulta'),
-        })),
-      ];
-
-      // temperature es válido para modelos OpenRouter/OpenAI — se conserva aquí
-      const response = await client.chat.completions.create({
-        model,
-        messages: formattedMessages,
-        temperature: 0.7,
-        max_tokens: 512,
-      });
-
-      const rawText = response.choices[0]?.message?.content?.trim() || '';
-      const aiText  = rawText
-        .replace(/<think>[\s\S]*?<\/think>/gi, '')
-        .replace(/^\s*\.{3,}\s*/m, '')
-        .trim();
-
-      if (aiText) {
-        console.log(`✅ [OpenRouter Fallback] Respuesta desde: ${model}`);
-        return aiText;
-      }
-    } catch (err) {
-      const status = err?.status || err?.response?.status;
-      const errMsg = err?.message || String(err);
-      if (status === 404 || status === 503 || errMsg.includes('404') || errMsg.includes('No endpoints')) {
-        console.warn(`⚡ [OpenRouter Fallback] Modelo '${model}' no disponible (${status || 'quota'}). Saltando...`);
-      } else {
-        console.warn(`⚠️ [OpenRouter Fallback] Modelo '${model}' falló (${errMsg}). Saltando...`);
-      }
-      lastError = err;
-    }
-  }
-
-  throw lastError || new Error('Todos los modelos de OpenRouter en fallback fallaron.');
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
 // ALERTA GLOBAL DE CAÍDA DE IA
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -734,40 +670,23 @@ async function handleAiError(error, providerName = 'Google Gemini') {
 /**
  * Cascada de resiliencia:
  *   #1 → Google Gemini (gemini-3.7-flash principal, gemini-2.5-flash fallback)
- *   #2 → OpenRouter (Llama Free) — solo texto
  */
-async function callAiProviderCascade(systemPrompt, messages, mediaItems = []) {
+async function callAiProviderCascade(systemPrompt, messages, mediaItems = [], tools = [], toolsHandler = null) {
   let lastError = null;
 
   // ── Slot #1: Google Gemini ──────────────────────────────────────────────────
   if (process.env.GEMINI_API_KEY || process.env.GEMINI_KEY_1) {
     try {
-      const text = await callGemini(systemPrompt, messages, mediaItems);
+      const text = await callGemini(systemPrompt, messages, mediaItems, tools, toolsHandler);
       if (text) return text;
     } catch (err) {
-      geminiWarn(`Gemini falló completamente (${err.message?.slice(0, 80)}). Conmutando a OpenRouter...`);
+      geminiWarn(`Gemini falló completamente (${err.message?.slice(0, 80)}).`);
       lastError = err;
       await handleAiError(err, 'Google Gemini');
     }
   } else {
-    geminiWarn('No hay GEMINI_API_KEY configurada. Saltando a OpenRouter...');
-  }
-
-  // ── Slot #2: OpenRouter ─────────────────────────────────────────────────────
-  const openRouterKey = process.env.OPENROUTER_API_KEY || process.env.OPENAI_API_KEY;
-  if (openRouterKey) {
-    try {
-      console.log('🤖 [OpenRouter Fallback] Conmutando a modelos gratuitos de OpenRouter...');
-      const text = await callOpenRouter(systemPrompt, messages);
-      if (text) {
-        console.log('✅ [OpenRouter Fallback] Respuesta obtenida.');
-        return text;
-      }
-    } catch (err) {
-      console.warn(`⚠️ [OpenRouter Fallback] Falló (${err.message}).`);
-      lastError = err;
-      await handleAiError(err, 'OpenRouter');
-    }
+    geminiWarn('No hay GEMINI_API_KEY configurada.');
+    throw new Error('API Key de Gemini no configurada.');
   }
 
   throw lastError || new Error('Todos los proveedores de IA configurados fallaron.');
@@ -834,7 +753,7 @@ const userQueues = new Map();
  *                                 mensajes con el mismo ID se ignoran automáticamente.
  * @returns {Promise<string>}
  */
-export async function generateAIResponse(prompt, context = [], mediaItems = [], remoteJid = null, messageId = null) {
+export async function generateAIResponse(prompt, context = [], mediaItems = [], remoteJid = null, messageId = null, tools = [], toolsHandler = null) {
   // ── Deduplicación por messageId ────────────────────────────────────────────
   // Se deduplica por el ID único del mensaje.
   if (messageId) {
@@ -845,9 +764,8 @@ export async function generateAIResponse(prompt, context = [], mediaItems = [], 
     markMessageId(messageId); // registrar inmediatamente para bloquear reentrada
   }
 
-  // Si no hay remoteJid, procesar directamente sin cola
   if (!remoteJid) {
-    return _processAIRequest(prompt, context, mediaItems, null);
+    return _processAIRequest(prompt, context, mediaItems, null, tools, toolsHandler);
   }
 
   // ── Cola de procesamiento secuencial por remoteJid ───────────────────────
@@ -856,9 +774,8 @@ export async function generateAIResponse(prompt, context = [], mediaItems = [], 
   const prevTask = userQueues.get(remoteJid) || Promise.resolve();
   
   const nextTask = (async () => {
-    // Esperar a que termine la generación anterior sin importar si falló
     await prevTask.catch(() => {});
-    return _processAIRequest(prompt, context, mediaItems, remoteJid);
+    return _processAIRequest(prompt, context, mediaItems, remoteJid, tools, toolsHandler);
   })();
 
   userQueues.set(remoteJid, nextTask);
@@ -876,7 +793,7 @@ export async function generateAIResponse(prompt, context = [], mediaItems = [], 
 /**
  * Función interna que ejecuta la petición real.
  */
-async function _processAIRequest(prompt, context, mediaItems, remoteJid) {
+async function _processAIRequest(prompt, context, mediaItems, remoteJid, tools, toolsHandler) {
   try {
     // ── Historial FIFO en memoria ───────────────────────────────────────────
     // Se obtiene el historial JUSTO ANTES de procesar este mensaje (así incluye los anteriores)
@@ -884,7 +801,7 @@ async function _processAIRequest(prompt, context, mediaItems, remoteJid) {
     const fullContext = [...history, ...context];
 
     // ── Llamada a la cascada ────────────────────────────────────────────────
-    const aiText = await callAiProviderCascade(prompt, fullContext, mediaItems);
+    const aiText = await callAiProviderCascade(prompt, fullContext, mediaItems, tools, toolsHandler);
 
     // ── Guardar en memoria (sin Base64 para ahorrar tokens) ─────────────────
     if (remoteJid && aiText) {

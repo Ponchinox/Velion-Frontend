@@ -1245,14 +1245,7 @@ async function processBufferedMessage(cleanJid) {
       }
     }
 
-    // Consultar el catálogo de inventario del Tenant
-    const products = await prisma.product.findMany({
-      where: {
-        user: {
-          tenantId: tenant.id
-        }
-      }
-    });
+    // La consulta estática de productos ha sido eliminada y reemplazada por Function Calling (Búsqueda Dinámica)
 
     // Obtener información institucional del Tenant para inyección de contexto
     const tenantDetails = await prisma.tenant.findUnique({
@@ -1287,44 +1280,7 @@ async function processBufferedMessage(cleanJid) {
       return;
     }
 
-    // Formatear el catálogo de inventario en una lista compacta de texto
-    const hoy = new Date();
-    const lines = products.map((p) => {
-      const disponibilidad = p.isAvailable ? 'Disponible' : 'Agotado';
-      const descripcion = p.description ? `. ${p.description}` : '';
-      const imagenUrl = p.imageUrl ? ` | Portada: ${p.imageUrl}` : ' | Portada: Sin imagen';
-      const galleryUrls = (Array.isArray(p.images) && p.images.length > 0) ? ` | Fotos adicionales de galería (${p.images.length}): [${p.images.join(', ')}]` : '';
-      const videoDemoUrl = p.videoUrl ? ` | Video demostrativo: ${p.videoUrl}` : '';
-
-      let tienePromoActiva = false;
-      if (p.promotionalPrice !== null && p.promotionalPrice !== undefined) {
-        const start = p.promoStartDate ? new Date(p.promoStartDate) : null;
-        const end = p.promoEndDate ? new Date(p.promoEndDate) : null;
-
-        const despuesDeInicio = !start || hoy >= start;
-        const antesDeFin = !end || hoy <= end;
-
-        if (despuesDeInicio && antesDeFin) {
-          tienePromoActiva = true;
-        }
-      }
-
-      let precioTexto = '';
-      if (tienePromoActiva) {
-        const fechaFinTexto = p.promoEndDate
-          ? new Date(p.promoEndDate).toLocaleDateString('es-ES', { day: 'numeric', month: 'long', year: 'numeric' })
-          : 'tiempo limitado';
-        precioTexto = `Precio Normal: S/. ${p.price.toFixed(2)} - PRECIO DE PROMOCIÓN ACTIVO: S/. ${p.promotionalPrice.toFixed(2)} (Válido hasta ${fechaFinTexto})`;
-      } else {
-        precioTexto = p.price ? `S/. ${p.price.toFixed(2)}` : 'precio no definido';
-      }
-
-      return `- ${p.name}: ${precioTexto}, Estado: ${disponibilidad}${descripcion}${imagenUrl}${galleryUrls}${videoDemoUrl}`;
-    });
-
-    const inventarioTexto = lines.length > 0
-      ? lines.join('\n')
-      : 'El catálogo de inventario se encuentra actualmente vacío.';
+    // (Lógica de inventarioTexto estática eliminada - Ahora se maneja vía Tools/Function Calling dinámicamente)
 
     // ─── CAPA 1: GUARDRAILS GLOBALES ───
     // Orden optimizado para atención del LLM:
@@ -1489,18 +1445,94 @@ Puedes usar las siguientes etiquetas dentro de tu respuesta para ejecutar accion
     finalPrompt += `REGLA DE VISIÓN Y CULTURA GENERAL:
 Si el usuario envía una imagen, usa tu amplio conocimiento general para identificar con precisión el personaje, objeto, diseño o temática que aparece en ella ANTES de revisar el inventario. Muestra empatía y reconoce lo que el usuario envió de forma natural. Luego revisa el inventario: si tienes ese producto o algo muy relacionado, ofrécelo. Si no, dile amablemente que no contamos con ese artículo en el catálogo e invítalo a ver las opciones disponibles en la tienda.\n`;
 
-    // B) Catálogo e Información
-    finalPrompt += `${infoInstitucional}
-
-CATÁLOGO DE PRODUCTOS DISPONIBLES EN LA TIENDA (actualizado en tiempo real desde la base de datos):
-${inventarioTexto}
-
-`;
+    // B) Información Institucional
+    finalPrompt += `${infoInstitucional}\n\n`;
 
     // C) Guardrails Globales y Diccionario de Comandos (Al final absoluto)
     finalPrompt += `${globalGuardrails}\n\n${systemCommands}`;
 
     const systemPrompt = finalPrompt;
+
+    // ─── DEFINICIÓN DE HERRAMIENTAS (FUNCTION CALLING) ───
+    const tools = [{
+      functionDeclarations: [
+        {
+          name: 'search_inventory',
+          description: 'Busca productos en el catálogo de la tienda. LLAMA A ESTA HERRAMIENTA ÚNICAMENTE para consultar disponibilidad, precios, características, modelos específicos o recomendaciones de productos. ESTÁ ESTRICTAMENTE PROHIBIDO usarla para saludos, despedidas, charlas generales, preguntas sobre métodos de pago, envíos, políticas de la tienda o quejas (para esos casos, responde directamente usando tu conocimiento e instrucciones base).',
+          parameters: {
+            type: 'OBJECT',
+            properties: {
+              query: {
+                type: 'STRING',
+                description: 'Palabras clave extraídas de la solicitud del usuario (ej. "zapatillas rojas", "iPhone 13", "polos"). Sé directo y omite palabras de relleno.'
+              }
+            },
+            required: ['query']
+          }
+        }
+      ]
+    }];
+
+    // ─── MANEJADOR DE HERRAMIENTAS (CALLBACK) ───
+    const toolsHandler = async (funcName, args) => {
+      if (funcName === 'search_inventory') {
+        const { query } = args;
+        console.log(`🔍 [Function Calling] Buscando inventario para query: "${query}"`);
+        try {
+          const whereClause = {
+            user: { tenantId: tenant.id },
+            OR: [
+              { name: { contains: query, mode: 'insensitive' } },
+              { description: { contains: query, mode: 'insensitive' } }
+            ]
+          };
+
+          // 1. Conteo total
+          const totalCount = await prisma.product.count({ where: whereClause });
+
+          // 2. Búsqueda dinámica y optimizada (Límite 5)
+          const searchResults = await prisma.product.findMany({
+            where: whereClause,
+            take: 5
+          });
+
+          if (searchResults.length === 0) {
+            return { result: 'No se encontraron productos para esta búsqueda.' };
+          }
+
+          const hoy = new Date();
+          let resultString = searchResults.map(p => {
+            const disponibilidad = p.isAvailable ? 'Disponible' : 'Agotado';
+            const descripcion = p.description ? `. ${p.description}` : '';
+            
+            let precioTexto = p.price ? `S/. ${p.price.toFixed(2)}` : 'precio no definido';
+            if (p.promotionalPrice) {
+              const start = p.promoStartDate ? new Date(p.promoStartDate) : null;
+              const end = p.promoEndDate ? new Date(p.promoEndDate) : null;
+              if ((!start || hoy >= start) && (!end || hoy <= end)) {
+                precioTexto = `Precio Normal: S/. ${p.price.toFixed(2)} - PRECIO PROMO: S/. ${p.promotionalPrice.toFixed(2)}`;
+              }
+            }
+            
+            const imagenUrl = p.imageUrl ? ` | Portada: ${p.imageUrl}` : ' | Portada: Sin imagen';
+            const galleryUrls = (Array.isArray(p.images) && p.images.length > 0) ? ` | Fotos adicionales de galería (${p.images.length}): [${p.images.join(', ')}]` : '';
+            const videoDemoUrl = p.videoUrl ? ` | Video: ${p.videoUrl}` : '';
+            
+            return `- ${p.name}: ${precioTexto}, Estado: ${disponibilidad}${descripcion}${imagenUrl}${galleryUrls}${videoDemoUrl}`;
+          }).join('\n');
+
+          if (totalCount > 5) {
+            resultString += `\n\n[NOTA DEL SISTEMA]: Se encontraron ${totalCount} productos en total que coinciden con esta búsqueda, pero solo estás viendo los 5 más relevantes. Informa al cliente que tienes más opciones disponibles e invítalo a especificar su búsqueda (ej. color, marca, talla).`;
+          }
+
+          return { result: resultString };
+        } catch (searchErr) {
+          console.error(`❌ Error en search_inventory:`, searchErr);
+          return { error: 'Ocurrió un error al buscar en el inventario.' };
+        }
+      }
+      return { error: 'Unknown function' };
+    };
 
     console.log(`🧠 [Cerebro IA] Generando respuesta para +${clientNumber} [${provider}]...`);
 
@@ -1525,7 +1557,9 @@ ${inventarioTexto}
       [{ role: 'user', content: userMessageText }],
       mediaItems,
       clientNumber,
-      msgId // ID del mensaje para deduplicación
+      msgId, // ID del mensaje para deduplicación
+      tools,
+      toolsHandler
     );
 
     if (!aiResponse || aiResponse === '...') {

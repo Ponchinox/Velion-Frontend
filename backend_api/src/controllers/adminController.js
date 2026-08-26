@@ -498,7 +498,6 @@ export async function getGlobalConfig(req, res) {
       wahaUrl:      process.env.WAHA_API_URL || '',
       wahaApiKey:   process.env.WAHA_API_KEY || '',
       wahaIsPrimary: process.env.WAHA_IS_PRIMARY || 'false',
-      openrouterKey: process.env.OPENROUTER_API_KEY || process.env.OPENAI_API_KEY || '',
       geminiKey:    process.env.GITHUB_MODELS_KEY || process.env.GITHUB_TOKEN || '',
       groqKey:      process.env.GROQ_API_KEY || '',
       systemPrompt: process.env.SYSTEM_PROMPT || 'Eres un asistente de atención al cliente educado, eficiente y servicial.',
