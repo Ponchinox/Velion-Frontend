@@ -16,10 +16,10 @@ import {
 
 const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:3000';
 
-// ─── Datos de pago Yape (configura aquí tu número y nombre) ───
-const YAPE_NUMBER   = '926246740';       // Tu número de Yape
-const YAPE_NAME     = 'Velion Agent';    // Nombre que aparece en Yape
-const WHATSAPP_CONTACT = '51926246740';  // Número de WhatsApp para confirmar pago
+// ─── Datos de pago Yape ───
+const YAPE_NUMBER   = '953789363';       // Número para yapear
+const YAPE_NAME     = 'César';           // Nombre que figura en Yape
+const WHATSAPP_CONTACT = '51926246740';  // WhatsApp de soporte para confirmar comprobante
 
 export default function PlanSelectionPage() {
   const { user } = useAuth();
