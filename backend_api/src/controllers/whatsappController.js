@@ -1514,7 +1514,7 @@ ${inventarioTexto}
       try {
         axios.post(
           `${evoUrl}/chat/sendPresence/${instance}`,
-          { number: remoteJid, presence: 'composing', delay: 2000 },
+          { number: cleanJid, presence: 'composing', delay: 2000 },
           getEvoHeaders()
         ).catch(() => {});
       } catch {}
@@ -1854,6 +1854,28 @@ ${inventarioTexto}
 
         const item = dispatchSequence[i];
         
+        // --- RETRASO DINÁMICO DE RESPUESTA (Simulación Humana) ---
+        let typingDelay = 2000;
+        if (item.type === 'text') {
+          // 40ms por caracter. Mínimo 2s, máximo 12s.
+          typingDelay = Math.max(2000, Math.min(12000, item.content.length * 40));
+        }
+
+        // Enviar estado "escribiendo..." justo el tiempo que tardará en enviarse
+        if (provider === 'EVOLUTION') {
+          try {
+            const evoUrl = process.env.EVOLUTION_API_URL || 'http://localhost:8080';
+            axios.post(
+              `${evoUrl}/chat/sendPresence/${instance}`,
+              { number: cleanJid, presence: 'composing', delay: typingDelay },
+              getEvoHeaders(requestApiKey)
+            ).catch(() => {});
+          } catch {}
+        }
+
+        // Esperar el tiempo de tipeado simulado antes de enviar
+        await new Promise(resolve => setTimeout(resolve, typingDelay));
+        
         if (item.type === 'text') {
           try {
             const msgId = await sendWhatsAppReply({ ...gatewayCtx, to: finalCleanNumber, text: item.content });
@@ -1919,10 +1941,6 @@ ${inventarioTexto}
           }
         }
 
-        // Pausa entre despachos para asegurar orden cronológico y simular escritura (2.5 seg)
-        if (i < dispatchSequence.length - 1) {
-          await new Promise(resolve => setTimeout(resolve, 2500));
-        }
       }
     }
 

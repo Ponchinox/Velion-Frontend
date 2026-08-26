@@ -409,8 +409,25 @@ export async function resumeBot(req, res) {
       data: { isBotPaused: false }
     });
 
-    console.log(`🤖 [Resume Bot] Reactivado chatbot para el cliente +${customer.phone}`);
+    // Actualizar también los modelos Contact y Chat asociados al número de teléfono
+    await prisma.contact.updateMany({
+      where: { tenantId, phone: customer.phone },
+      data: { botPaused: false }
+    });
 
+    await prisma.chat.updateMany({
+      where: { tenantId, phone: customer.phone },
+      data: { botPaused: false }
+    });
+
+    // Emitir eventos en tiempo real para actualizar la interfaz
+    if (req.io) {
+      req.io.emit('bot_status_changed', { phone: customer.phone, botPaused: false });
+      req.io.emit('contact_updated', { phone: customer.phone, botPaused: false, reason: 'MANUAL_RESUME' });
+    }
+
+    console.log(`✅ [Resume Bot] Reactivado chatbot para el cliente +${customer.phone}`);
+  
     return res.status(200).json({ message: 'Bot reactivado exitosamente.' });
   } catch (error) {
     console.error('Error en resumeBot:', error);
