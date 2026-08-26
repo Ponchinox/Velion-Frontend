@@ -82,8 +82,8 @@ const ERR_TYPE = {
 };
 
 // Modelo principal y fallback
-const MODELO_PRINCIPAL = 'gemini-3.7-flash';
-const MODELO_FALLBACK  = 'gemini-2.5-flash';
+const MODELO_PRINCIPAL = 'gemini-3.6-flash';
+const MODELO_FALLBACK  = 'gemini-3.5-flash-lite';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // LOGGING ESTRUCTURADO

@@ -1053,7 +1053,8 @@ export async function receiveWebhook(req, res) {
           tenant, contact, chat, instance, requestApiKey, provider,
           metaPhoneNumberId: metaNumberRecord?.metaPhoneNumberId,
           metaAccessToken: metaNumberRecord?.metaAccessToken,
-          data: normalized.rawData, reqIo: req.io
+          data: normalized.rawData, reqIo: req.io,
+          msgId: normalized.msgId
         });
         console.log(`🔒 [Processing Lock] IA ocupada para +${clientNumber}. Mensaje guardado en pendingQueue.`);
       }
@@ -1115,6 +1116,7 @@ export async function receiveWebhook(req, res) {
         metaAccessToken: metaNumberRecord?.metaAccessToken || null,
         data: normalized.rawData || null,
         reqIo: req.io,
+        msgId: normalized.msgId || null,
         timer: setTimeout(() => {
           processBufferedMessage(cleanJid);
         }, 4000)
@@ -1152,7 +1154,8 @@ async function processBufferedMessage(cleanJid) {
     metaAccessToken,
     clientNumber,
     data,
-    reqIo
+    reqIo,
+    msgId
   } = buffer;
 
   // Contexto de Gateway para enviar respuestas por el proveedor correcto
@@ -1522,7 +1525,7 @@ ${inventarioTexto}
       [{ role: 'user', content: userMessageText }],
       mediaItems,
       clientNumber,
-      normalized.msgId // ID del mensaje para deduplicación
+      msgId // ID del mensaje para deduplicación
     );
 
     if (!aiResponse || aiResponse === '...') {
