@@ -153,6 +153,7 @@ export default function ConexionesPage() {
   const [metaPhoneNumberId, setMetaPhoneNumberId] = useState('');
   const [metaWabaId, setMetaWabaId] = useState('');
   const [metaAccessToken, setMetaAccessToken] = useState('');
+  const [metaPhoneNumber, setMetaPhoneNumber] = useState('');
   const [isSavingMeta, setIsSavingMeta] = useState(false);
 
   // Toast
@@ -296,6 +297,7 @@ export default function ConexionesPage() {
       setMetaPhoneNumberId('');
       setMetaWabaId('');
       setMetaAccessToken('');
+      setMetaPhoneNumber('');
       setShowNewConnectionModal(true);
     }
   };
@@ -335,30 +337,31 @@ export default function ConexionesPage() {
     }
   };
 
-  // ── Guardar credenciales Meta ────────────────────────────────────────────
+  // ── Crear instancia Meta en Evolution API ────────────────────────────────
   const handleSaveMeta = async () => {
-    if (!metaPhoneNumberId.trim() || !metaWabaId.trim() || !metaAccessToken.trim()) {
-      showToast('Completa los 3 campos requeridos de Meta.', 'error');
+    if (!metaPhoneNumberId.trim() || !metaWabaId.trim() || !metaAccessToken.trim() || !metaPhoneNumber.trim()) {
+      showToast('Completa los 4 campos requeridos de Meta.', 'error');
       return;
     }
     setIsSavingMeta(true);
     try {
       localStorage.setItem('sa_connection_name', connectionName || 'Meta API');
       setSavedName(connectionName || 'Meta API');
-      await connectionService.saveMetaConnection({
+      await connectionService.createMetaConnection({
         metaPhoneNumberId: metaPhoneNumberId.trim(),
-        metaWabaId: metaWabaId.trim(),
-        metaAccessToken: metaAccessToken.trim(),
-        phoneNumber: connectionName.trim() || metaPhoneNumberId.trim(),
+        metaWabaId:        metaWabaId.trim(),
+        metaAccessToken:   metaAccessToken.trim(),
+        phoneNumber:       metaPhoneNumber.trim(),
+        connectionName:    connectionName.trim() || 'Meta API',
       });
       setActiveProvider('META');
       setMetaPhoneNumberIdSaved(metaPhoneNumberId.trim());
       setStatus('CONNECTED');
       setShowNewConnectionModal(false);
-      showToast('✅ Conexión con Meta Cloud API guardada correctamente.');
-      await loadProvider(); // Actualizar conteo de conexiones de forma inmediata
+      showToast('✅ Instancia Meta creada en Evolution y registrada correctamente.');
+      await loadProvider();
     } catch (err) {
-      showToast(err.message || 'Error al guardar la conexión de Meta.', 'error');
+      showToast(err.message || 'Error al crear la instancia Meta.', 'error');
     } finally {
       setIsSavingMeta(false);
     }
@@ -449,7 +452,7 @@ export default function ConexionesPage() {
           )}
         </div>
       ) : (
-        /* ── Meta Cloud API: Formulario ── */
+        /* ── Meta Cloud API vía Evolution: Formulario ── */
         <div className="space-y-4">
           {/* Info box */}
           <div className="flex items-start gap-3 p-3.5 rounded-xl bg-blue-500/8 border border-blue-500/20">
@@ -465,50 +468,61 @@ export default function ConexionesPage() {
           </div>
 
           <FormField
+            id="meta-phone-number"
+            label="Número de teléfono WhatsApp Business"
+            placeholder="+51987654321"
+            value={metaPhoneNumber}
+            onChange={setMetaPhoneNumber}
+            required
+            helpText="Número de teléfono real de tu cuenta WhatsApp Business (con código de país)."
+            icon={<DeviceMobile size={14} />}
+          />
+
+          <FormField
             id="meta-phone-id"
             label="Phone Number ID"
-            placeholder="Ej. 123456789012345"
+            placeholder=""
             value={metaPhoneNumberId}
             onChange={setMetaPhoneNumberId}
             required
-            helpText="Identificador numérico del número de WhatsApp Business registrado."
+            helpText="ID numérico del número en Meta Developers → Tu App → WhatsApp → Configuración de API."
             icon={<IdentificationBadge size={14} />}
           />
 
           <FormField
             id="meta-waba-id"
             label="WABA ID (WhatsApp Business Account ID)"
-            placeholder="Ej. 987654321098765"
+            placeholder=""
             value={metaWabaId}
             onChange={setMetaWabaId}
             required
-            helpText="ID de tu cuenta WABA en Meta Business Manager."
+            helpText="ID de tu cuenta de WhatsApp Business en Meta Business Manager."
             icon={<WhatsappLogo size={14} />}
           />
 
           <FormField
             id="meta-access-token"
             label="Access Token Permanente"
-            placeholder="EAABwzLixnjYBO..."
+            placeholder=""
             value={metaAccessToken}
             onChange={setMetaAccessToken}
             type="password"
             required
-            helpText="Token de sistema con permisos whatsapp_business_messaging. Nunca expira si es de tipo System User."
+            helpText="Token de acceso permanente (System User) con permiso whatsapp_business_messaging."
             icon={<Key size={14} />}
           />
 
           <button
             onClick={handleSaveMeta}
-            disabled={isSavingMeta || !metaPhoneNumberId.trim() || !metaWabaId.trim() || !metaAccessToken.trim()}
+            disabled={isSavingMeta || !metaPhoneNumberId.trim() || !metaWabaId.trim() || !metaAccessToken.trim() || !metaPhoneNumber.trim()}
             className="w-full py-2.5 rounded-lg bg-blue-600 hover:bg-blue-700 text-white font-bold text-sm
               flex items-center justify-center gap-2 shadow-md transition-all cursor-pointer
               disabled:opacity-50 disabled:cursor-not-allowed mt-1"
           >
             {isSavingMeta ? (
-              <><CircleNotch size={18} className="animate-spin" /><span>Guardando...</span></>
+              <><CircleNotch size={18} className="animate-spin" /><span>Creando instancia...</span></>
             ) : (
-              <><FloppyDisk size={18} weight="bold" /><span>Guardar Conexión Meta</span></>
+              <><FloppyDisk size={18} weight="bold" /><span>Conectar con Meta Cloud API</span></>
             )}
           </button>
         </div>
@@ -576,6 +590,7 @@ export default function ConexionesPage() {
                 setMetaPhoneNumberId(conn.metaPhoneNumberId || '');
                 setMetaWabaId(conn.metaWabaId || '');
                 setMetaAccessToken('');
+                setMetaPhoneNumber(conn.phoneNumber || '');
                 setShowNewConnectionModal(true);
               }}
               className="w-full flex items-center justify-center gap-2 py-2.5 px-4 rounded-xl

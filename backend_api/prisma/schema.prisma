@@ -1,241 +1,221 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
 datasource db {
   provider = "postgresql"
   url      = env("DATABASE_URL")
 }
 
-generator client {
-  provider = "prisma-client-js"
-}
-
-// ─── MODELO TENANT (Empresas / Clientes del SaaS) ───
 model Tenant {
-  id              String           @id @default(uuid())
-  name            String
-  plan            String?          @default("Sin Plan") // "Sin Plan" | "Pro"
-  planId          String?
-  active          Boolean          @default(true)
-  msgLimit        Int              @default(0)
-  connLimit       Int              @default(0)
-  logoUrl         String?
-  companyName     String?          @default("")
-  taxId           String?
-  address         String?
-  phone           String?
-  email           String?
-  businessSector  String?
-  bankAccounts    String?          @db.Text
-  businessHours   String?          @db.Text
-  termsAndPolicies String?         @db.Text
-  customPrompt    String?          @db.Text
-  botRole         String?          @db.Text
-  multiMessageMode Boolean         @default(true)
-  respondInGroups Boolean          @default(false)
-  notificationPhone String?
-  notifySalesWhatsApp Boolean      @default(false)
-  marketingModeEnabled Boolean     @default(false)
-  aiEnabled       Boolean          @default(true)
-  createdAt       DateTime         @default(now())
-  updatedAt       DateTime         @updatedAt
-
-  // Relaciones
-  users           User[]
-  contacts        Contact[]
-  chats           Chat[]
-  messages        Message[]
-  automationFlows AutomationFlow[]
-  alerts          Alert[]
-  customers       Customer[]
-  campaigns       Campaign[]
-  flows           Flow[]
-  registeredNumbers RegisteredWhatsAppNumber[]
+  id                   String                     @id @default(uuid())
+  name                 String
+  plan                 String?                    @default("Sin Plan")
+  planId               String?
+  active               Boolean                    @default(true)
+  msgLimit             Int                        @default(0)
+  connLimit            Int                        @default(0)
+  logoUrl              String?
+  companyName          String?                    @default("")
+  taxId                String?
+  address              String?
+  phone                String?
+  email                String?
+  businessSector       String?
+  bankAccounts         String?
+  businessHours        String?
+  termsAndPolicies     String?
+  customPrompt         String?
+  botRole              String?
+  multiMessageMode     Boolean                    @default(true)
+  respondInGroups      Boolean                    @default(false)
+  notificationPhone    String?
+  notifySalesWhatsApp  Boolean                    @default(false)
+  marketingModeEnabled Boolean                    @default(false)
+  createdAt            DateTime                   @default(now())
+  updatedAt            DateTime                   @updatedAt
+  aiEnabled            Boolean                    @default(true)
+  alerts               Alert[]
+  automationFlows      AutomationFlow[]
+  campaigns            Campaign[]
+  chats                Chat[]
+  contacts             Contact[]
+  customers            Customer[]
+  flows                Flow[]
+  messages             Message[]
+  registeredNumbers    RegisteredWhatsAppNumber[]
+  users                User[]
 }
 
-// ─── MODELO USER (Usuarios / Miembros del Tenant) ───
 model User {
-  id        String   @id @default(uuid())
-  email     String   @unique
-  password  String   // Hash de la contraseña
+  id        String    @id @default(uuid())
+  email     String    @unique
+  password  String
   name      String?
   phone     String?
-  role      String   @default("client") // "superadmin" | "client" | "user"
-  tenantId  String?  // Opcional para soportar administradores globales del SaaS sin Tenant
-  tenant    Tenant?  @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-
-  // Relaciones
+  role      String    @default("client")
+  tenantId  String?
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
   products  Product[]
+  tenant    Tenant?   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
 }
 
-// ─── MODELO CONTACT (Contactos CRM del Tenant) ───
 model Contact {
   id              String   @id @default(uuid())
-  name            String
-  phone           String
-  category        String   @default("Nuevos Leads") // "Nuevos Leads" | "En Seguimiento" | "Clientes Cerrados"
-  tags            String[] // Postgres soporta arrays nativamente en Prisma
-  lastInteraction String?
-  botPaused       Boolean  @default(false)
-  tenantId        String
-  tenant          Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
-
-  // Relaciones
+  botPaused       Boolean  @default(false)
+  category        String   @default("Nuevos Leads")
+  lastInteraction String?
+  name            String
+  phone           String
+  tags            String[]
+  tenantId        String
   chats           Chat[]
+  tenant          Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
 }
 
-// ─── MODELO CHAT (Conversaciones del Live Chat) ───
 model Chat {
-  id        String   @id @default(uuid())
-  status    String   @default("open") // "open" | "closed"
-  botPaused Boolean  @default(false)
+  id        String    @id @default(uuid())
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  botPaused Boolean   @default(false)
   contactId String
-  contact   Contact  @relation(fields: [contactId], references: [id], onDelete: Cascade)
+  status    String    @default("open")
   tenantId  String
-  tenant    Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-
-  // Relaciones
+  contact   Contact   @relation(fields: [contactId], references: [id], onDelete: Cascade)
+  tenant    Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   messages  Message[]
 }
 
-// ─── MODELO MESSAGE (Mensajes del Live Chat) ───
 model Message {
   id         String   @id @default(uuid())
-  content    String
-  senderRole String   // "agent" | "bot" | "contact"
-  status     String   @default("sent") // "sent" | "delivered" | "read" | "failed"
-  externalId String?  // ID devuelto por WhatsApp (Meta wamid... o Evolution key.id)
   chatId     String
-  chat       Chat     @relation(fields: [chatId], references: [id], onDelete: Cascade)
-  tenantId   String
-  tenant     Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  content    String
   createdAt  DateTime @default(now())
+  senderRole String
+  tenantId   String
+  externalId String?
+  status     String   @default("sent")
+  chat       Chat     @relation(fields: [chatId], references: [id], onDelete: Cascade)
+  tenant     Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
 }
 
-// ─── MODELO AUTOMATIONFLOW (Flujo de Bot Automático) ───
 model AutomationFlow {
   id        String   @id @default(uuid())
   name      String
   isActive  Boolean  @default(false)
-  nodes     Json     // Soporta la estructura JSON del constructor de flujos
+  nodes     Json
   edges     Json
   tenantId  String
-  tenant    Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+  tenant    Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
 }
 
-// ─── MODELO PRODUCT (Inventario de Productos) ───
 model Product {
   id               String    @id @default(uuid())
   name             String
   description      String?
+  category         String?
+  tags             String[]  @default([])
   price            Float
   isAvailable      Boolean   @default(true)
-  imageUrl         String?   // URL de la imagen principal/portada (Cloudinary saas_products)
-  images           String[]  @default([]) // Galería de imágenes secundarias (hasta 4 fotos en total)
-  videoUrl         String?   // URL del video demostrativo opcional
+  imageUrl         String?
   promotionalPrice Float?
   promoStartDate   DateTime?
   promoEndDate     DateTime?
   userId           String
-  user             User      @relation(fields: [userId], references: [id], onDelete: Cascade)
   createdAt        DateTime  @default(now())
   updatedAt        DateTime  @updatedAt
+  images           String[]  @default([])
+  videoUrl         String?
+  user             User      @relation(fields: [userId], references: [id], onDelete: Cascade)
 }
 
-// ─── MODELO ALERT (Alertas Globales de Errores/Límites) ───
 model Alert {
   id        String   @id @default(uuid())
-  type      String   // "QUOTA_EXCEEDED" | "SESSION_FAILED" | "SYSTEM_ERROR"
-  severity  String   // "CRITICAL" | "HIGH" | "MEDIUM" | "LOW"
+  type      String
+  severity  String
   message   String
   resolved  Boolean  @default(false)
   tenantId  String?
-  tenant    Tenant?  @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+  tenant    Tenant?  @relation(fields: [tenantId], references: [id], onDelete: Cascade)
 }
 
-// ─── MODELO PLAN (Planes Comerciales del SaaS) ───
 model Plan {
   id                   String   @id @default(uuid())
   name                 String   @unique
   price                Float
   connLimit            Int      @default(1)
   msgLimit             Int      @default(1000)
-  maxProducts          Int      @default(10)
-  hasCampaigns         Boolean  @default(false)
-  hasAutomations       Boolean  @default(false)
-  hasAdvancedMarketing Boolean  @default(false)
-  features             Json     // Array de { text: String, included: Boolean } o Strings
+  features             Json
   flowBuilder          Boolean  @default(false)
   aiBrain              Boolean  @default(false)
   popular              Boolean  @default(false)
   active               Boolean  @default(true)
   createdAt            DateTime @default(now())
   updatedAt            DateTime @updatedAt
+  hasAdvancedMarketing Boolean  @default(false)
+  hasAutomations       Boolean  @default(false)
+  hasCampaigns         Boolean  @default(false)
+  maxProducts          Int      @default(10)
 }
 
-// ─── MODELO SYSTEMCONFIG (Configuración Global del SaaS, persistida clave/valor) ───
 model SystemConfig {
   id        String   @id @default(uuid())
   key       String   @unique
-  value     String   // Almacena strings, URLs, API keys o JSON serializado
+  value     String
   updatedAt DateTime @updatedAt
 }
 
-// ─── MODELO CUSTOMER (Clientes del CRM del Tenant para memoria a largo plazo) ───
 model Customer {
-  id             String   @id @default(uuid())
-  phone          String
-  name           String?
-  preferences    String?  @db.Text
-  isBanned       Boolean  @default(false)
-  currentFlowId  String?
-  currentNodeId  String?
-  tags           String[] @default([])
-  isBotPaused    Boolean  @default(false)
-  tenantId       String
-  tenant         Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  createdAt      DateTime @default(now())
-  updatedAt      DateTime @updatedAt
+  id            String   @id @default(uuid())
+  phone         String
+  name          String?
+  preferences   String?
+  isBanned      Boolean  @default(false)
+  currentFlowId String?
+  currentNodeId String?
+  tags          String[] @default([])
+  isBotPaused   Boolean  @default(false)
+  tenantId      String
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  tenant        Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
 
   @@unique([tenantId, phone])
 }
 
-// ─── MODELO CAMPAIGN (Campañas Masivas de Marketing) ───
 model Campaign {
-  id           String        @id @default(uuid())
-  name         String
-  baseMessage  String        @db.Text
-  media        String?       @db.Text
-  status       String        @default("pending") // "pending" | "running" | "completed" | "failed"
-  delayMin     Int           @default(5)
-  delayMax     Int           @default(15)
-  tenantId     String
-  tenant       Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  createdAt    DateTime      @default(now())
-  updatedAt    DateTime      @updatedAt
-  logs         CampaignLog[]
+  id          String        @id @default(uuid())
+  name        String
+  baseMessage String
+  media       String?
+  status      String        @default("pending")
+  delayMin    Int           @default(5)
+  delayMax    Int           @default(15)
+  tenantId    String
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+  tenant      Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  logs        CampaignLog[]
 }
 
-// ─── MODELO CAMPAIGNLOG (Logs de Envíos de Campaña) ───
 model CampaignLog {
   id            String   @id @default(uuid())
   campaignId    String
-  campaign      Campaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
   customerPhone String
-  status        String   // "sent" | "failed"
-  sentMessage   String   @db.Text
-  errorMessage  String?  @db.Text
+  status        String
+  sentMessage   String
+  errorMessage  String?
   sentAt        DateTime @default(now())
+  campaign      Campaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
 }
 
-// ─── MODELO FLOW (Constructor de Flujos Visuales) ───
 model Flow {
   id             String   @id @default(uuid())
   name           String
@@ -244,30 +224,21 @@ model Flow {
   edges          Json
   isActive       Boolean  @default(false)
   tenantId       String
-  tenant         Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   createdAt      DateTime @default(now())
   updatedAt      DateTime @updatedAt
+  tenant         Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
 }
 
-// ─── MODELO REGISTEREDWHATSAPPNUMBER (Anti-Fraude / Fingerprinting Único de Número) ───
-// Patrón Gateway: soporta Evolution API (QR) y Meta Cloud API (Oficial)
 model RegisteredWhatsAppNumber {
-  id                 String   @id @default(uuid())
-  phoneNumber        String   @unique
-  provider           String   @default("EVOLUTION") // "EVOLUTION" | "META"
-
-  // Campos exclusivos para Meta Cloud API (opcionales)
-  metaPhoneNumberId  String?  // Phone Number ID de la API de Meta
-  metaWabaId         String?  // WhatsApp Business Account ID
-  metaAccessToken    String?  @db.Text // Token de acceso (puede ser largo)
-
-  instanceName       String?  // Nombre único de la instancia en Evolution API
-
-  tenantId    String
-  tenant      Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  id                String   @id @default(uuid())
+  phoneNumber       String   @unique
+  tenantId          String
+  createdAt         DateTime @default(now())
+  metaAccessToken   String?
+  metaPhoneNumberId String?
+  metaWabaId        String?
+  provider          String   @default("EVOLUTION")
+  updatedAt         DateTime @updatedAt
+  instanceName      String?
+  tenant            Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
 }
-
-// Forzando actualizacion limpia para Render.
-

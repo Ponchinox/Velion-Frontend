@@ -35,7 +35,7 @@ import prisma from '../db.js';
 // ─────────────────────────────────────────────────────────────────────────────
 
 /** Timeout máximo por petición individual a Gemini (ms) */
-const GEMINI_TIMEOUT_MS = 20_000;
+const GEMINI_TIMEOUT_MS = 8_000; // ✅ Reducido de 20s → 8s para rotación rápida de keys
 
 /** Tiempo de cooldown al recibir un rate limit 429 (ms) */
 const COOLDOWN_RATE_LIMIT_MS = 120_000; // 2 minutos
@@ -53,8 +53,8 @@ const THINKING_LEVEL = ThinkingLevel.LOW; // = "LOW"
 /** Tokens máximos de salida por petición */
 const MAX_OUTPUT_TOKENS = 1024;
 
-/** Tamaño máximo del historial por usuario (turnos, no mensajes) */
-const MAX_HISTORIAL = 10;
+/** Tamaño máximo del historial por usuario (mensajes, no turnos) — limitado a últimos 8 */
+const MAX_HISTORIAL = 8; // ✅ Reducido de 10 → 8 mensajes (4 turnos user/model)
 
 /** Máx. ítems multimedia por petición */
 const MAX_MEDIA_ITEMS = 3;
@@ -505,10 +505,18 @@ async function callGemini(systemPrompt, messages, mediaItems = [], tools = [], t
       const maskedKey = maskKey(keyEntry.rawKey);
       const availableStats = geminiPool.stats();
 
+      // ── 📊 DIAGNÓSTICO DE PAYLOAD — verifica reducción de tokens ──────────
+      const payloadJson    = JSON.stringify(contents);
+      const payloadBytes   = Buffer.byteLength(payloadJson, 'utf8');
+      const payloadKb      = (payloadBytes / 1024).toFixed(1);
+      const turnCount      = contents.length;
+      // Estimación rápida de tokens (aprox 4 chars/token en español)
+      const estimatedTokens = Math.round(payloadBytes / 4);
       geminiLog('═'.repeat(60));
       geminiLog(`NUEVA PETICIÓN`);
       geminiLog(`Modelo: ${modelSlug} | Thinking: ${isMainModel ? 'LOW (ThinkingLevel.LOW)' : 'budget=1024'} | Timeout: ${GEMINI_TIMEOUT_MS / 1000}s`);
       geminiLog(`Keys disponibles: ${availableStats}`);
+      geminiLog(`📦 PAYLOAD: ${turnCount} turnos | ${payloadKb} KB | ~${estimatedTokens} tokens estimados`);
       geminiLog(`Key #${keyEntry.index} (${maskedKey}) → iniciando petición`);
 
       const startTime = Date.now();
@@ -526,20 +534,28 @@ async function callGemini(systemPrompt, messages, mediaItems = [], tools = [], t
           config:   { ...config, abortSignal: controller.signal },
         });
 
-        // Revisar Function Calling (Uso de Herramientas)
-        if (response.functionCalls && response.functionCalls.length > 0 && toolsHandler) {
+        // Revisar Function Calling (Uso de Herramientas) con bucle para encadenamiento
+        while (response.functionCalls && response.functionCalls.length > 0 && toolsHandler) {
           const call = response.functionCalls[0];
           geminiLog(`Herramienta invocada por la IA: ${call.name}`);
           
           try {
             const apiResponse = await toolsHandler(call.name, call.args);
             
-            // Adjuntar el content completo devuelto por el modelo (preserva thought_signature, functionCall, etc.)
-            const modelContent = response.candidates && response.candidates.length > 0 
-                ? response.candidates[0].content 
-                : { role: 'model', parts: [{ functionCall: call }] };
-            contents.push(modelContent);
+            // Adjuntar el content completo devuelto por el modelo. 
+            // Clonamos profundamente para asegurar que el SDK envíe todo intacto
+            // y limpiamos 'thought' que no debe enviarse, pero preservamos thought_signature.
+            let modelContent = { role: 'model', parts: [{ functionCall: call }] };
+            if (response.candidates && response.candidates.length > 0 && response.candidates[0].content) {
+              const rawContent = JSON.parse(JSON.stringify(response.candidates[0].content));
+              if (rawContent.parts) {
+                // Filtrar parts que sean exclusivamente de thought (si el SDK los incluye como parts separados)
+                rawContent.parts = rawContent.parts.filter(p => !p.thought);
+              }
+              modelContent = rawContent;
+            }
             
+            contents.push(modelContent);
             contents.push({ role: 'user', parts: [{ functionResponse: { name: call.name, response: apiResponse } }] });
 
             geminiLog(`Ejecución de herramienta completada. Generando respuesta final...`);
@@ -551,6 +567,7 @@ async function callGemini(systemPrompt, messages, mediaItems = [], tools = [], t
             });
           } catch (funcErr) {
             geminiWarn(`Error en toolsHandler para ${call.name}: ${funcErr.message}`);
+            break; // Romper el ciclo si la herramienta falla internamente
           }
         }
 
@@ -594,7 +611,7 @@ async function callGemini(systemPrompt, messages, mediaItems = [], tools = [], t
         const errMsg    = (err?.message || String(err)).slice(0, 120);
 
         if (errType === ERR_TYPE.TIMEOUT) {
-          geminiError(`Key #${keyEntry.index} → TIMEOUT (${GEMINI_TIMEOUT_MS / 1000}s)`);
+          geminiError(`Key #${keyEntry.index} → ⏱️ TIMEOUT CORTADO A ${GEMINI_TIMEOUT_MS / 1000}s (configurado) — rotando key`);
         } else {
           geminiError(`Key #${keyEntry.index} → ${errType} después de ${(latencyMs / 1000).toFixed(2)}s — ${errMsg}`);
         }
@@ -690,10 +707,11 @@ async function callAiProviderCascade(systemPrompt, messages, mediaItems = [], to
     }
   } else {
     geminiWarn('No hay GEMINI_API_KEY configurada.');
-    throw new Error('API Key de Gemini no configurada.');
+    return null;
   }
 
-  throw lastError || new Error('Todos los proveedores de IA configurados fallaron.');
+  geminiError(lastError ? lastError.message : 'Todos los proveedores de IA configurados fallaron.');
+  return null;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

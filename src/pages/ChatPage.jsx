@@ -1,13 +1,11 @@
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect, useCallback } from 'react';
 import {
   MagnifyingGlass,
   PaperPlaneRight,
   Paperclip,
   ArrowLeft,
   Phone,
-  UserCircle,
   X,
-  DotsThreeVertical,
   Circle,
   WarningCircle,
   ArrowClockwise,
@@ -15,6 +13,7 @@ import {
   Checks,
 } from '@phosphor-icons/react';
 import * as chatService from '../services/chatService';
+import * as contactService from '../services/contactService';
 import { io } from 'socket.io-client';
 import { Play } from 'lucide-react';
 
@@ -40,6 +39,22 @@ function getAvatarStyle(name = '', index = 0) {
   return { initials, colorCls };
 }
 
+/* ─── Utilidad: parsear hora para ordenar ─── */
+function parseTimeForSort(timeStr = '') {
+  // El campo time viene como "HH:MM" o timestamp ISO
+  if (!timeStr) return 0;
+  // Si es ISO
+  if (timeStr.includes('T') || timeStr.includes('-')) {
+    return new Date(timeStr).getTime() || 0;
+  }
+  // Si es "HH:MM" de hoy
+  const [h, m] = timeStr.split(':').map(Number);
+  if (isNaN(h) || isNaN(m)) return 0;
+  const d = new Date();
+  d.setHours(h, m, 0, 0);
+  return d.getTime();
+}
+
 /* ─── Icono de Estado de Mensaje (Ticks) ─── */
 function StatusIcon({ status }) {
   if (status === 'read') {
@@ -51,7 +66,6 @@ function StatusIcon({ status }) {
   if (status === 'failed') {
     return <WarningCircle size={12} className="text-red-300 inline-block" weight="bold" title="Error en envío" />;
   }
-  // status === 'sent' o default
   return <Check size={12} className="text-white/60 inline-block" title="Enviado" />;
 }
 
@@ -59,13 +73,11 @@ function StatusIcon({ status }) {
 function renderMessageContent(text, onImageClick) {
   if (!text) return null;
 
-  // Regex para detectar URLs de imágenes (Cloudinary o extensiones comunes)
   const imageRegex = /(https?:\/\/[^\s]+?\.(?:png|jpg|jpeg|gif|webp)(?:\?[^\s]*)?|https?:\/\/res\.cloudinary\.com\/[^\s]+)/gi;
   const match = text.match(imageRegex);
 
   if (match) {
     const imageUrl = match[0];
-    // Si el texto es exactamente la URL de la imagen
     if (text.trim() === imageUrl) {
       return (
         <img
@@ -77,8 +89,6 @@ function renderMessageContent(text, onImageClick) {
         />
       );
     }
-
-    // Si tiene texto descriptivo adicional junto a la URL de la imagen
     const cleanText = text.replace(imageRegex, '').trim();
     return (
       <div className="space-y-2 break-words whitespace-pre-wrap">
@@ -106,7 +116,7 @@ function Bubble({ msg, onImageClick }) {
         className={`
           max-w-[75%] sm:max-w-[60%] rounded-2xl px-4 py-2.5 shadow-card break-words
           ${isClient
-            ? 'bg-app text-hi rounded-tl-sm'
+            ? 'bg-white dark:bg-white/10 text-hi rounded-tl-sm'
             : 'bg-brand text-white rounded-tr-sm'
           }
         `}
@@ -130,10 +140,9 @@ function Bubble({ msg, onImageClick }) {
   );
 }
 
-/* ─── Tarjeta de chat con indicador de proveedor y ventana ─── */
+/* ─── Tarjeta de chat ─── */
 function ChatItem({ chat, index, isActive, onClick }) {
   const { initials, colorCls } = getAvatarStyle(chat.name, index);
-  const isMetaClosed = chat.provider === 'META' && chat.isWindowOpen === false;
 
   return (
     <button
@@ -161,7 +170,7 @@ function ChatItem({ chat, index, isActive, onClick }) {
           <div className="flex items-center gap-1.5 flex-shrink-0">
             {chat.provider === 'META' && (
               <span
-                className={`px-1.5 py-0.2 rounded text-[9px] font-bold ${
+                className={`px-1.5 py-0.5 rounded text-[9px] font-bold ${
                   chat.isWindowOpen
                     ? 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400'
                     : 'bg-amber-500/15 text-amber-600 dark:text-amber-400'
@@ -171,14 +180,14 @@ function ChatItem({ chat, index, isActive, onClick }) {
                 {chat.isWindowOpen ? '24h' : '24h exp'}
               </span>
             )}
-            <span className="text-2xs text-muted">{chat.time}</span>
+            <span className="text-[10px] text-muted whitespace-nowrap">{chat.time}</span>
           </div>
         </div>
         <div className="flex items-center justify-between gap-2 mt-0.5">
           <p className="text-xs text-lo truncate">{chat.lastMsg}</p>
           {chat.unread > 0 && (
-            <span className="inline-flex items-center justify-center w-5 h-5 rounded-full bg-brand text-white text-2xs font-bold flex-shrink-0">
-              {chat.unread}
+            <span className="inline-flex items-center justify-center w-5 h-5 rounded-full bg-brand text-white text-[10px] font-bold flex-shrink-0">
+              {chat.unread > 99 ? '99+' : chat.unread}
             </span>
           )}
         </div>
@@ -187,27 +196,39 @@ function ChatItem({ chat, index, isActive, onClick }) {
   );
 }
 
-
-/* ─── Panel de conversación (Área del Chat) ─── */
+/* ─── Panel de conversación ─── */
 function ConversationPanel({ chat, index, messages, isLoadingMessages, onSendMessage, onBack, isMobile, onImageClick, onResumeBot }) {
   const [input, setInput] = useState('');
   const [attachment, setAttachment] = useState(null);
   const [showAttachMenu, setShowAttachMenu] = useState(false);
-  const bottomRef = useRef(null);
-  const textareaRef = useRef(null);
 
+  /*
+   * FIX ANDROID SCROLL:
+   * Usamos un ref al contenedor de mensajes y hacemos scroll programático
+   * con scrollTop en lugar de scrollIntoView, que tiene bugs en WebKit/Android.
+   * requestAnimationFrame garantiza que el DOM ya está pintado antes de scrollear.
+   */
+  const messagesContainerRef = useRef(null);
+  const textareaRef = useRef(null);
   const fileInputRef = useRef(null);
   const docInputRef = useRef(null);
 
   const { initials, colorCls } = getAvatarStyle(chat.name, index);
-
-  // Variable derivada: la ventana de 24h de Meta está cerrada cuando el proveedor es META y isWindowOpen es false
   const isMetaWindowClosed = chat.provider === 'META' && chat.isWindowOpen === false;
 
-  /* Auto-scroll */
+  /* Auto-scroll al final — compatible con Android WebKit */
+  const scrollToBottom = useCallback(() => {
+    requestAnimationFrame(() => {
+      const el = messagesContainerRef.current;
+      if (el) {
+        el.scrollTop = el.scrollHeight;
+      }
+    });
+  }, []);
+
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages, isLoadingMessages]);
+    scrollToBottom();
+  }, [messages, isLoadingMessages, scrollToBottom]);
 
   /* Auto-resize del textarea */
   useEffect(() => {
@@ -235,24 +256,25 @@ function ConversationPanel({ chat, index, messages, isLoadingMessages, onSendMes
   const handleFileChange = (e, type) => {
     const file = e.target.files[0];
     if (!file) return;
-
     const reader = new FileReader();
     reader.onloadend = () => {
-      setAttachment({
-        file,
-        base64: reader.result,
-        name: file.name,
-        type: type // 'image' o 'document'
-      });
+      setAttachment({ file, base64: reader.result, name: file.name, type });
     };
     reader.readAsDataURL(file);
     setShowAttachMenu(false);
   };
 
   return (
-    <div className="flex-1 h-full max-h-full flex flex-col bg-card overflow-hidden">
-      {/* Header del chat */}
-      <div className="flex items-center gap-3 px-4 py-3.5 border-b border-line bg-card flex-shrink-0">
+    /*
+     * FIX ANDROID SCROLL:
+     * El contenedor principal necesita h-full + min-h-0 explícito.
+     * Sin min-h-0, un hijo flex-1 en Safari/WebKit puede crecer infinitamente
+     * y romper el overflow-y-auto del área de mensajes.
+     */
+    <div className="flex flex-col w-full h-full min-h-0 bg-card">
+
+      {/* ── Header del chat ── */}
+      <div className="flex items-center gap-3 px-4 py-3 border-b border-line bg-card flex-shrink-0">
         {isMobile && (
           <button
             onClick={onBack}
@@ -267,22 +289,22 @@ function ConversationPanel({ chat, index, messages, isLoadingMessages, onSendMes
           {initials}
         </span>
 
-        <div className="flex-1 min-w-0 flex flex-col sm:flex-row sm:items-center gap-2">
-          <div>
-            <p className="text-sm font-semibold text-hi leading-tight">{chat.name}</p>
+        <div className="flex-1 min-w-0 flex flex-col sm:flex-row sm:items-center gap-1 sm:gap-2">
+          <div className="min-w-0">
+            <p className="text-sm font-semibold text-hi leading-tight truncate">{chat.name}</p>
             <p className="text-xs text-lo font-mono">{chat.phone || 'Sin número'}</p>
           </div>
 
           {/* Badges de Estado */}
-          <div className="flex flex-wrap items-center gap-2 mt-1 sm:mt-0 sm:ml-2">
+          <div className="flex flex-wrap items-center gap-2 sm:ml-2">
             {chat.isBotPaused && (
               <div className="flex items-center gap-2">
-                <span className="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-bold bg-amber-50 text-amber-700 border border-amber-200">
+                <span className="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-bold bg-amber-50 text-amber-700 border border-amber-200 whitespace-nowrap">
                   Bot Pausado
                 </span>
                 <button
                   onClick={onResumeBot}
-                  className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded bg-brand/10 hover:bg-brand/20 text-brand text-[10px] font-bold transition-all border border-brand/20 cursor-pointer"
+                  className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded bg-brand/10 hover:bg-brand/20 text-brand text-[10px] font-bold transition-all border border-brand/20 cursor-pointer whitespace-nowrap"
                 >
                   <Play size={10} className="fill-brand text-brand" />
                   Reactivar Bot
@@ -295,15 +317,15 @@ function ConversationPanel({ chat, index, messages, isLoadingMessages, onSendMes
                 {chat.isWindowOpen ? (
                   <span
                     title={`Ventana Meta 24h activa. Expira en aprox. ${Math.ceil((chat.windowRemainingMinutes || 1440) / 60)}h`}
-                    className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-50 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800"
+                    className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-50 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800 whitespace-nowrap"
                   >
                     <Circle size={6} weight="fill" className="text-emerald-500 animate-pulse" />
-                    Meta 24h Activa (~{Math.ceil((chat.windowRemainingMinutes || 1440) / 60)}h)
+                    Meta 24h (~{Math.ceil((chat.windowRemainingMinutes || 1440) / 60)}h)
                   </span>
                 ) : (
                   <span
-                    title="Han transcurrido más de 24h desde el último mensaje del cliente. Meta prohíbe el envío de mensajes de texto libre."
-                    className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-bold bg-amber-50 text-amber-700 dark:bg-amber-950/40 dark:text-amber-300 border border-amber-200 dark:border-amber-800"
+                    title="Han transcurrido más de 24h desde el último mensaje del cliente."
+                    className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-bold bg-amber-50 text-amber-700 dark:bg-amber-950/40 dark:text-amber-300 border border-amber-200 dark:border-amber-800 whitespace-nowrap"
                   >
                     <WarningCircle size={11} weight="bold" className="text-amber-600" />
                     Ventana 24h Cerrada
@@ -314,22 +336,18 @@ function ConversationPanel({ chat, index, messages, isLoadingMessages, onSendMes
           </div>
         </div>
 
-        <div className="flex items-center gap-1 flex-shrink-0">
-          <button
-            className="hidden sm:flex items-center gap-1.5 px-3 py-1.5 rounded-md border border-line text-xs font-medium text-mid hover:bg-app hover:border-line-strong transition-all cursor-pointer"
-          >
-            <UserCircle size={14} />
-            Ver Ficha
-          </button>
-          <button className="p-1.5 rounded-md text-lo hover:text-hi hover:bg-app transition-colors cursor-pointer">
-            <DotsThreeVertical size={18} />
-          </button>
-        </div>
+        {/* ELIMINADOS: botones "Ver Ficha" y "⋮" (inservibles) */}
       </div>
 
-      {/* Mensajes */}
+      {/* ── Área de mensajes ──
+          FIX ANDROID: flex-1 + min-h-0 + overflow-y-auto + -webkit-overflow-scrolling: touch
+          El min-h-0 es CRÍTICO en flexbox para que el contenedor no crezca sin límite
+          y el overflow-y-auto sea efectivo en Safari/WebKit/Android Chrome.
+      */}
       <div
-        className="flex-1 overflow-y-auto overflow-x-hidden px-3 sm:px-4 py-4 space-y-3 bg-app/40 overscroll-contain"
+        ref={messagesContainerRef}
+        className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden px-3 sm:px-4 py-4 space-y-3 bg-[#ECE5DD] dark:bg-app/40"
+        style={{ WebkitOverflowScrolling: 'touch', overscrollBehavior: 'contain' }}
         role="log"
         aria-live="polite"
       >
@@ -338,15 +356,16 @@ function ConversationPanel({ chat, index, messages, isLoadingMessages, onSendMes
             <div className="animate-spin rounded-full h-7 w-7 border-2 border-brand border-t-transparent" />
             <p className="text-xs text-lo">Cargando conversación...</p>
           </div>
+        ) : messages.length === 0 ? (
+          <div className="flex flex-col items-center justify-center h-full text-center px-6">
+            <p className="text-xs text-lo">No hay mensajes en esta conversación aún.</p>
+          </div>
         ) : (
-          <>
-            {messages.map(msg => <Bubble key={msg.id} msg={msg} onImageClick={onImageClick} />)}
-            <div ref={bottomRef} />
-          </>
+          messages.map(msg => <Bubble key={msg.id} msg={msg} onImageClick={onImageClick} />)
         )}
       </div>
 
-      {/* Banner de Ventana 24h de Meta Cerrada */}
+      {/* ── Banner Ventana 24h Cerrada ── */}
       {isMetaWindowClosed && (
         <div className="bg-amber-50 dark:bg-amber-950/50 border-t border-amber-200 dark:border-amber-800/80 px-4 py-2.5 flex items-start sm:items-center gap-2.5 text-xs text-amber-800 dark:text-amber-200 flex-shrink-0">
           <WarningCircle size={18} className="text-amber-600 dark:text-amber-400 flex-shrink-0 mt-0.5 sm:mt-0" weight="bold" />
@@ -357,7 +376,7 @@ function ConversationPanel({ chat, index, messages, isLoadingMessages, onSendMes
         </div>
       )}
 
-      {/* Previsualización del archivo adjunto */}
+      {/* ── Previsualización del archivo adjunto ── */}
       {attachment && (
         <div className="px-4 py-2.5 bg-app border-t border-line flex items-center justify-between gap-3 flex-shrink-0 animate-in fade-in duration-200">
           <div className="flex items-center gap-3">
@@ -386,7 +405,7 @@ function ConversationPanel({ chat, index, messages, isLoadingMessages, onSendMes
         </div>
       )}
 
-      {/* Input footer */}
+      {/* ── Input footer ── */}
       <div className="flex-shrink-0 border-t border-line bg-card px-4 py-3 relative">
         {/* Menú de Adjuntos (Popover) */}
         {showAttachMenu && (
@@ -408,20 +427,8 @@ function ConversationPanel({ chat, index, messages, isLoadingMessages, onSendMes
 
         <div className="flex items-end gap-2">
           {/* Inputs de archivos ocultos */}
-          <input
-            ref={fileInputRef}
-            type="file"
-            accept="image/*"
-            className="hidden"
-            onChange={(e) => handleFileChange(e, 'image')}
-          />
-          <input
-            ref={docInputRef}
-            type="file"
-            accept=".pdf,.doc,.docx,.xls,.xlsx,.txt"
-            className="hidden"
-            onChange={(e) => handleFileChange(e, 'document')}
-          />
+          <input ref={fileInputRef} type="file" accept="image/*,video/*" className="hidden" onChange={(e) => handleFileChange(e, 'image')} />
+          <input ref={docInputRef} type="file" accept=".pdf,.doc,.docx,.xls,.xlsx,.txt" className="hidden" onChange={(e) => handleFileChange(e, 'document')} />
 
           <button
             type="button"
@@ -432,7 +439,7 @@ function ConversationPanel({ chat, index, messages, isLoadingMessages, onSendMes
             <Paperclip size={17} />
           </button>
 
-          <div className={`flex-1 rounded-xl border border-line bg-app px-3.5 py-2 focus-within:border-brand focus-within:shadow-input-focus transition-all duration-fast ${isMetaWindowClosed ? 'opacity-60 bg-muted/20' : ''}`}>
+          <div className={`flex-1 rounded-xl border border-line bg-app px-3.5 py-2 focus-within:border-brand focus-within:shadow-[0_0_0_3px_rgba(37,99,235,0.12)] transition-all duration-fast ${isMetaWindowClosed ? 'opacity-60' : ''}`}>
             <textarea
               ref={textareaRef}
               rows={1}
@@ -440,9 +447,9 @@ function ConversationPanel({ chat, index, messages, isLoadingMessages, onSendMes
               disabled={isMetaWindowClosed}
               onChange={e => setInput(e.target.value)}
               onKeyDown={handleKeyDown}
-              placeholder={isMetaWindowClosed ? "Ventana 24h de Meta cerrada. Esperando que el cliente escriba..." : "Escribe un mensaje... (Enter para enviar)"}
-              className={`w-full resize-none bg-transparent text-sm text-hi placeholder:text-muted focus:outline-none leading-relaxed overflow-hidden ${isMetaWindowClosed ? 'cursor-not-allowed' : ''}`}
-              style={{ maxHeight: '120px' }}
+              placeholder={isMetaWindowClosed ? 'Ventana 24h de Meta cerrada. Esperando que el cliente escriba...' : 'Escribe un mensaje... (Enter para enviar)'}
+              className={`w-full resize-none bg-transparent text-sm text-hi placeholder:text-muted focus:outline-none leading-relaxed ${isMetaWindowClosed ? 'cursor-not-allowed' : ''}`}
+              style={{ maxHeight: '120px', overflowY: 'auto' }}
             />
           </div>
 
@@ -463,7 +470,7 @@ function ConversationPanel({ chat, index, messages, isLoadingMessages, onSendMes
 function SidebarSkeleton() {
   return (
     <div className="divide-y divide-line">
-      {[1, 2, 3, 4].map(n => (
+      {[1, 2, 3, 4, 5].map(n => (
         <div key={n} className="flex items-start gap-3 px-4 py-3.5 animate-pulse">
           <div className="w-10 h-10 rounded-full bg-line flex-shrink-0" />
           <div className="flex-1 space-y-2 py-1">
@@ -478,12 +485,12 @@ function SidebarSkeleton() {
 
 function EmptyState() {
   return (
-    <div className="flex-1 flex flex-col items-center justify-center text-center p-8 bg-app/10">
-      <div className="w-16 h-16 rounded-2xl bg-brand/10 flex items-center justify-center mb-4">
-        <Phone size={32} className="text-brand" />
+    <div className="flex-1 flex flex-col items-center justify-center text-center p-8 bg-[#ECE5DD] dark:bg-app/10">
+      <div className="w-20 h-20 rounded-2xl bg-brand/10 flex items-center justify-center mb-5 shadow-card">
+        <Phone size={36} className="text-brand" />
       </div>
       <p className="text-base font-semibold text-hi">Bandeja de Mensajes</p>
-      <p className="text-sm text-lo mt-1.5 max-w-xs">
+      <p className="text-sm text-lo mt-1.5 max-w-xs leading-relaxed">
         Selecciona una conversación de la lista para ver y responder los mensajes en tiempo real.
       </p>
     </div>
@@ -495,24 +502,29 @@ export default function ChatPage() {
   const [chats, setChats] = useState([]);
   const [isLoadingChats, setIsLoadingChats] = useState(true);
   const [chatsError, setChatsError] = useState('');
-  
+
   const [activeChatId, setActiveChatId] = useState(null);
   const [activeChatMessages, setActiveChatMessages] = useState([]);
   const [isLoadingMessages, setIsLoadingMessages] = useState(false);
 
   const [search, setSearch] = useState('');
-  const [showConversation, setShowConversation] = useState(false); // solo móvil
+  const [showConversation, setShowConversation] = useState(false);
   const [fullscreenImage, setFullscreenImage] = useState(null);
 
   const activeChat = chats.find(c => c.id === activeChatId);
   const activeChatIndex = chats.findIndex(c => c.id === activeChatId);
+
+  /* ─── Ordenar chats: más reciente primero ─── */
+  const sortedChats = [...chats].sort((a, b) => parseTimeForSort(b.time) - parseTimeForSort(a.time));
 
   const loadChats = async () => {
     setIsLoadingChats(true);
     setChatsError('');
     try {
       const data = await chatService.getChats();
-      setChats(data || []);
+      // Ordenar inmediatamente al recibir datos: más reciente arriba
+      const sorted = (data || []).sort((a, b) => parseTimeForSort(b.time) - parseTimeForSort(a.time));
+      setChats(sorted);
     } catch {
       setChatsError('No se pudieron cargar los chats.');
     } finally {
@@ -526,7 +538,6 @@ export default function ChatPage() {
       const data = await chatService.getMessages(chatId);
       setActiveChatMessages(data || []);
     } catch {
-      // Fallback a mensajes mock del chat local si el endpoint no responde
       const selectedMock = chats.find(c => c.id === chatId);
       if (selectedMock && selectedMock.messages) {
         setActiveChatMessages(selectedMock.messages);
@@ -539,7 +550,6 @@ export default function ChatPage() {
   };
 
   const activeChatIdRef = useRef(activeChatId);
-
   useEffect(() => {
     activeChatIdRef.current = activeChatId;
   }, [activeChatId]);
@@ -547,19 +557,16 @@ export default function ChatPage() {
   useEffect(() => {
     loadChats();
 
-    // Establecer conexión Socket.IO con el backend en tiempo real
     const socket = io(API_BASE_URL);
 
     socket.on('connect', () => {
       console.log('🔌 [Socket.IO] Conectado al servidor de WebSocket en tiempo real.');
     });
 
-    // ── 1. Mensajes Nuevos en Tiempo Real ──
     socket.on('new_whatsapp_message', (msg) => {
       console.log('📩 [Socket.IO] Evento de mensaje recibido:', msg);
       const isIncoming = msg.type === 'incoming';
 
-      // Si el mensaje es de la conversación seleccionada, añadirlo al chat activo
       if (msg.chatId === activeChatIdRef.current) {
         const formattedMsg = {
           id: msg.messageId || msg.id || `socket-${Date.now()}`,
@@ -572,34 +579,37 @@ export default function ChatPage() {
         };
 
         setActiveChatMessages(prev => {
-          // Evitar duplicados
-          const exists = prev.some(m => (m.externalId && formattedMsg.externalId && m.externalId === formattedMsg.externalId) || (m.text === formattedMsg.text && m.from === formattedMsg.from));
+          const exists = prev.some(m =>
+            (m.externalId && formattedMsg.externalId && m.externalId === formattedMsg.externalId) ||
+            (m.text === formattedMsg.text && m.from === formattedMsg.from)
+          );
           if (exists) return prev;
           return [...prev, formattedMsg];
         });
       }
 
-      // Actualizar información, último mensaje y ventana de 24h en la barra lateral
+      /* Actualizar sidebar Y reordenar para que el chat con actividad nueva suba al tope */
       setChats(prev => {
-        return prev.map(c => {
+        const updated = prev.map(c => {
           if (c.id === msg.chatId) {
             return {
               ...c,
-              lastMsg: msg.mediaType === 'image' ? '📸 Imagen' : msg.text,
+              lastMsg: msg.mediaType === 'image' ? '📸 Imagen' : (msg.text || ''),
               time: new Date(msg.timestamp || Date.now()).toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' }),
-              unread: c.id === activeChatIdRef.current ? c.unread : (c.unread || 0) + 1,
+              _sortTs: Date.now(), // timestamp numérico para orden confiable
+              unread: c.id === activeChatIdRef.current ? 0 : (c.unread || 0) + 1,
               isWindowOpen: isIncoming ? true : c.isWindowOpen,
-              windowRemainingMinutes: isIncoming ? 1440 : c.windowRemainingMinutes
+              windowRemainingMinutes: isIncoming ? 1440 : c.windowRemainingMinutes,
             };
           }
           return c;
         });
+        // Re-ordenar: más reciente arriba
+        return updated.sort((a, b) => (b._sortTs || 0) - (a._sortTs || parseTimeForSort(b.time)));
       });
     });
 
-    // ── 2. Actualización de Estados de Entrega y Lectura (Meta / Evolution statuses) ──
     socket.on('message_status_updated', (data) => {
-      console.log('📊 [Socket.IO] Estado de mensaje actualizado:', data);
       setActiveChatMessages(prev =>
         prev.map(m => {
           if (m.id === data.messageId || (data.externalId && m.externalId === data.externalId)) {
@@ -619,88 +629,99 @@ export default function ChatPage() {
   const handleSelectChat = (chat) => {
     setActiveChatId(chat.id);
     setShowConversation(true);
+    // Limpiar unread al abrir
+    setChats(prev => prev.map(c => c.id === chat.id ? { ...c, unread: 0 } : c));
     loadMessages(chat.id);
   };
 
   const handleSendMessage = async (text, attachment = null) => {
     if (!activeChatId) return;
 
-    // Optimistic UI: Mensaje temporal inmediato
+    const now = new Date();
+    const timeStr = now.toLocaleTimeString('es', { hour: '2-digit', minute: '2-digit' });
+
     const tempMsg = {
       id: `temp-${Date.now()}`,
       from: 'business',
       text: attachment && attachment.type === 'image' ? '' : text,
       image: attachment && attachment.type === 'image' ? attachment.base64 : undefined,
-      time: new Date().toLocaleTimeString('es', { hour: '2-digit', minute: '2-digit' }),
+      time: timeStr,
+      status: 'sent',
     };
 
     setActiveChatMessages(prev => [...prev, tempMsg]);
 
-    // Actualizar el último mensaje en la barra lateral de forma inmediata
-    setChats(prev =>
-      prev.map(c =>
-        c.id === activeChatId 
-          ? { 
-              ...c, 
-              lastMsg: attachment ? (attachment.type === 'image' ? '📸 Imagen' : '📄 Documento') : text, 
-              time: tempMsg.time 
-            } 
+    // Actualizar sidebar y reordenar (el chat activo siempre sube al tope al enviar)
+    setChats(prev => {
+      const updated = prev.map(c =>
+        c.id === activeChatId
+          ? {
+              ...c,
+              lastMsg: attachment ? (attachment.type === 'image' ? '📸 Imagen' : '📄 Documento') : text,
+              time: timeStr,
+              _sortTs: now.getTime(),
+            }
           : c
-      )
-    );
+      );
+      return updated.sort((a, b) => (b._sortTs || 0) - (a._sortTs || parseTimeForSort(b.time)));
+    });
 
     try {
-      // Envío real de mensaje directo conectando con Evolution API y PostgreSQL
       await chatService.sendDirectMessage({
         chatId: activeChatId,
         text,
         remoteJid: activeChat?.phone,
-        media: attachment ? {
-          base64: attachment.base64,
-          name: attachment.name,
-          type: attachment.type
-        } : null
+        media: attachment ? { base64: attachment.base64, name: attachment.name, type: attachment.type } : null,
       });
     } catch (error) {
-      // Fallback
+      console.error('Error enviando mensaje:', error);
     }
   };
 
-  const handleResumeBot = async (customerId) => {
-    if (!customerId) return;
+  const handleResumeBot = async () => {
+    if (!activeChatId) return;
     try {
-      await chatService.resumeBot(customerId);
-      setChats(prev => prev.map(c => {
-        if (c.customerId === customerId) {
-          return { ...c, isBotPaused: false };
-        }
-        return c;
-      }));
+      // Intentar reactivar vía customerId (si existe) o contactId
+      if (activeChat?.customerId) {
+        await chatService.resumeBot(activeChat.customerId);
+      } else if (activeChat?.contactId) {
+        await contactService.toggleBotPause(activeChat.contactId, false);
+      }
+      // Actualizar estado siempre por chatId — fiable independiente del campo disponible
+      setChats(prev => prev.map(c =>
+        c.id === activeChatId ? { ...c, isBotPaused: false } : c
+      ));
     } catch (error) {
       console.error('Error al reactivar el bot:', error);
     }
   };
 
-  const filteredChats = chats.filter(c =>
+  /* Filtro de búsqueda aplicado DESPUÉS de ordenar por reciente */
+  const filteredChats = sortedChats.filter(c =>
     !search ||
-    c.name.toLowerCase().includes(search.toLowerCase()) ||
-    c.lastMsg.toLowerCase().includes(search.toLowerCase())
+    c.name?.toLowerCase().includes(search.toLowerCase()) ||
+    c.lastMsg?.toLowerCase().includes(search.toLowerCase())
   );
 
   return (
-    <div
-      className="flex overflow-hidden bg-card w-full h-full max-h-full"
-    >
+    /*
+     * FIX ANDROID SCROLL — Estructura de altura fija:
+     * El componente ocupa exactamente el área disponible (h-full).
+     * Cada capa flex usa min-h-0 para que el overflow funcione correctamente
+     * en todos los navegadores móviles (Chrome Android, Safari iOS).
+     */
+    <div className="flex h-full min-h-0 overflow-hidden bg-card w-full">
+
       {/* ── Columna izquierda: Lista de chats ── */}
       <div className={`
-        flex flex-col border-r border-line bg-card
+        flex flex-col border-r border-line bg-card min-h-0
         w-full md:w-80 lg:w-96 flex-shrink-0
         ${showConversation ? 'hidden md:flex' : 'flex'}
       `}>
         {/* Header */}
         <div className="px-4 pt-4 pb-3 border-b border-line flex-shrink-0">
           <p className="text-base font-bold text-hi mb-3">Mensajes</p>
-          
+
           <div className="relative">
             <MagnifyingGlass
               size={15}
@@ -711,10 +732,7 @@ export default function ChatPage() {
               value={search}
               onChange={e => setSearch(e.target.value)}
               placeholder="Buscar en los chats..."
-              className="
-                w-full pl-8 pr-8 py-2 rounded-lg border border-line bg-app
-                text-sm text-hi placeholder:text-muted focus:outline-none focus:border-brand
-              "
+              className="w-full pl-8 pr-8 py-2 rounded-lg border border-line bg-app text-sm text-hi placeholder:text-muted focus:outline-none focus:border-brand"
             />
             {search && (
               <button
@@ -727,12 +745,11 @@ export default function ChatPage() {
           </div>
         </div>
 
-        {/* Lista */}
-        <div className="flex-1 overflow-y-auto">
+        {/* Lista — scrolleable */}
+        <div className="flex-1 min-h-0 overflow-y-auto" style={{ WebkitOverflowScrolling: 'touch' }}>
           {isLoadingChats ? (
             <SidebarSkeleton />
           ) : chatsError ? (
-            /* Error en el Servidor (Failsafe) */
             <div className="flex flex-col items-center justify-center p-6 text-center space-y-3 mt-10">
               <WarningCircle size={32} className="text-danger" />
               <div>
@@ -741,7 +758,7 @@ export default function ChatPage() {
               </div>
               <button
                 onClick={loadChats}
-                className="inline-flex items-center gap-1.5 px-3 py-1.5 text-2xs font-semibold bg-brand text-white hover:bg-brand-hover rounded-md shadow transition-colors cursor-pointer"
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold bg-brand text-white hover:bg-brand-hover rounded-md shadow transition-colors cursor-pointer"
               >
                 <ArrowClockwise size={12} />
                 Reintentar
@@ -760,7 +777,9 @@ export default function ChatPage() {
           ) : (
             <div className="flex flex-col items-center justify-center py-16 text-center px-6">
               <MagnifyingGlass size={28} className="text-muted mb-2" />
-              <p className="text-sm text-lo font-medium">Sin resultados para "{search}"</p>
+              <p className="text-sm text-lo font-medium">
+                {search ? `Sin resultados para "${search}"` : 'No hay conversaciones aún.'}
+              </p>
             </div>
           )}
         </div>
@@ -768,7 +787,7 @@ export default function ChatPage() {
 
       {/* ── Columna derecha: Conversación ── */}
       <div className={`
-        flex-1 min-w-0 flex flex-col bg-app/20
+        flex-1 min-w-0 min-h-0 flex flex-col
         ${showConversation || !activeChat ? 'flex' : 'hidden md:flex'}
       `}>
         {activeChat ? (
@@ -782,25 +801,33 @@ export default function ChatPage() {
             onBack={() => setShowConversation(false)}
             isMobile={showConversation}
             onImageClick={setFullscreenImage}
-            onResumeBot={() => handleResumeBot(activeChat.customerId)}
+            onResumeBot={handleResumeBot}
           />
         ) : (
           <EmptyState />
         )}
       </div>
 
-      {/* Lightbox Modal para Zoom de Imagen */}
+      {/* ── Lightbox Modal — Zoom de Imagen ── */}
       {fullscreenImage && (
         <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm cursor-pointer"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/85 backdrop-blur-sm cursor-pointer"
           onClick={() => setFullscreenImage(null)}
         >
           <img
             src={fullscreenImage}
-            className="max-w-[90vw] max-h-[90vh] object-contain shadow-2xl rounded-md scale-100 animate-in zoom-in duration-200"
-            alt="Zoom"
+            className="max-w-[90vw] max-h-[90vh] object-contain shadow-2xl rounded-md animate-in zoom-in-95 duration-200"
+            alt="Imagen ampliada"
+            onClick={e => e.stopPropagation()}
           />
-          <button className="absolute top-4 right-4 text-white text-3xl font-bold">&times;</button>
+          {/* Botón de cierre funcional */}
+          <button
+            className="absolute top-4 right-4 w-9 h-9 flex items-center justify-center rounded-full bg-white/10 hover:bg-white/20 text-white transition-colors cursor-pointer"
+            onClick={() => setFullscreenImage(null)}
+            aria-label="Cerrar imagen"
+          >
+            <X size={18} weight="bold" />
+          </button>
         </div>
       )}
     </div>

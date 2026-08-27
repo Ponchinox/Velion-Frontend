@@ -1,6 +1,17 @@
 import prisma from '../db.js';
 
 /**
+ * Normaliza un número de teléfono:
+ * - Elimina todo lo que no sea dígito
+ * - Si empieza con 51 y tiene 11 dígitos (código Perú), lo recorta a 9 dígitos
+ */
+function normalizePhone(raw) {
+  const digits = (raw || '').replace(/\D/g, '');
+  if (digits.startsWith('51') && digits.length === 11) return digits.slice(2);
+  return digits;
+}
+
+/**
  * Obtiene todos los contactos pertenecientes al Tenant del usuario autenticado
  */
 export async function getContacts(req, res) {
@@ -160,5 +171,59 @@ export async function toggleBotPause(req, res) {
   } catch (error) {
     console.error('Error en toggleBotPause:', error);
     return res.status(500).json({ error: 'Error al actualizar el estado del bot para este contacto.' });
+  }
+}
+
+/**
+ * Actualiza nombre y/o teléfono de un contacto.
+ * Si el teléfono cambia, actualiza también el registro Customer correspondiente
+ * para que el enrutamiento de WhatsApp siga funcionando con el número nuevo.
+ */
+export async function updateContact(req, res) {
+  try {
+    const tenantId = req.user.tenantId;
+    const { id } = req.params;
+    const { name, phone } = req.body;
+
+    if (!tenantId) {
+      return res.status(400).json({ error: 'El usuario no está asociado a ningún Tenant.' });
+    }
+    if (!name || !name.trim()) {
+      return res.status(400).json({ error: 'El nombre es requerido.' });
+    }
+
+    const existing = await prisma.contact.findFirst({ where: { id, tenantId } });
+    if (!existing) {
+      return res.status(404).json({ error: 'Contacto no encontrado o no pertenece a su cuenta.' });
+    }
+
+    // Normalizar teléfono nuevo (si se proporcionó)
+    const rawPhone   = phone || existing.phone;
+    const finalPhone = normalizePhone(rawPhone) || existing.phone;
+
+    const updated = await prisma.$transaction(async (tx) => {
+      // Si el teléfono cambió, actualizar Customer para mantener el enrutamiento de WhatsApp
+      if (finalPhone !== existing.phone) {
+        await tx.customer.updateMany({
+          where: { tenantId, phone: existing.phone },
+          data:  { phone: finalPhone },
+        });
+        // Intentar actualizar también la variante con prefijo 51 por si acaso
+        await tx.customer.updateMany({
+          where: { tenantId, phone: `51${existing.phone}` },
+          data:  { phone: finalPhone },
+        }).catch(() => {});
+      }
+
+      return tx.contact.update({
+        where: { id },
+        data:  { name: name.trim(), phone: finalPhone },
+      });
+    });
+
+    return res.json(updated);
+  } catch (error) {
+    console.error('Error en updateContact:', error);
+    return res.status(500).json({ error: 'Error al actualizar el contacto.' });
   }
 }

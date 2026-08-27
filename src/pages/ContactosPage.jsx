@@ -3,35 +3,32 @@ import {
   MagnifyingGlass,
   FileCsv,
   Plus,
-  DotsThreeVertical,
-  Tag,
-  Funnel,
   UserCircle,
   PencilSimple,
   Trash,
   Phone,
   X,
-  Check,
   CheckCircle,
   WarningCircle,
   ArrowClockwise,
+  Warning,
 } from '@phosphor-icons/react';
 import * as contactService from '../services/contactService';
 import ConfirmModal from '../components/ui/ConfirmModal';
 import Modal from '../components/ui/Modal';
 
 
-/* ─── Configuración de tags (colores) ─── */
-const TAG_STYLES = {
-  'Lead Caliente':    'bg-orange-50 text-orange-700 ring-1 ring-orange-200',
-  'Soporte':          'bg-blue-50 text-blue-700 ring-1 ring-blue-200',
-  'Mayorista':        'bg-violet-50 text-violet-700 ring-1 ring-violet-200',
-  'En Seguimiento':   'bg-amber-50 text-amber-700 ring-1 ring-amber-200',
-  'Clientes Cerrados':'bg-emerald-50 text-emerald-700 ring-1 ring-emerald-200',
-  'VIP':              'bg-rose-50 text-rose-700 ring-1 ring-rose-200',
-};
+/* ─── Normalización de teléfono ─── */
+function normalizePhone(raw) {
+  const digits = (raw || '').replace(/\D/g, '');
+  // Recortar prefijo Perú (+51) si el número resultante tiene 11 dígitos
+  if (digits.startsWith('51') && digits.length === 11) return digits.slice(2);
+  return digits;
+}
 
-const TAG_OPTIONS = ['Lead Caliente', 'Soporte', 'Mayorista', 'En Seguimiento', 'VIP'];
+/* ─── Nota: el campo "tags" existe en la DB (Contact.tags: String[])
+   y está disponible para uso futuro (ej. Lead Caliente, VIP, etc.).
+   El código de UI para etiquetas fue eliminado pero el campo DB se conserva. ─── */
 
 /* ─── Avatar con iniciales ─── */
 const AVATAR_COLORS = [
@@ -64,14 +61,6 @@ function Avatar({ name, index }) {
   );
 }
 
-function TagBadge({ label }) {
-  const cls = TAG_STYLES[label] ?? 'bg-gray-100 text-lo ring-1 ring-line';
-  return (
-    <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-2xs font-semibold ${cls}`}>
-      {label}
-    </span>
-  );
-}
 
 function formatDate(dateStr) {
   if (!dateStr) return '—';
@@ -91,7 +80,7 @@ function formatDate(dateStr) {
 }
 
 /* ─── Fila de tabla (desktop) ─── */
-function ContactRow({ contact, index, onDelete, onToggleBot }) {
+function ContactRow({ contact, index, onDelete, onToggleBot, onEdit }) {
   return (
     <tr className="border-b border-line hover:bg-app/60 transition-colors duration-fast group">
       <td className="px-5 py-3.5">
@@ -120,7 +109,7 @@ function ContactRow({ contact, index, onDelete, onToggleBot }) {
         <span className="text-sm text-lo">{contact.lastInteraction || 'Sin interacción'}</span>
       </td>
 
-      {/* Columna: Estado (Activo / Pausado - Ancho Fijo 84px Anti-Desplazamiento) */}
+      {/* Columna: Estado (Activo / Pausado) */}
       <td className="px-5 py-3.5 text-center">
         {contact.botPaused ? (
           <button
@@ -145,23 +134,33 @@ function ContactRow({ contact, index, onDelete, onToggleBot }) {
         )}
       </td>
 
-      {/* Columna: Acciones (Eliminar) */}
+      {/* Columna: Acciones (Editar + Eliminar) */}
       <td className="px-5 py-3.5 text-center">
-        <button
-          onClick={() => onDelete(contact)}
-          className="p-2 rounded-md text-muted hover:text-danger hover:bg-red-50 transition-colors cursor-pointer"
-          title="Eliminar contacto"
-          aria-label={`Eliminar contacto ${contact.name}`}
-        >
-          <Trash size={16} />
-        </button>
+        <div className="flex items-center justify-center gap-1">
+          <button
+            onClick={() => onEdit(contact)}
+            className="p-2 rounded-md text-muted hover:text-brand hover:bg-brand/10 transition-colors cursor-pointer"
+            title="Editar contacto"
+            aria-label={`Editar contacto ${contact.name}`}
+          >
+            <PencilSimple size={16} />
+          </button>
+          <button
+            onClick={() => onDelete(contact)}
+            className="p-2 rounded-md text-muted hover:text-danger hover:bg-red-50 transition-colors cursor-pointer"
+            title="Eliminar contacto"
+            aria-label={`Eliminar contacto ${contact.name}`}
+          >
+            <Trash size={16} />
+          </button>
+        </div>
       </td>
     </tr>
   );
 }
 
 /* ─── Tarjeta móvil ─── */
-function ContactCard({ contact, index, onDelete, onToggleBot }) {
+function ContactCard({ contact, index, onDelete, onToggleBot, onEdit }) {
   return (
     <div className="bg-card border border-line rounded-lg shadow-card p-4 flex flex-col gap-3 relative">
       <div className="flex items-start justify-between">
@@ -195,6 +194,13 @@ function ContactCard({ contact, index, onDelete, onToggleBot }) {
             </button>
           )}
           <button
+            onClick={() => onEdit(contact)}
+            className="p-1.5 rounded-md text-muted hover:text-brand hover:bg-brand/10 transition-colors cursor-pointer"
+            title="Editar contacto"
+          >
+            <PencilSimple size={16} />
+          </button>
+          <button
             onClick={() => onDelete(contact)}
             className="p-1.5 rounded-md text-muted hover:text-danger hover:bg-red-50 transition-colors cursor-pointer"
             title="Eliminar contacto"
@@ -217,22 +223,25 @@ function ContactCard({ contact, index, onDelete, onToggleBot }) {
   );
 }
 
-/* ─── Modal Añadir Contacto ─── */
-function AddContactModal({ onClose, onSave }) {
-  const [name, setName] = useState('');
-  const [phone, setPhone] = useState('');
+/* ─── Modal Unificado: Crear / Editar Contacto ─── */
+function ContactFormModal({ onClose, onSave, initialData = null }) {
+  const isEdit = !!initialData;
+  const [name, setName] = useState(initialData?.name || '');
+  const [phone, setPhone] = useState(initialData?.phone || '');
   const [saving, setSaving] = useState(false);
+
+  const title    = isEdit ? `Editando: ${initialData.name}` : 'Añadir Nuevo Contacto';
+  const subtitle = isEdit
+    ? 'Modifica el nombre o número de teléfono del contacto.'
+    : 'Ingresa el nombre y teléfono para registrar un nuevo contacto en el CRM.';
+  const btnLabel = saving ? 'Guardando...' : (isEdit ? 'Guardar Cambios' : 'Guardar Contacto');
 
   const handleSubmit = async (e) => {
     e.preventDefault();
-    if (!name || !phone) return;
+    if (!name.trim() || !phone.trim()) return;
     setSaving(true);
     try {
-      await onSave({
-        name,
-        phone,
-        lastInteraction: 'Hace un momento',
-      });
+      await onSave({ name: name.trim(), phone: phone.trim() });
       onClose();
     } catch {
       setSaving(false);
@@ -243,13 +252,15 @@ function AddContactModal({ onClose, onSave }) {
     <Modal
       isOpen={true}
       onClose={onClose}
-      title="Añadir Nuevo Contacto"
-      subtitle="Ingresa el nombre y teléfono para registrar un nuevo contacto en el CRM."
+      title={title}
+      subtitle={subtitle}
       maxWidth="max-w-md"
     >
       <form onSubmit={handleSubmit} className="space-y-4">
         <div className="space-y-1">
-          <label htmlFor="c-name" className="block text-xs font-semibold text-hi">Nombre Completo <span className="text-red-500">*</span></label>
+          <label htmlFor="c-name" className="block text-xs font-semibold text-hi">
+            Nombre Completo <span className="text-red-500">*</span>
+          </label>
           <input
             id="c-name"
             type="text"
@@ -266,7 +277,9 @@ function AddContactModal({ onClose, onSave }) {
         </div>
 
         <div className="space-y-1">
-          <label htmlFor="c-phone" className="block text-xs font-semibold text-hi">Teléfono <span className="text-red-500">*</span></label>
+          <label htmlFor="c-phone" className="block text-xs font-semibold text-hi">
+            Teléfono <span className="text-red-500">*</span>
+          </label>
           <input
             id="c-phone"
             type="tel"
@@ -280,6 +293,19 @@ function AddContactModal({ onClose, onSave }) {
           <div className="text-right mt-0.5">
             <span className="text-[11px] text-lo font-mono">{(phone || '').length} / 20</span>
           </div>
+          {isEdit && (
+            <div className="flex items-start gap-2 mt-2 p-2.5 rounded-lg bg-amber-50 border border-amber-200">
+              <Warning size={14} className="text-amber-600 flex-shrink-0 mt-0.5" />
+              <p className="text-[11px] text-amber-700 leading-relaxed">
+                Si cambias el número, el historial de mensajes del número anterior quedará desvinculado. El sistema actualizará el enrutamiento automáticamente.
+              </p>
+            </div>
+          )}
+          {!isEdit && (
+            <p className="text-[11px] text-lo mt-1">
+              El prefijo de país (+51 Perú) se eliminará automáticamente si está presente.
+            </p>
+          )}
         </div>
 
         {/* Footer */}
@@ -293,10 +319,10 @@ function AddContactModal({ onClose, onSave }) {
           </button>
           <button
             type="submit"
-            disabled={saving}
-            className="px-4 py-2 text-xs font-bold bg-brand text-white hover:bg-brand-hover rounded-lg shadow cursor-pointer disabled:opacity-50"
+            disabled={saving || !name.trim() || !phone.trim()}
+            className="px-4 py-2 text-xs font-bold bg-brand text-white hover:bg-brand-hover rounded-lg shadow cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
           >
-            {saving ? 'Guardando...' : 'Guardar Contacto'}
+            {btnLabel}
           </button>
         </div>
       </form>
@@ -331,17 +357,22 @@ function TableSkeleton() {
 const ITEMS_PER_PAGE = 50;
 
 export default function ContactosPage() {
-  const [contacts, setContacts] = useState([]);
-  const [isLoading, setIsLoading] = useState(true);
-  const [errorMsg, setErrorMsg] = useState('');
-  const [toast, setToast] = useState(null);
+  const [contacts, setContacts]           = useState([]);
+  const [isLoading, setIsLoading]         = useState(true);
+  const [errorMsg, setErrorMsg]           = useState('');
+  const [toast, setToast]                 = useState(null);
 
-  const [search, setSearch] = useState('');
-  const [currentPage, setCurrentPage] = useState(1);
-  const [openMenuId, setOpenMenuId] = useState(null);
-  const [showAddModal, setShowAddModal] = useState(false);
+  const [search, setSearch]               = useState('');
+  const [currentPage, setCurrentPage]     = useState(1);
+  const [showAddModal, setShowAddModal]   = useState(false);
+  const [contactToEdit, setContactToEdit] = useState(null);   // objeto contact para editar
   const [contactToDelete, setContactToDelete] = useState(null);
-  const [isDeleting, setIsDeleting] = useState(false);
+  const [isDeleting, setIsDeleting]       = useState(false);
+
+  // Estado para confirmación de sobrescritura de duplicado
+  const [pendingOverwrite, setPendingOverwrite] = useState(null); // { name, phone, existingId, existingName }
+  const [isOverwriting, setIsOverwriting]       = useState(false);
+
   const hasFetchedRef = useRef(false);
 
   const showToast = (msg, type = 'success') => {
@@ -369,20 +400,66 @@ export default function ContactosPage() {
     loadContacts();
   }, [loadContacts]);
 
-  // Al modificar el buscador, reiniciar la página a 1
   useEffect(() => {
     setCurrentPage(1);
   }, [search]);
 
-  const handleCreateContact = async (newContactData) => {
-    try {
-      const savedContact = await contactService.createContact(newContactData);
-      setContacts(prev => [savedContact, ...prev]);
-      showToast('Contacto creado correctamente');
-    } catch {
-      showToast('Error al guardar el contacto en el servidor', 'error');
-      throw new Error();
+  // ── Crear contacto con detección de duplicados ────────────────────────────
+  const handleCreateContact = async ({ name, phone }) => {
+    const normalizedPhone = normalizePhone(phone);
+
+    // Buscar duplicado normalizando ambos lados
+    const duplicate = contacts.find(c => normalizePhone(c.phone) === normalizedPhone);
+
+    if (duplicate) {
+      // Guardar datos pendientes y mostrar modal de confirmación de sobrescritura
+      setPendingOverwrite({
+        name,
+        phone: normalizedPhone,
+        existingId:   duplicate.id,
+        existingName: duplicate.name,
+      });
+      // No cierres el modal de creación aún
+      return Promise.reject(new Error('DUPLICATE')); // evita que ContactFormModal se cierre
     }
+
+    // Sin duplicado → crear normalmente
+    const savedContact = await contactService.createContact({
+      name,
+      phone: normalizedPhone,
+      lastInteraction: 'Hace un momento',
+    });
+    setContacts(prev => [savedContact, ...prev]);
+    showToast('Contacto creado correctamente');
+  };
+
+  // ── Confirmar sobrescritura de duplicado ──────────────────────────────────
+  const handleConfirmOverwrite = async () => {
+    if (!pendingOverwrite) return;
+    setIsOverwriting(true);
+    try {
+      const updated = await contactService.updateContact(pendingOverwrite.existingId, {
+        name:  pendingOverwrite.name,
+        phone: pendingOverwrite.phone,
+      });
+      setContacts(prev => prev.map(c => c.id === pendingOverwrite.existingId ? updated : c));
+      showToast('Contacto actualizado correctamente');
+      setPendingOverwrite(null);
+      setShowAddModal(false);
+    } catch {
+      showToast('Error al sobrescribir el contacto', 'error');
+    } finally {
+      setIsOverwriting(false);
+    }
+  };
+
+  // ── Editar contacto ───────────────────────────────────────────────────────
+  const handleEditContact = async ({ name, phone }) => {
+    if (!contactToEdit) return;
+    const updated = await contactService.updateContact(contactToEdit.id, { name, phone });
+    setContacts(prev => prev.map(c => c.id === contactToEdit.id ? updated : c));
+    showToast('Contacto actualizado correctamente');
+    setContactToEdit(null);
   };
 
   const handleConfirmDeleteContact = async () => {
@@ -410,17 +487,15 @@ export default function ContactosPage() {
     }
   };
 
-  // Filtrado reactivo en memoria (sin filtros de categoría/etiquetas)
   const filtered = useMemo(() => {
     const q = search.toLowerCase().trim();
     if (!q) return contacts;
-    return contacts.filter(c => 
+    return contacts.filter(c =>
       (c.name && c.name.toLowerCase().includes(q)) ||
       (c.phone && c.phone.replace(/\s/g, '').includes(q.replace(/\s/g, '')))
     );
   }, [contacts, search]);
 
-  // Paginación estricta a 50 por página
   const totalPages = Math.ceil(filtered.length / ITEMS_PER_PAGE) || 1;
   const paginatedContacts = useMemo(() => {
     const start = (currentPage - 1) * ITEMS_PER_PAGE;
@@ -466,9 +541,8 @@ export default function ContactosPage() {
         </div>
       </div>
 
-      {/* ── Buscador + Tabla limpia de 50 elementos/página ── */}
+      {/* ── Buscador + Tabla ── */}
       <div className="flex flex-col gap-4">
-        {/* Barra de búsqueda con botón X único (type="text" evita duplicado del navegador) */}
         <div className="relative">
           <MagnifyingGlass
             size={16}
@@ -501,7 +575,6 @@ export default function ContactosPage() {
           )}
         </div>
 
-        {/* Contador de resultados */}
         <div className="flex items-center justify-between">
           <p className="text-xs text-lo">
             <span className="font-semibold text-hi">{filtered.length}</span>{' '}
@@ -509,11 +582,9 @@ export default function ContactosPage() {
           </p>
         </div>
 
-        {/* ── Visualización de Datos / Loader / Error ── */}
         {isLoading ? (
           <TableSkeleton />
         ) : errorMsg ? (
-          /* Error en el Servidor (Failsafe) */
           <div className="bg-card border border-line rounded-lg shadow-card p-10 text-center space-y-4">
             <WarningCircle size={40} className="mx-auto text-danger" aria-hidden="true" />
             <div>
@@ -536,7 +607,12 @@ export default function ContactosPage() {
                 <thead>
                   <tr className="bg-app border-b border-line">
                     {['Cliente', 'Teléfono', 'Fecha de Registro', 'Última Interacción', 'Estado', 'Acciones'].map(c => (
-                      <th key={c} className={`px-5 py-3 text-2xs font-semibold text-lo uppercase tracking-wider ${['Estado', 'Acciones'].includes(c) ? 'text-center' : 'text-left'}`}>
+                      <th
+                        key={c}
+                        className={`px-5 py-3 text-2xs font-semibold text-lo uppercase tracking-wider ${
+                          ['Estado', 'Acciones'].includes(c) ? 'text-center' : 'text-left'
+                        }`}
+                      >
                         {c}
                       </th>
                     ))}
@@ -550,6 +626,7 @@ export default function ContactosPage() {
                       index={i}
                       onDelete={setContactToDelete}
                       onToggleBot={handleToggleBot}
+                      onEdit={setContactToEdit}
                     />
                   ))}
                 </tbody>
@@ -565,11 +642,12 @@ export default function ContactosPage() {
                   index={i}
                   onDelete={setContactToDelete}
                   onToggleBot={handleToggleBot}
+                  onEdit={setContactToEdit}
                 />
               ))}
             </div>
 
-            {/* Controles de Paginación (50 elementos por página) */}
+            {/* Paginación */}
             {totalPages > 1 && (
               <div className="flex flex-col sm:flex-row items-center justify-between gap-3 pt-3">
                 <p className="text-xs text-lo">
@@ -602,7 +680,6 @@ export default function ContactosPage() {
             )}
           </>
         ) : (
-          /* Estado vacío ordinario */
           <div className="bg-card border border-line rounded-lg shadow-card p-10 text-center">
             <UserCircle size={40} className="mx-auto text-muted mb-3" aria-hidden="true" />
             <p className="text-sm font-medium text-hi">Sin resultados</p>
@@ -619,20 +696,42 @@ export default function ContactosPage() {
         )}
       </div>
 
-      {/* Clic fuera cierra el menú contextual */}
-      {openMenuId && (
-        <div className="fixed inset-0 z-10" onClick={() => setOpenMenuId(null)} />
-      )}
+      {/* ── Modales ── */}
 
-      {/* Modal interactivo de creación */}
-      {showAddModal && (
-        <AddContactModal
+      {/* Modal Crear Contacto */}
+      {showAddModal && !pendingOverwrite && (
+        <ContactFormModal
           onClose={() => setShowAddModal(false)}
           onSave={handleCreateContact}
         />
       )}
 
-      {/* Modal de confirmación de eliminación */}
+      {/* Modal Editar Contacto */}
+      {contactToEdit && (
+        <ContactFormModal
+          onClose={() => setContactToEdit(null)}
+          onSave={handleEditContact}
+          initialData={contactToEdit}
+        />
+      )}
+
+      {/* Confirm: Sobrescribir contacto duplicado */}
+      <ConfirmModal
+        isOpen={!!pendingOverwrite}
+        onClose={() => setPendingOverwrite(null)}
+        onConfirm={handleConfirmOverwrite}
+        title="Contacto Duplicado"
+        message={
+          pendingOverwrite
+            ? `Ya existe un contacto llamado "${pendingOverwrite.existingName}" con el número ${pendingOverwrite.phone}. ¿Deseas sobrescribir su nombre con "${pendingOverwrite.name}"?`
+            : ''
+        }
+        confirmText="Sobrescribir"
+        cancelText="Cancelar"
+        isLoading={isOverwriting}
+      />
+
+      {/* Confirm: Eliminar contacto */}
       <ConfirmModal
         isOpen={!!contactToDelete}
         onClose={() => setContactToDelete(null)}
