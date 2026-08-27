@@ -1421,8 +1421,6 @@ Puedes usar las siguientes etiquetas dentro de tu respuesta para ejecutar accion
 `;
 
     if (tenantDetails?.notifySalesWhatsApp === true) {
-      systemCommands += `- [ORDER_CONFIRMED: Producto, Cantidad, Total]: Ãšsalo ÃšNICAMENTE para pedidos coordinados directamente con el cliente donde:
-  â€¢ El mÃ©todo de pago y condiciones estÃ¡n aprobadas por la tienda (segÃºn PolÃ­ticas de la empresa).
       systemCommands += `- [ORDER_CONFIRMED: Producto, Cantidad, Total]: Úsalo ÚNICAMENTE para pedidos coordinados directamente con el cliente donde:
   • El método de pago y condiciones están aprobadas por la tienda (según Políticas de la empresa).
   • El cliente proporcionó nombre completo, dirección/ciudad y teléfono de contacto.
