@@ -1924,7 +1924,10 @@ Si el usuario envía una imagen, usa tu amplio conocimiento general para identif
           if (queryStr.startsWith('http')) {
             url = queryStr;
           } else {
-            const matchedProd = products.find(p => p.name.toLowerCase().includes(queryStr.toLowerCase()));
+            const matchedProd = await prisma.product.findFirst({
+              where: { user: { tenantId: tenant.id }, name: { contains: queryStr, mode: 'insensitive' } },
+              select: { imageUrl: true }
+            });
             if (matchedProd && matchedProd.imageUrl && matchedProd.imageUrl !== 'Sin imagen') {
               url = matchedProd.imageUrl;
             }
@@ -1940,7 +1943,10 @@ Si el usuario envía una imagen, usa tu amplio conocimiento general para identif
           if (queryStr.startsWith('http')) {
             url = queryStr;
           } else {
-            const matchedProd = products.find(p => p.name.toLowerCase().includes(queryStr.toLowerCase()));
+            const matchedProd = await prisma.product.findFirst({
+              where: { user: { tenantId: tenant.id }, name: { contains: queryStr, mode: 'insensitive' } },
+              select: { videoUrl: true }
+            });
             if (matchedProd && matchedProd.videoUrl) {
               url = matchedProd.videoUrl;
             }
@@ -1952,7 +1958,10 @@ Si el usuario envía una imagen, usa tu amplio conocimiento general para identif
             textBuffer = "";
           }
           const queryStr = token.substring(14, token.length - 1).trim();
-          const matchedProd = products.find(p => p.name.toLowerCase().includes(queryStr.toLowerCase()));
+          const matchedProd = await prisma.product.findFirst({
+            where: { user: { tenantId: tenant.id }, name: { contains: queryStr, mode: 'insensitive' } },
+            select: { images: true }
+          });
           if (matchedProd && Array.isArray(matchedProd.images) && matchedProd.images.length > 0) {
             for (const gUrl of matchedProd.images) {
               dispatchSequence.push({ type: 'image', url: gUrl });
