@@ -265,7 +265,6 @@ export default function AdminBackupsPage() {
               <option value="gdrive">Google Drive</option>
             </select>
           </div>
-          </div>
         </div>
 
         {/* Opciones de Google Drive (Condicionales) */}
