@@ -2,6 +2,7 @@ import prisma from '../db.js';
 import fs from 'fs';
 import path from 'path';
 import bcrypt from 'bcryptjs';
+import { encryptText } from '../utils/cryptoUtils.js';
 
 // Claves de configuración que se gestionan en la tabla SystemConfig de PostgreSQL
 const CONFIG_KEYS = [
@@ -9,6 +10,7 @@ const CONFIG_KEYS = [
   'geminiKey', 'groqKey', 'systemPrompt', 'smtpHost', 'smtpPort',
   'smtpUser', 'smtpPassword', 'errorWebhook',
   'backupFrequency', 'backupCloudEnabled', 'backupCloudProvider',
+  'backupGdriveFolderId', 'backupGdriveCredentials',
 ];
 
 // Valores por defecto que se usan SOLO si la clave aún no existe en la BD
@@ -29,6 +31,8 @@ const CONFIG_DEFAULTS = {
   backupFrequency: 'off',
   backupCloudEnabled: 'false',
   backupCloudProvider: 'cloudinary',
+  backupGdriveFolderId: '',
+  backupGdriveCredentials: '',
 };
 
 // ==========================================
@@ -509,6 +513,8 @@ export async function getGlobalConfig(req, res) {
       backupFrequency: process.env.BACKUP_FREQUENCY || 'off',
       backupCloudEnabled: process.env.BACKUP_CLOUD_ENABLED || 'false',
       backupCloudProvider: process.env.BACKUP_CLOUD_PROVIDER || 'cloudinary',
+      backupGdriveFolderId: '',
+      backupGdriveCredentials: '',
     };
 
     const configMap = { ...dynamicDefaults };
@@ -522,6 +528,11 @@ export async function getGlobalConfig(req, res) {
     configMap.wahaIsPrimary      = String(configMap.wahaIsPrimary) === 'true';
     configMap.backupCloudEnabled = String(configMap.backupCloudEnabled) === 'true';
     configMap.smtpPort           = Number(configMap.smtpPort) || 587;
+    
+    // Ocultar la credencial de Google Drive por seguridad, enviando solo un booleano al frontend
+    configMap.hasGdriveCredentials = !!configMap.backupGdriveCredentials && configMap.backupGdriveCredentials.includes(':');
+    delete configMap.backupGdriveCredentials;
+
     return res.json(configMap);
   } catch (error) {
     console.error('Error en getGlobalConfig:', error);
@@ -537,9 +548,20 @@ export async function saveGlobalConfig(req, res) {
   try {
     const configData = req.body;
 
-    // Filtrar solo las claves válidas y hacer upsert de cada una
-    const upsertPromises = CONFIG_KEYS
-      .filter(key => configData[key] !== undefined)
+    // Filtrar solo las claves válidas
+    let validKeys = CONFIG_KEYS.filter(key => configData[key] !== undefined);
+    
+    // Evitar sobreescribir la credencial con un placeholder o cadena vacía si no se modificó
+    if (validKeys.includes('backupGdriveCredentials')) {
+      if (!configData['backupGdriveCredentials'] || configData['backupGdriveCredentials'] === '********') {
+        validKeys = validKeys.filter(k => k !== 'backupGdriveCredentials');
+      } else {
+        // Si hay una nueva credencial, cifrarla antes de guardar
+        configData['backupGdriveCredentials'] = encryptText(configData['backupGdriveCredentials']);
+      }
+    }
+
+    const upsertPromises = validKeys
       .map(key =>
         prisma.systemConfig.upsert({
           where:  { key },

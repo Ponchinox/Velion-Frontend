@@ -25,6 +25,9 @@ export default function AdminBackupsPage() {
   const [backupFrequency, setBackupFrequency] = useState('off');
   const [backupCloudEnabled, setBackupCloudEnabled] = useState(false);
   const [backupCloudProvider, setBackupCloudProvider] = useState('cloudinary');
+  const [backupGdriveFolderId, setBackupGdriveFolderId] = useState('');
+  const [backupGdriveCredentials, setBackupGdriveCredentials] = useState('');
+  const [hasGdriveCredentials, setHasGdriveCredentials] = useState(false);
   const [savingSettings, setSavingSettings] = useState(false);
 
   const showToast = (msg, type = 'success') => {
@@ -39,6 +42,8 @@ export default function AdminBackupsPage() {
         if (data.backupFrequency) setBackupFrequency(data.backupFrequency);
         if (data.backupCloudEnabled !== undefined) setBackupCloudEnabled(data.backupCloudEnabled);
         if (data.backupCloudProvider) setBackupCloudProvider(data.backupCloudProvider);
+        if (data.backupGdriveFolderId !== undefined) setBackupGdriveFolderId(data.backupGdriveFolderId);
+        if (data.hasGdriveCredentials !== undefined) setHasGdriveCredentials(data.hasGdriveCredentials);
       }
     } catch (err) {
       console.error('Error al cargar la configuración de backups:', err);
@@ -52,8 +57,12 @@ export default function AdminBackupsPage() {
         backupFrequency,
         backupCloudEnabled,
         backupCloudProvider,
+        backupGdriveFolderId,
+        backupGdriveCredentials,
       });
       showToast('Configuración de copias de seguridad actualizada con éxito');
+      setBackupGdriveCredentials(''); // Limpiar JSON por seguridad en UI
+      loadSettings(); // Recargar para actualizar hasGdriveCredentials
     } catch (err) {
       console.error(err);
       showToast('Error al guardar los ajustes de copias de seguridad.', 'error');
@@ -256,7 +265,46 @@ export default function AdminBackupsPage() {
               <option value="gdrive">Google Drive</option>
             </select>
           </div>
+          </div>
         </div>
+
+        {/* Opciones de Google Drive (Condicionales) */}
+        {backupCloudEnabled && backupCloudProvider === 'gdrive' && (
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-6 items-start pt-2 border-t border-line">
+            <div>
+              <label htmlFor="gdrive-folder" className="block text-xs font-semibold text-hi mb-1.5">ID de la Carpeta de Google Drive</label>
+              <input
+                id="gdrive-folder"
+                type="text"
+                value={backupGdriveFolderId}
+                onChange={(e) => setBackupGdriveFolderId(e.target.value)}
+                placeholder="ej: 1A2b3C4d5E6f7G8h9I0j"
+                className="w-full px-3 py-2 text-sm bg-card border border-line rounded-md focus:outline-none focus:border-brand text-hi font-medium"
+              />
+              <p className="text-[10px] text-lo mt-1.5 leading-relaxed">
+                El ID al final de la URL de tu carpeta compartida.
+              </p>
+            </div>
+            <div>
+              <label htmlFor="gdrive-creds" className="block text-xs font-semibold text-hi mb-1.5">
+                Credenciales de Cuenta de Servicio (JSON)
+              </label>
+              <textarea
+                id="gdrive-creds"
+                value={backupGdriveCredentials}
+                onChange={(e) => setBackupGdriveCredentials(e.target.value)}
+                placeholder={hasGdriveCredentials ? "********** (Credenciales configuradas y cifradas en BD. Pega aquí un nuevo JSON si deseas actualizar)" : 'Pega el contenido completo del archivo .json'}
+                rows={3}
+                className="w-full px-3 py-2 text-sm bg-card border border-line rounded-md focus:outline-none focus:border-brand text-hi font-medium resize-none"
+              />
+              <p className="text-[10px] text-lo mt-1.5 leading-relaxed">
+                {hasGdriveCredentials 
+                  ? "✅ Credenciales detectadas en el servidor. (No se muestran por seguridad)."
+                  : "⚠️ Requerido. Pega el JSON exacto de tu Service Account de Google Cloud."}
+              </p>
+            </div>
+          </div>
+        )}
 
         <div className="flex flex-col sm:flex-row sm:justify-between sm:items-center gap-4 pt-2 border-t border-line">
           <p className="text-[10px] text-muted max-w-xl leading-relaxed">

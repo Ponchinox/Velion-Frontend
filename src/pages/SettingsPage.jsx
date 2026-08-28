@@ -604,7 +604,7 @@ export default function SettingsPage() {
                       </div>
                       <textarea
                         name="botRole"
-                        maxLength={1500}
+                        maxLength={3000}
                         value={botConfig.botRole || botConfig.customPrompt || ''}
                         onChange={(e) => {
                           setBotConfig(prev => ({
@@ -619,7 +619,7 @@ export default function SettingsPage() {
                         placeholder=""
                       />
                       <div className="text-right mt-1">
-                        <span className="text-xs text-gray-400 font-mono">{(botConfig.botRole || botConfig.customPrompt || '').length} / 1500</span>
+                        <span className="text-xs text-gray-400 font-mono">{(botConfig.botRole || botConfig.customPrompt || '').length} / 3000</span>
                       </div>
                     </div>
 

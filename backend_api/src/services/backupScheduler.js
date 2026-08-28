@@ -2,6 +2,8 @@ import prisma from '../db.js';
 import fs from 'fs';
 import path from 'path';
 import cloudinary from '../config/cloudinary.js';
+import { google } from 'googleapis';
+import { decryptText } from '../utils/cryptoUtils.js';
 
 // Intervalo de validación periódica del scheduler (cada 30 minutos)
 const CHECK_INTERVAL = 30 * 60 * 1000;
@@ -114,21 +116,64 @@ export async function runAutomaticBackup() {
       }
     }
 
-    // 3. Sincronización en la Nube (si está habilitado y es Cloudinary)
+    // 3. Sincronización en la Nube
     const cloudEnabled = await getConfigValue('backupCloudEnabled', 'false');
     const cloudProvider = await getConfigValue('backupCloudProvider', 'cloudinary');
 
-    if (cloudEnabled === 'true' && cloudProvider === 'cloudinary') {
-      console.log('[Backup Scheduler] Sincronizando respaldo automático en Cloudinary...');
-      try {
-        await cloudinary.uploader.upload(filePath, {
-          folder: 'saas_backups',
-          resource_type: 'raw',
-          public_id: filename,
-        });
-        console.log('[Backup Scheduler] Respaldo sincronizado en Cloudinary con éxito.');
-      } catch (uploadErr) {
-        console.error('[Backup Scheduler] Error al subir respaldo a Cloudinary:', uploadErr);
+    if (cloudEnabled === 'true') {
+      if (cloudProvider === 'cloudinary') {
+        console.log('[Backup Scheduler] Sincronizando respaldo automático en Cloudinary...');
+        try {
+          await cloudinary.uploader.upload(filePath, {
+            folder: 'saas_backups',
+            resource_type: 'raw',
+            public_id: filename,
+          });
+          console.log('[Backup Scheduler] Respaldo sincronizado en Cloudinary con éxito.');
+        } catch (uploadErr) {
+          console.error('[Backup Scheduler] Error al subir respaldo a Cloudinary:', uploadErr);
+        }
+      } else if (cloudProvider === 'gdrive') {
+        console.log('[Backup Scheduler] Sincronizando respaldo automático en Google Drive...');
+        try {
+          const encCreds = await getConfigValue('backupGdriveCredentials', '');
+          const folderId = await getConfigValue('backupGdriveFolderId', '');
+          
+          if (!encCreds) throw new Error('Credenciales de Google Drive no configuradas.');
+          if (!folderId) throw new Error('Folder ID de Google Drive no configurado.');
+          
+          const rawCreds = decryptText(encCreds);
+          const credentials = JSON.parse(rawCreds);
+          
+          const auth = new google.auth.GoogleAuth({
+            credentials,
+            scopes: ['https://www.googleapis.com/auth/drive.file'],
+          });
+          
+          const drive = google.drive({ version: 'v3', auth });
+          const fileMetadata = {
+            name: filename,
+            parents: [folderId],
+          };
+          const media = {
+            mimeType: 'application/json',
+            body: fs.createReadStream(filePath),
+          };
+          
+          const response = await drive.files.create({
+            resource: fileMetadata,
+            media: media,
+            fields: 'id',
+          });
+          
+          if (response.status === 200 && response.data.id) {
+            console.log(`[Backup Scheduler] Respaldo sincronizado en Google Drive con éxito (ID: ${response.data.id}).`);
+          } else {
+            throw new Error(`Respuesta inesperada de Google Drive: ${response.status}`);
+          }
+        } catch (uploadErr) {
+          console.error('[Backup Scheduler] Error al subir respaldo a Google Drive:', uploadErr.message);
+        }
       }
     }
 
