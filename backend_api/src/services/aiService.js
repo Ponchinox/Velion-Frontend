@@ -556,7 +556,19 @@ async function callGemini(systemPrompt, messages, mediaItems = [], tools = [], t
             }
             
             contents.push(modelContent);
-            contents.push({ role: 'user', parts: [{ functionResponse: { name: call.name, response: apiResponse } }] });
+            // CRÍTICO: el SDK @google/genai v2.x requiere que functionResponse incluya
+            // el campo 'id' que corresponde al id del functionCall original.
+            // Sin él, el SDK lanza FUNCTION_RESPONSE_REQUIRES_ID (400 BAD_REQUEST).
+            // call.id está disponible porque response.functionCalls[n] = part.functionCall,
+            // y part.functionCall incluye { id, name, args, thoughtSignature }.
+            const funcResponsePart = {
+              functionResponse: {
+                id:       call.id,
+                name:     call.name,
+                response: apiResponse,
+              }
+            };
+            contents.push({ role: 'user', parts: [funcResponsePart] });
 
             geminiLog(`Ejecución de herramienta completada. Generando respuesta final...`);
             // Volver a llamar a Gemini con los resultados de la función

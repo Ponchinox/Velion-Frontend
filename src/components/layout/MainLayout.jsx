@@ -65,7 +65,7 @@ export default function MainLayout() {
           className={`flex-1 flex flex-col ${isChatRoute ? 'h-[calc(100dvh-64px)] max-h-[calc(100dvh-64px)] md:h-screen md:max-h-screen overflow-hidden pt-16 md:pt-0' : 'overflow-y-auto pt-16 md:pt-8'}`}
         >
           {/* Bento navigation: visible on mobile, hidden on desktop */}
-          <MobileNav />
+          {!isChatRoute && <MobileNav />}
 
           {/* Page content */}
           <div className={isChatRoute ? 'flex-1 h-full w-full overflow-hidden flex flex-col' : 'px-4 py-5 md:px-8 md:py-8'}>
