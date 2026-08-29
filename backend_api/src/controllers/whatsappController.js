@@ -1414,7 +1414,7 @@ Puedes usar las siguientes etiquetas dentro de tu respuesta para ejecutar accion
     }
     
     systemCommands += `ðŸ“¦ MULTIMEDIA (Ãšsalas en cualquier parte de tu texto, se enviarÃ¡n en ese orden exacto):
-- [SHOW_GALLERY: ID]: Úsala para mostrar las fotos (y/o video) del producto. El ID DEBE OBTENERSE EXACTAMENTE de <catalog_index>. NO inventes IDs. Ej: "Aquí tienes fotos del modelo [SHOW_GALLERY: 550e8400-e29b-41d4-a716-446655440000]"
+- [SHOW_GALLERY: ID]: Úsala para mostrar FOTOS y/o VIDEOS del producto. Si el cliente pide un video, usa este mismo comando. El ID DEBE OBTENERSE EXACTAMENTE de <catalog_index>. NO inventes IDs. Ej: "Aquí tienes el video y fotos del modelo [SHOW_GALLERY: 550e8400-e29b-41d4-a716-446655440000]"
 - [MEDIA: https://url.jpg]: EnvÃ­a una imagen o video externo por URL directa (NO uses Markdown).
 
 âš™ï¸ ACCIONES INVISIBLES (Estas DEBEN ir siempre al FINAL ABSOLUTO de tu respuesta):
@@ -1450,7 +1450,7 @@ Estado Comercial Actual: ${JSON.stringify(currentCommercialState)}
 </customer_data>
 
 <catalog_index>
-[ATENCION: LOS DATOS A CONTINUACION SON EL INDICE DE PRODUCTOS DISPONIBLES. NO INVENTES PRODUCTOS QUE NO ESTEN AQUI. SI EL CLIENTE PIDE FOTOS, USA [SHOW_GALLERY: ID]. SI NECESITAS MAS DETALLES, USA get_product_details]
+[ATENCION: LOS DATOS A CONTINUACION SON EL INDICE DE PRODUCTOS DISPONIBLES. NO INVENTES PRODUCTOS QUE NO ESTEN AQUI. SI EL CLIENTE PIDE FOTOS O VIDEOS, USA [SHOW_GALLERY: ID]. SI NECESITAS MAS DETALLES, USA get_product_details]
 ${catalogIndexCsv}
 </catalog_index>
 

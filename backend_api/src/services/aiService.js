@@ -35,7 +35,7 @@ import prisma from '../db.js';
 // ─────────────────────────────────────────────────────────────────────────────
 
 /** Timeout máximo por petición individual a Gemini (ms) */
-const GEMINI_TIMEOUT_MS = 8_000; // ✅ Reducido de 20s → 8s para rotación rápida de keys
+const GEMINI_TIMEOUT_MS = 15_000; // ✅ Aumentado a 15s para soportar el encadenamiento de Function Calling sin abortar
 
 /** Tiempo de cooldown al recibir un rate limit 429 (ms) */
 const COOLDOWN_RATE_LIMIT_MS = 120_000; // 2 minutos
@@ -578,8 +578,8 @@ async function callGemini(systemPrompt, messages, mediaItems = [], tools = [], t
               config:   { ...config, abortSignal: controller.signal },
             });
           } catch (funcErr) {
-            geminiWarn(`Error en toolsHandler para ${call.name}: ${funcErr.message}`);
-            break; // Romper el ciclo si la herramienta falla internamente
+            geminiWarn(`Error en toolsHandler o en el encadenamiento para ${call.name}: ${funcErr.message}`);
+            throw funcErr; // Lanza el error para que el bloque principal lo atrape y reintente si es Timeout
           }
         }
 
