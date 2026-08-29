@@ -1371,8 +1371,7 @@ La tienda es la UNICA fuente de verdad para productos, precios, stock, promocion
 
 [PAGOS Y AUDITORIA - CRITICO]
 - METODOS PERMITIDOS: El UNICO medio de pago digital aceptado es Yape (o efectivo en contraentrega con adelanto por Shalom). Esta estrictamente PROHIBIDO ofrecer, aceptar o mencionar Plin, transferencias bancarias o tarjetas. Si el cliente los pide, dile amablemente que solo operamos con Yape o contraentrega.
-- Comprobante por IMAGEN: Si el monto es suficiente, usa OBLIGATORIAMENTE [VERIFY_PAYMENT: S/. monto | producto] y di "Un asesor lo verificara y te confirmara en breve". Si el monto es menor, indica la diferencia. JAMAS uses [ORDER_CONFIRMED] con imagenes.
-- Comprobante VERBAL: Si el cliente dice que pago, pide la captura 1 SOLA VEZ. Si insiste que no puede enviarla, NO le pidas mas; usa [VERIFY_PAYMENT: verbal | producto] y di "Le avisamos a un asesor para verificar".
+
 `.trim()
 
 
@@ -1586,7 +1585,17 @@ Atributos/Tags: ${Array.isArray(product.tags) ? product.tags.join(', ') : ''}
           const triggerStages = ['SHIPPING_COORDINATED', 'PAYMENT_PENDING', 'PAYMENT_VERIFIED', 'COMPLETED'];
           if (triggerStages.includes(updatedState.currentStage)) {
              const orderId = updatedState.activeOrderId;
-             const total = (updatedState.quantity || 1) * (updatedState.budget || 0);
+             
+             let productPrice = parseFloat(updatedState.budget) || 0;
+             if (updatedState.productId) {
+               const p = await prisma.product.findUnique({ where: { id: updatedState.productId }, select: { price: true, promotionalPrice: true } });
+               if (p) {
+                 productPrice = p.promotionalPrice || p.price;
+               }
+             }
+             
+             const quantity = parseInt(updatedState.quantity, 10) || 1;
+             const total = quantity * productPrice;
              
              let orderStatus = 'PENDING';
              let payStatus = 'UNPAID';
@@ -1610,8 +1619,8 @@ Atributos/Tags: ${Array.isArray(product.tags) ? product.tags.join(', ') : ''}
                      create: [{
                        productId: updatedState.productId || null,
                        name: updatedState.productName || 'Producto sin nombre',
-                       quantity: updatedState.quantity || 1,
-                       price: updatedState.budget || 0,
+                       quantity: quantity,
+                       price: productPrice,
                        variant: updatedState.variant || null
                      }]
                    }
@@ -1624,7 +1633,7 @@ Atributos/Tags: ${Array.isArray(product.tags) ? product.tags.join(', ') : ''}
                  data: {
                    type: 'NEW_ORDER',
                    severity: 'INFO',
-                   message: `ðŸ“¦ PEDIDO CREADO | Cliente: +${clientNumber} (${customer.name || 'Sin Nombre'}) | ${updatedState.productName || 'Producto'} x${updatedState.quantity || 1}`,
+                   message: `📦 PEDIDO CREADO | Cliente: +${clientNumber} (${customer.name || 'Sin Nombre'}) | ${updatedState.productName || 'Producto'} x${quantity}`,
                    tenantId: tenant.id
                  }
                });
@@ -1633,7 +1642,7 @@ Atributos/Tags: ${Array.isArray(product.tags) ? product.tags.join(', ') : ''}
                  const rawDestPhone = await resolveNotificationPhone(tenant.id, tenantDetails);
                  const destPhone = sanitizePhoneForEvo(rawDestPhone);
                  if (destPhone) {
-                   const txt = `ðŸš¨ *NUEVO PEDIDO CREADO por IA*\n\nðŸ“± *Cliente:* +${clientNumber} (${customer.name || 'Sin Nombre'})\nðŸ“¦ *Producto:* ${updatedState.productName || 'Producto'} x${updatedState.quantity || 1}\nðŸ’° *Monto aprox:* S/. ${total}\nðŸ“ *EnvÃ­o:* ${updatedState.shippingCity || '-'} / ${updatedState.shippingAddress || '-'}\n\nâš¡ _Velion Agent Auto-Notification_`;
+                   const txt = `🚨 *NUEVO PEDIDO CREADO por IA*\n\n📱 *Cliente:* +${clientNumber} (${customer.name || 'Sin Nombre'})\n📦 *Producto:* ${updatedState.productName || 'Producto'} x${quantity}\n💰 *Monto aprox:* S/. ${total}\n📍 *Envío:* ${updatedState.shippingCity || '-'} / ${updatedState.shippingAddress || '-'}\n\n⚡ _Velion Agent Auto-Notification_`;
                    gatewaySendText({ tenantId: tenant.id, to: destPhone, text: txt }).catch(() => {});
                  }
                }
@@ -1658,8 +1667,8 @@ Atributos/Tags: ${Array.isArray(product.tags) ? product.tags.join(', ') : ''}
                    orderId: orderId,
                    productId: updatedState.productId || null,
                    name: updatedState.productName || 'Producto sin nombre',
-                   quantity: updatedState.quantity || 1,
-                   price: updatedState.budget || 0,
+                   quantity: quantity,
+                   price: productPrice,
                    variant: updatedState.variant || null
                  }
                });
@@ -1670,7 +1679,7 @@ Atributos/Tags: ${Array.isArray(product.tags) ? product.tags.join(', ') : ''}
                    data: {
                      type: 'PAYMENT_VERIFY',
                      severity: 'HIGH',
-                     message: `ðŸ’³ VERIFICACIÃ“N DE PAGO REQUERIDA | Cliente: +${clientNumber} (${customer.name || 'Sin Nombre'})`,
+                     message: `💳 VERIFICACIÓN DE PAGO REQUERIDA | Cliente: +${clientNumber} (${customer.name || 'Sin Nombre'})`,
                      tenantId: tenant.id
                    }
                  });
@@ -1678,7 +1687,7 @@ Atributos/Tags: ${Array.isArray(product.tags) ? product.tags.join(', ') : ''}
                    const rawDestPhone = await resolveNotificationPhone(tenant.id, tenantDetails);
                    const destPhone = sanitizePhoneForEvo(rawDestPhone);
                    if (destPhone) {
-                     const txt = `ðŸ’³ *VERIFICACIÃ“N DE PAGO REQUERIDA*\n\nðŸ“± *Cliente:* +${clientNumber} (${customer.name || 'Sin Nombre'})\nðŸ“¦ *Producto:* ${updatedState.productName || 'Producto'} x${updatedState.quantity || 1}\n\nâš ï¸  Verifica el comprobante y confirma en el Dashboard.\n\nâš¡ _Velion Agent Auto-Notification_`;
+                     const txt = `💳 *VERIFICACIÓN DE PAGO REQUERIDA*\n\n📱 *Cliente:* +${clientNumber} (${customer.name || 'Sin Nombre'})\n📦 *Producto:* ${updatedState.productName || 'Producto'} x${quantity}\n\n⚠️ Verifica el comprobante y confirma en el Dashboard.\n\n⚡ _Velion Agent Auto-Notification_`;
                      gatewaySendText({ tenantId: tenant.id, to: destPhone, text: txt }).catch(() => {});
                    }
                  }
@@ -1810,122 +1819,13 @@ Atributos/Tags: ${Array.isArray(product.tags) ? product.tags.join(', ') : ''}
       }
     }
 
-    // â”€â”€â”€ DETECCIÃ“N DE CONFIRMACIÃ“N DE VENTA/PEDIDO [ORDER_CONFIRMED: ...] â”€â”€â”€
-    const orderRegex = /\[ORDER_CONFIRMED:\s*([\s\S]+?)\]/g;
-    const orderSummaries = [];
-    let orderMatch;
-    while ((orderMatch = orderRegex.exec(aiResponse)) !== null) {
-      if (orderMatch[1]) {
-        orderSummaries.push(orderMatch[1].trim());
-      }
-    }
-
-    if (orderSummaries.length > 0 && tenantDetails?.notifySalesWhatsApp === true) {
-      const cacheKey = `${tenant.id}:${clientNumber}`;
-      const now = Date.now();
-      const lastNotifiedAt = orderNotificationDebounceMap.get(cacheKey) || 0;
-      const DEBOUNCE_MS = 10 * 60 * 1000; // 10 minutos de protecciÃ³n contra notificaciones duplicadas
-
-      if (now - lastNotifiedAt < DEBOUNCE_MS) {
-        console.log(`âš ï¸ [NotificaciÃ³n de Venta] NotificaciÃ³n omitida por duplicado reciente (Debounce < 10 min) para +${clientNumber}`);
-      } else {
-        const rawDestPhone = await resolveNotificationPhone(tenant.id, tenantDetails);
-        const destPhone = sanitizePhoneForEvo(rawDestPhone);
-        if (destPhone) {
-          orderNotificationDebounceMap.set(cacheKey, now);
-          for (const summary of orderSummaries) {
-            const notificationText = `ðŸš¨ *NUEVO PEDIDO CONFIRMADO por IA*\n\nðŸ“± *Cliente:* +${clientNumber} (${customer.name || 'Sin Nombre'})\nðŸ“‹ *Resumen:* ${summary}\n\nâš¡ _Velion Agent Auto-Notification_`;
-
-            // Persistir el pedido como Alerta en DB SIEMPRE (antes de intentar WhatsApp)
-            // para que nunca se pierda aunque el gateway de notificaciÃ³n falle.
-            try {
-              await prisma.alert.create({
-                data: {
-                  type: 'NEW_ORDER',
-                  severity: 'INFO',
-                  message: `ðŸ“¦ PEDIDO CONFIRMADO | Cliente: +${clientNumber} (${customer.name || 'Sin Nombre'}) | ${summary}`,
-                  tenantId: tenant.id
-                }
-              });
-              console.log(`ðŸ’¾ [Pedido] Orden persistida en DB correctamente para +${clientNumber}.`);
-            } catch (dbErr) {
-              console.error(`â Œ [Pedido] Error al persistir orden en DB:`, dbErr.message);
-            }
-
-            // Intentar notificar por WhatsApp (ya tiene reintentos automÃ¡ticos en el gateway)
-            try {
-              await gatewaySendText({
-                tenantId: tenant.id,
-                to: destPhone,
-                text: notificationText
-              });
-              console.log(`ðŸ“² [NotificaciÃ³n de Venta] Enviada exitosamente a +${destPhone} vÃ­a Gateway`);
-            } catch (notifyErr) {
-              console.error(`âŒ [NotificaciÃ³n de Venta] FallÃ³ tras reintentos para +${destPhone}: ${notifyErr.message}. El pedido ya estÃ¡ guardado en el Dashboard.`);
-            }
-          }
-        }
-      }
-    }
-
-    // â”€â”€â”€ DETECCIÃ“N DE VERIFICACIÃ“N DE PAGO [VERIFY_PAYMENT: ...] â”€â”€â”€
-    const verifyPaymentRegex = /\[VERIFY_PAYMENT:\s*([\s\S]+?)\]/g;
-    const verifyPaymentMatches = [];
-    let vpMatch;
-    while ((vpMatch = verifyPaymentRegex.exec(aiResponse)) !== null) {
-      if (vpMatch[1]) verifyPaymentMatches.push(vpMatch[1].trim());
-    }
-
-    if (verifyPaymentMatches.length > 0) {
-      const rawDestPhone = await resolveNotificationPhone(tenant.id, tenantDetails);
-      const destPhone = sanitizePhoneForEvo(rawDestPhone);
-
-      for (const vpDetail of verifyPaymentMatches) {
-        // 1. Persistir en DB como alerta (nunca se pierde aunque el WA falle)
-        try {
-          await prisma.alert.create({
-            data: {
-              type: 'PAYMENT_VERIFY',
-              severity: 'HIGH',
-              message: `ðŸ’³ VERIFICACIÃ“N DE PAGO REQUERIDA | Cliente: +${clientNumber} (${customer.name || 'Sin Nombre'}) | Detalle: ${vpDetail}`,
-              tenantId: tenant.id
-            }
-          });
-          console.log(`ðŸ’¾ [Verify Payment] Alerta de pago persistida en DB para +${clientNumber}.`);
-        } catch (dbErr) {
-          console.error(`âŒ [Verify Payment] Error al guardar alerta en DB:`, dbErr.message);
-        }
-
-        // 2. Notificar al administrador por WhatsApp
-        if (destPhone) {
-          const verifyMsg = `ðŸ’³ *VERIFICACIÃ“N DE PAGO REQUERIDA*\n\nðŸ“± *Cliente:* +${clientNumber} (${customer.name || 'Sin Nombre'})\nðŸ’° *Detalle:* ${vpDetail}\n\nâš ï¸ Por favor verifica el comprobante y confirma el pedido manualmente en el Dashboard.\n\nâš¡ _Velion Agent Auto-Notification_`;
-          try {
-            await gatewaySendText({
-              tenantId: tenant.id,
-              to: destPhone,
-              text: verifyMsg
-            });
-            console.log(`ðŸ“² [Verify Payment] Alerta enviada a +${destPhone} vÃ­a Gateway.`);
-          } catch (vpNotifyErr) {
-            console.error(`âŒ [Verify Payment] Error al notificar a +${destPhone}:`, vpNotifyErr.message);
-          }
-        }
-      }
-    }
-
     // ── Actualizar lastInteraction del Contacto (Actividad CRM en tiempo real) ──────────────────
     // Formato: una línea corta, prioridad: Pedido > Comprobante > Handoff > Memoria > Fallback
     try {
       const timeStr = new Date().toLocaleTimeString('es-PE', { hour: '2-digit', minute: '2-digit' });
       let lastInteractionText = null;
 
-      if (orderSummaries.length > 0) {
-        // Pedido confirmado: usar el primer campo del resumen (nombre del producto)
-        const orderBrief = orderSummaries[0].split(',')[0].slice(0, 55).trim();
-        lastInteractionText = `✅ Pedido: ${orderBrief} · ${timeStr}`;
-      } else if (verifyPaymentMatches.length > 0) {
-        lastInteractionText = `💳 Enviando comprobante de pago · ${timeStr}`;
-      } else if (handoffMatches.length > 0) {
+      if (handoffMatches.length > 0) {
         const reason = handoffMatches[0].slice(0, 45).trim();
         lastInteractionText = `👤 Asesor: ${reason} · ${timeStr}`;
       } else {
@@ -1948,9 +1848,7 @@ Atributos/Tags: ${Array.isArray(product.tags) ? product.tags.join(', ') : ''}
     // ────────────────────────────────────────────────────────────────────────────────────────────
 
     const visibleText = aiResponse
-      .replace(orderRegex, '')
       .replace(handoffRegex, '')
-      .replace(verifyPaymentRegex, '')
       .trim();
 
     if (visibleText) {
