@@ -1366,6 +1366,7 @@ La tienda es la UNICA fuente de verdad para productos, precios, stock, promocion
 - CIERRE PASO A PASO: No pidas datos de golpe. 1. Variantes, 2. Envio, 3. Metodo de pago (ofrece solo los de INFO EMPRESA). Si no hay configurados, di que un asesor los dara. 4. Datos de pago: solo envialos si el cliente confirmo el metodo o pidio pagar. NO preguntes lo que el cliente ya te dijo.
 
 [PAGOS Y AUDITORIA - CRITICO]
+- METODOS PERMITIDOS: El UNICO medio de pago digital aceptado es Yape (o efectivo en contraentrega con adelanto por Shalom). Esta estrictamente PROHIBIDO ofrecer, aceptar o mencionar Plin, transferencias bancarias o tarjetas. Si el cliente los pide, dile amablemente que solo operamos con Yape o contraentrega.
 - Comprobante por IMAGEN: Si el monto es suficiente, usa OBLIGATORIAMENTE [VERIFY_PAYMENT: S/. monto | producto] y di "Un asesor lo verificara y te confirmara en breve". Si el monto es menor, indica la diferencia. JAMAS uses [ORDER_CONFIRMED] con imagenes.
 - Comprobante VERBAL: Si el cliente dice que pago, pide la captura 1 SOLA VEZ. Si insiste que no puede enviarla, NO le pidas mas; usa [VERIFY_PAYMENT: verbal | producto] y di "Le avisamos a un asesor para verificar".
 `.trim()
@@ -1511,7 +1512,7 @@ Estado Comercial Actual: ${JSON.stringify(currentCommercialState)}
               customerNeeds: { type: 'STRING', description: 'Nota breve sobre necesidades del cliente (máx 100 caracteres)' },
               shippingCity: { type: 'STRING', description: 'Ciudad o provincia de entrega' },
               shippingAddress: { type: 'STRING', description: 'Dirección física exacta si la proporcionó' },
-              paymentMethod: { type: 'STRING', description: 'Método de pago preferido (Yape, Plin, Transferencia, Contraentrega)' },
+              paymentMethod: { type: 'STRING', description: 'Método de pago preferido (Yape, Contraentrega)' },
               missingFields: {
                 type: 'ARRAY',
                 items: { type: 'STRING' },
