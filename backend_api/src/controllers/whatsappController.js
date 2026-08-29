@@ -1881,22 +1881,6 @@ Estado Comercial Actual: ${JSON.stringify(currentCommercialState)}
       }
     }
 
-    if (newMemories.length > 0) {
-      try {
-        const currentPrefs = customer.preferences ? customer.preferences + '\n' : '';
-        const newPrefsStr = newMemories.join('. ');
-        const updatedPrefs = `${currentPrefs}${newPrefsStr}`;
-
-        await prisma.customer.update({
-          where: { id: customer.id },
-          data: { preferences: updatedPrefs }
-        });
-        console.log(`ðŸ’¾ [CRM] Memoria de preferencias actualizada para +${clientNumber}: "${updatedPrefs}"`);
-      } catch (dbError) {
-        console.error('âŒ [CRM] Error al guardar preferencias del cliente en BD:', dbError.message);
-      }
-    }
-
     // ── Actualizar lastInteraction del Contacto (Actividad CRM en tiempo real) ──────────────────
     // Formato: una línea corta, prioridad: Pedido > Comprobante > Handoff > Memoria > Fallback
     try {
