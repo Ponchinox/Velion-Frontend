@@ -361,33 +361,6 @@ export async function getQrCode(req, res) {
       }
     }
 
-    // 1.5. Configurar el webhook en Evolution API explicitamente (Respaldo)
-    try {
-      console.log(`🔌 [Evolution API] Sobrescribiendo webhook en: ${webhookUrl} para la instancia: ${instanceName}`);
-      await axios.post(
-        `${evoUrl}/webhook/set/${instanceName}`,
-        {
-          webhook: {
-            enabled: true,
-            url: webhookUrl,
-            headers: {
-              apikey: cleanApiKey
-            },
-            byEvents: false,
-            webhookByEvents: false,
-            events: [
-              "MESSAGES_UPSERT",
-              "CONNECTION_UPDATE"
-            ]
-          }
-        },
-        getEvoHeaders()
-      );
-      console.log('✅ [Evolution API] Webhook sobrescrito y actualizado con éxito.');
-    } catch (webhookError) {
-      console.error('❌ Error configurando el Webhook en Evolution:', webhookError?.response?.data || webhookError.message);
-    }
-
     // 2. Solicitar el código QR de conexión
     let connectRes;
     try {

@@ -23,7 +23,8 @@ export async function getTenantMetrics(req, res) {
       openChats,
       closedChats,
       totalProducts,
-      activePromosCount
+      activePromosCount,
+      notifications
     ] = await Promise.all([
       // 1. Total de contactos del CRM
       prisma.contact.count({
@@ -102,6 +103,12 @@ export async function getTenantMetrics(req, res) {
             }
           ]
         }
+      }),
+      // 9. Notificaciones recientes (Alertas)
+      prisma.alert.findMany({
+        where: { tenantId },
+        orderBy: { createdAt: 'desc' },
+        take: 6
       })
     ]);
 
@@ -123,7 +130,8 @@ export async function getTenantMetrics(req, res) {
       products: {
         total: totalProducts,
         activePromotions: activePromosCount
-      }
+      },
+      notifications: notifications || []
     });
 
   } catch (error) {

@@ -10,7 +10,8 @@ import {
   Clock, 
   CheckCircle,
   HelpCircle,
-  AlertCircle
+  AlertCircle,
+  BellRing
 } from 'lucide-react';
 import * as tenantDashboardService from '../services/tenantDashboardService';
 import { useAuth } from '../context/AuthContext';
@@ -213,46 +214,60 @@ export default function TenantDashboardPage() {
             </div>
           </div>
 
-          {/* Tarjeta 4: Soporte Humano */}
-          <div className="bg-white border border-line rounded-2xl shadow-sm p-6 flex flex-col justify-between">
-            <div className="flex items-center justify-between">
+          {/* Tarjeta 4: Notificaciones Recientes */}
+          <div className="bg-white border border-line rounded-2xl shadow-sm p-6 flex flex-col justify-between h-[216px]">
+            <div className="flex items-center justify-between mb-4">
               <div className="flex items-center gap-3">
-                <div className="w-10 h-10 rounded-lg bg-purple-50 text-purple-600 flex items-center justify-center">
-                  <MessageSquare size={20} />
+                <div className="w-10 h-10 rounded-lg bg-amber-50 text-amber-600 flex items-center justify-center">
+                  <BellRing size={20} />
                 </div>
                 <div>
-                  <h3 className="text-sm font-bold text-hi">Soporte Humano</h3>
+                  <h3 className="text-sm font-bold text-hi">Notificaciones</h3>
                 </div>
               </div>
-              <span className="px-2 py-0.5 rounded-full text-3xs font-semibold bg-purple-50 border border-purple-100 text-purple-700">
-                Inbox
-              </span>
+              {metrics.notifications?.length > 0 && (
+                <span className="px-2 py-0.5 rounded-full text-3xs font-semibold bg-red-50 border border-red-100 text-red-600 animate-pulse">
+                  Nuevas
+                </span>
+              )}
             </div>
 
-            <div className="my-5 space-y-3">
-              <div className="grid grid-cols-2 gap-2">
-                <div>
-                  <p className="text-3xs text-muted uppercase font-bold">Abiertos</p>
-                  <p className="text-lg font-mono font-bold text-indigo-600">{metrics.chats.open}</p>
+            <div className="flex-1 overflow-y-auto pr-1 space-y-3 custom-scrollbar">
+              {!metrics.notifications || metrics.notifications.length === 0 ? (
+                <div className="h-full flex flex-col items-center justify-center text-center opacity-70">
+                  <CheckCircle size={28} className="text-green-500 mb-2" />
+                  <p className="text-xs font-semibold text-hi">Todo al día</p>
+                  <p className="text-2xs text-lo mt-0.5">No hay notificaciones recientes</p>
                 </div>
-                <div>
-                  <p className="text-3xs text-muted uppercase font-bold">Cerrados</p>
-                  <p className="text-lg font-mono font-bold text-hi">{metrics.chats.closed}</p>
-                </div>
-              </div>
+              ) : (
+                <ul className="space-y-3">
+                  {metrics.notifications.map((notif) => {
+                    const isPayment = notif.type === 'PAYMENT_VERIFY' || notif.message.toLowerCase().includes('pago');
+                    const isHandoff = notif.type === 'HUMAN_HANDOFF' || notif.message.toLowerCase().includes('humano');
+                    const isOrder = notif.type === 'ORDER_CLOSED' || notif.message.toLowerCase().includes('pedido');
+                    
+                    let bg = 'bg-gray-50';
+                    let text = 'text-gray-600';
+                    if (isPayment) { bg = 'bg-emerald-50'; text = 'text-emerald-600'; }
+                    else if (isHandoff) { bg = 'bg-purple-50'; text = 'text-purple-600'; }
+                    else if (isOrder) { bg = 'bg-blue-50'; text = 'text-blue-600'; }
+                    else if (notif.severity === 'CRITICAL') { bg = 'bg-red-50'; text = 'text-red-600'; }
 
-              {/* Barra de proporción pequeña */}
-              {metrics.chats.total > 0 && (
-                <div className="w-full h-1.5 bg-gray-100 rounded-full overflow-hidden flex border border-line">
-                  <div 
-                    className="h-full bg-indigo-500" 
-                    style={{ width: `${Math.round((metrics.chats.open / metrics.chats.total) * 100)}%` }}
-                  />
-                  <div 
-                    className="h-full bg-gray-300" 
-                    style={{ width: `${Math.round((metrics.chats.closed / metrics.chats.total) * 100)}%` }}
-                  />
-                </div>
+                    return (
+                      <li key={notif.id} className="flex gap-3 items-start">
+                        <div className={`mt-0.5 w-2 h-2 rounded-full flex-shrink-0 ${bg.replace('bg-', 'bg-').replace('50', '500')}`} />
+                        <div className="flex-1">
+                          <p className="text-xs text-hi font-medium line-clamp-2 leading-tight">
+                            {notif.message.replace(/[\u{1F300}-\u{1F9FF}\u{2600}-\u{26FF}\u{2700}-\u{27BF}]/gu, '').trim()}
+                          </p>
+                          <p className="text-3xs text-muted mt-1 font-mono">
+                            {new Date(notif.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                          </p>
+                        </div>
+                      </li>
+                    );
+                  })}
+                </ul>
               )}
             </div>
           </div>
