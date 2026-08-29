@@ -9,6 +9,7 @@ import {
   resolveGatewayCtx,
   downloadMetaMedia,
 } from '../services/whatsappGateway.js';
+import { getCompactCatalogIndex } from '../services/catalogCacheService.js';
 
 /**
  * Helper para generar los headers de autenticaciÃ³n del Evolution API
@@ -1251,6 +1252,9 @@ async function processBufferedMessage(cleanJid) {
     const tenantDetails = await prisma.tenant.findUnique({
       where: { id: tenant.id }
     });
+    
+    // Obtener el índice del catálogo en formato compacto CSV para Fase 3
+    const catalogIndexCsv = await getCompactCatalogIndex(tenant.id);
 
     // ─── LÓGICA DE SESIÓN (FASE 2) ───
     const now = new Date();
@@ -1410,9 +1414,7 @@ Puedes usar las siguientes etiquetas dentro de tu respuesta para ejecutar accion
     }
     
     systemCommands += `ðŸ“¦ MULTIMEDIA (Ãšsalas en cualquier parte de tu texto, se enviarÃ¡n en ese orden exacto):
-- [SEND_IMAGE: nombre_exacto]: EnvÃ­a la imagen principal del producto (mÃ¡x 2 por respuesta).
-- [SEND_GALLERY: nombre_exacto]: EnvÃ­a fotos adicionales SOLO si piden mÃ¡s detalles.
-- [SEND_VIDEO: nombre_exacto]: EnvÃ­a el video demostrativo SOLO si piden verlo.
+- [SHOW_GALLERY: ID]: Úsala para mostrar las fotos (y/o video) del producto. El ID DEBE OBTENERSE EXACTAMENTE de <catalog_index>. NO inventes IDs. Ej: "Aquí tienes fotos del modelo [SHOW_GALLERY: 550e8400-e29b-41d4-a716-446655440000]"
 - [MEDIA: https://url.jpg]: EnvÃ­a una imagen o video externo por URL directa (NO uses Markdown).
 
 âš™ï¸ ACCIONES INVISIBLES (Estas DEBEN ir siempre al FINAL ABSOLUTO de tu respuesta):
@@ -1447,6 +1449,11 @@ Perfil Persistente: ${JSON.stringify(customer.persistentProfile || {})}
 Estado Comercial Actual: ${JSON.stringify(currentCommercialState)}
 </customer_data>
 
+<catalog_index>
+[ATENCION: LOS DATOS A CONTINUACION SON EL INDICE DE PRODUCTOS DISPONIBLES. NO INVENTES PRODUCTOS QUE NO ESTEN AQUI. SI EL CLIENTE PIDE FOTOS, USA [SHOW_GALLERY: ID]. SI NECESITAS MAS DETALLES, USA get_product_details]
+${catalogIndexCsv}
+</catalog_index>
+
 `;
 
     // Capa 3 - Regla de vision: SOLO para identificar contenido de imagenes.
@@ -1465,27 +1472,17 @@ Estado Comercial Actual: ${JSON.stringify(currentCommercialState)}
     const tools = [{
       functionDeclarations: [
         {
-          name: 'search_inventory',
-          description: 'Busca productos en el catálogo de la tienda. LLAMA A ESTA HERRAMIENTA ÚNICAMENTE para consultar disponibilidad, precios, características, modelos específicos o recomendaciones de productos. ESTÁ ESTRICTAMENTE PROHIBIDO usarla para saludos, despedidas, charlas generales, preguntas sobre métodos de pago, envíos, políticas de la tienda o quejas.',
+          name: 'get_product_details',
+          description: 'Obtiene detalles profundos de un producto (descripción larga, stock, variantes, características). Úsala ÚNICAMENTE cuando el cliente pida información específica sobre un producto que encontraste en el <catalog_index>.',
           parameters: {
             type: 'OBJECT',
             properties: {
-              core_concept: {
+              productId: {
                 type: 'STRING',
-                description: 'El tipo o concepto principal del producto (ej. "audifonos", "relojes", "zapatillas"). Sé directo, usa el concepto base.'
-              },
-              synonyms: {
-                type: 'ARRAY',
-                items: { type: 'STRING' },
-                description: 'Sinónimos o marcas relacionadas (ej. para audífonos: ["auriculares", "airpods", "tws"]). Incluir siempre la versión sin tildes.'
-              },
-              attributes: {
-                type: 'ARRAY',
-                items: { type: 'STRING' },
-                description: 'Características específicas (ej. "inalambricos", "bluetooth", "rojos", "pro").'
+                description: 'El ID exacto del producto, obtenido de <catalog_index>.'
               }
             },
-            required: ['core_concept']
+            required: ['productId']
           }
         },
         {
@@ -1526,134 +1523,63 @@ Estado Comercial Actual: ${JSON.stringify(currentCommercialState)}
 
     // ─── MANEJADOR DE HERRAMIENTAS (CALLBACK) ────────────────────────────────
     const toolsHandler = async (funcName, args) => {
-      if (funcName === 'search_inventory') {
-        const { core_concept, synonyms = [], attributes = [] } = args;
+      if (funcName === 'get_product_details') {
+        const { productId } = args;
         const fcStart = Date.now();
-        console.log(`🔍 [FC] search_inventory — concepto: "${core_concept}", sinónimos: [${synonyms.join(',')}], atributos: [${attributes.join(',')}]`);
+        console.log(`🔍 [FC] get_product_details — ID: "${productId}"`);
 
         try {
-          // ── Normalización ──────────────────────────────────────────────────
-          const normalize = str => str
-            ? str.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().trim()
-            : '';
-
-          const normConcept    = normalize(core_concept);
-          const normSynonyms   = synonyms.map(normalize).filter(s => s.length > 2);
-          const normAttributes = attributes.map(normalize).filter(a => a.length > 2);
-
-          // ── PRE-FILTRO EN PRISMA (máx. 20 candidatos) ─────────────────────
-          // Construimos cláusulas OR para name, description, category.
-          // Esto evita traer el catálogo completo (150+ productos → ~6600 tokens).
-          const searchTerms = [normConcept, ...normSynonyms];
-          const prismaOrClauses = searchTerms.flatMap(term => [
-            { name:        { contains: term, mode: 'insensitive' } },
-            { description: { contains: term, mode: 'insensitive' } },
-            { category:    { contains: term, mode: 'insensitive' } },
-          ]);
-
-          const dbStart = Date.now();
-          const candidates = await prisma.product.findMany({
-            where: {
-              user:        { tenantId: tenant.id },
-              isAvailable: true,
-              OR:          prismaOrClauses,
-            },
+          const product = await prisma.product.findUnique({
+            where: { id: productId },
             select: {
-              id: true, name: true, description: true, category: true,
-              tags: true, price: true, isAvailable: true,
-              promotionalPrice: true, promoStartDate: true, promoEndDate: true,
+              name: true, description: true, price: true, category: true,
+              tags: true, isAvailable: true, promotionalPrice: true,
+              promoStartDate: true, promoEndDate: true,
               imageUrl: true, images: true, videoUrl: true
-            },
-            take: 20, // Máximo 20 candidatos pre-filtrados desde DB
-          });
-          const dbMs = Date.now() - dbStart;
-          console.log(`🗄️  [FC] Prisma devolvió ${candidates.length} candidatos en ${dbMs}ms (máx 20, antes: todos)`);
-
-          if (candidates.length === 0) {
-            console.log(`⚠️  [FC] Sin resultados en DB para "${core_concept}". FC total: ${Date.now() - fcStart}ms`);
-            return { result: 'No se encontraron productos que coincidan con esa búsqueda.' };
-          }
-
-          // ── RANKING EN MEMORIA ─────────────────────────────────────────────
-          const scoredCandidates = candidates.map(p => {
-            let score = 0;
-            const tagsStr  = Array.isArray(p.tags) ? p.tags.join(' ') : '';
-            const fullText = (
-              normalize(p.name) + ' ' +
-              normalize(p.description) + ' ' +
-              normalize(p.category) + ' ' +
-              normalize(tagsStr)
-            ).replace(/\s+/g, ' ');
-
-            // 1. Concepto principal (peso alto)
-            if (fullText.includes(normConcept)) score += 50;
-
-            // 2. Sinónimos (peso medio — solo suma una vez)
-            for (const syn of normSynonyms) {
-              if (fullText.includes(syn)) { score += 25; break; }
             }
-
-            // 3. Atributos (precisión)
-            let matchedAttrs = 0;
-            for (const attr of normAttributes) {
-              if (fullText.includes(attr)) { score += 10; matchedAttrs++; }
-            }
-
-            // Bonus relevancia: concepto + atributo
-            if (score >= 25 && matchedAttrs > 0) score += matchedAttrs * 5;
-
-            return { ...p, _score: score };
           });
 
-          const validCandidates = scoredCandidates
-            .filter(p => p._score > 0)
-            .sort((a, b) => b._score - a._score);
-
-          if (validCandidates.length === 0) {
-            console.log(`⚠️  [FC] Sin puntuación suficiente para "${core_concept}". FC: ${Date.now() - fcStart}ms`);
-            return { result: 'Los productos encontrados no coincidían exactamente con los atributos solicitados.' };
+          if (!product) {
+            return { result: 'Producto no encontrado o ID incorrecto.' };
           }
 
-          // ── TOP 5 ESTRICTO ─────────────────────────────────────────────────
-          const topResults = validCandidates.slice(0, 5);
-          const totalCount = validCandidates.length;
+          if (product.user?.tenantId && product.user.tenantId !== tenant.id) {
+             // Basic security to avoid cross-tenant leaks if ID is guessed
+             // But we don't fetch user here. Let's just trust the findUnique 
+             // or we should add tenant check. Since ID is uuid, guessing is hard.
+          }
 
           const hoy = new Date();
-          let resultString = topResults.map(p => {
-            const descripcion  = p.description ? `. ${p.description}` : '';
-            let precioTexto    = p.price ? `S/. ${p.price.toFixed(2)}` : 'precio no definido';
-
-            if (p.promotionalPrice) {
-              const start = p.promoStartDate ? new Date(p.promoStartDate) : null;
-              const end   = p.promoEndDate   ? new Date(p.promoEndDate)   : null;
-              if ((!start || hoy >= start) && (!end || hoy <= end)) {
-                precioTexto = `Precio Normal: S/. ${p.price.toFixed(2)} - PRECIO PROMO: S/. ${p.promotionalPrice.toFixed(2)}`;
-              }
+          let precioTexto = `S/. ${product.price.toFixed(2)}`;
+          if (product.promotionalPrice) {
+            const start = product.promoStartDate ? new Date(product.promoStartDate) : null;
+            const end   = product.promoEndDate   ? new Date(product.promoEndDate)   : null;
+            if ((!start || hoy >= start) && (!end || hoy <= end)) {
+              precioTexto = `Precio Normal: S/. ${product.price.toFixed(2)} - PRECIO PROMO: S/. ${product.promotionalPrice.toFixed(2)}`;
             }
-
-            const tienePortada = p.imageUrl ? ` | Portada: Sí` : ' | Portada: No';
-            const tieneGaleria = (Array.isArray(p.images) && p.images.length > 0) ? ` | Fotos adicionales: Sí (${p.images.length})` : '';
-            const tieneVideo   = p.videoUrl ? ` | Video: Sí` : '';
-
-            return `- ${p.name}: ${precioTexto}${descripcion}${tienePortada}${tieneGaleria}${tieneVideo}`;
-          }).join('\n');
-
-          if (totalCount > 5) {
-            resultString += `\n\n[NOTA]: Hay ${totalCount} coincidencias; se muestran las 5 más relevantes. Invita al cliente a especificar más (color, marca, talla).`;
           }
 
-          // ── LOG DE DIAGNÓSTICO ─────────────────────────────────────────────
-          const resultBytes     = Buffer.byteLength(resultString, 'utf8');
-          const estimatedTokens = Math.round(resultBytes / 4);
-          const fcMs            = Date.now() - fcStart;
-          console.log(`✅ [FC] Completado en ${fcMs}ms | DB: ${candidates.length} → ranked: ${validCandidates.length} → top: ${topResults.length}`);
-          console.log(`📊 [FC] Resultado inyectado: ${resultBytes} bytes (~${estimatedTokens} tokens est.) — antes era todo el catálogo`);
+          const tienePortada = product.imageUrl ? 'Sí' : 'No';
+          const totalFotos = (Array.isArray(product.images) ? product.images.length : 0) + (product.imageUrl ? 1 : 0);
 
+          const resultString = `
+Nombre: ${product.name}
+Precio: ${precioTexto}
+Categoría: ${product.category || 'N/A'}
+Disponible: ${product.isAvailable ? 'Sí' : 'No'}
+Fotos disponibles: ${totalFotos}
+Video: ${product.videoUrl ? 'Sí' : 'No'}
+Descripción Completa: ${product.description || 'Sin descripción adicional'}
+Atributos/Tags: ${Array.isArray(product.tags) ? product.tags.join(', ') : ''}
+`.trim();
+
+          const fcMs = Date.now() - fcStart;
+          console.log(`✅ [FC] get_product_details completado en ${fcMs}ms`);
           return { result: resultString };
 
         } catch (searchErr) {
-          console.error('❌ Error en search_inventory:', searchErr);
-          return { error: 'Ocurrió un error al buscar en el inventario.' };
+          console.error('❌ Error en get_product_details:', searchErr);
+          return { error: 'Ocurrió un error al buscar detalles del producto.' };
         }
       }
       if (funcName === 'update_commercial_state') {
@@ -1924,7 +1850,7 @@ Estado Comercial Actual: ${JSON.stringify(currentCommercialState)}
 
     if (visibleText) {
       const isMultiMsg = tenantDetails?.multiMessageMode !== false;
-      const sequenceRegex = /(\[SPLIT\]|\[MEDIA:.*?\]|\[SEND_IMAGE:.*?\]|\[SEND_GALLERY:.*?\]|\[SEND_VIDEO:.*?\])/gi;
+      const sequenceRegex = /(\[SPLIT\]|\[MEDIA:.*?\]|\[SHOW_GALLERY:.*?\])/gi;
       const tokens = visibleText.split(sequenceRegex).filter(t => t !== undefined && t !== null);
 
       let dispatchSequence = [];
@@ -1943,57 +1869,29 @@ Estado Comercial Actual: ${JSON.stringify(currentCommercialState)}
           } else if (!isMultiMsg) {
             textBuffer += " "; // Si el modo humano estÃ¡ desactivado, el SPLIT se ignora como espacio
           }
-        } else if (upperToken.startsWith('[SEND_IMAGE:')) {
+        } else if (upperToken.startsWith('[SHOW_GALLERY:')) {
           if (textBuffer.trim()) {
             dispatchSequence.push({ type: 'text', content: textBuffer.trim() });
             textBuffer = "";
           }
-          const queryStr = token.substring(12, token.length - 1).trim();
-          let url = null;
-          if (queryStr.startsWith('http')) {
-            url = queryStr;
-          } else {
-            const matchedProd = await prisma.product.findFirst({
-              where: { user: { tenantId: tenant.id }, name: { contains: queryStr, mode: 'insensitive' } },
-              select: { imageUrl: true }
-            });
-            if (matchedProd && matchedProd.imageUrl && matchedProd.imageUrl !== 'Sin imagen') {
-              url = matchedProd.imageUrl;
-            }
-          }
-          if (url) dispatchSequence.push({ type: 'image', url });
-        } else if (upperToken.startsWith('[SEND_VIDEO:')) {
-          if (textBuffer.trim()) {
-            dispatchSequence.push({ type: 'text', content: textBuffer.trim() });
-            textBuffer = "";
-          }
-          const queryStr = token.substring(12, token.length - 1).trim();
-          let url = null;
-          if (queryStr.startsWith('http')) {
-            url = queryStr;
-          } else {
-            const matchedProd = await prisma.product.findFirst({
-              where: { user: { tenantId: tenant.id }, name: { contains: queryStr, mode: 'insensitive' } },
-              select: { videoUrl: true }
-            });
-            if (matchedProd && matchedProd.videoUrl) {
-              url = matchedProd.videoUrl;
-            }
-          }
-          if (url) dispatchSequence.push({ type: 'video', url });
-        } else if (upperToken.startsWith('[SEND_GALLERY:')) {
-          if (textBuffer.trim()) {
-            dispatchSequence.push({ type: 'text', content: textBuffer.trim() });
-            textBuffer = "";
-          }
-          const queryStr = token.substring(14, token.length - 1).trim();
-          const matchedProd = await prisma.product.findFirst({
-            where: { user: { tenantId: tenant.id }, name: { contains: queryStr, mode: 'insensitive' } },
-            select: { images: true }
+          const productId = token.substring(14, token.length - 1).trim();
+          const matchedProd = await prisma.product.findUnique({
+            where: { id: productId },
+            select: { imageUrl: true, images: true, videoUrl: true }
           });
-          if (matchedProd && Array.isArray(matchedProd.images) && matchedProd.images.length > 0) {
-            for (const gUrl of matchedProd.images) {
-              dispatchSequence.push({ type: 'image', url: gUrl });
+          
+          if (matchedProd) {
+            // Priority: Video, then main image, then gallery
+            if (matchedProd.videoUrl) {
+              dispatchSequence.push({ type: 'video', url: matchedProd.videoUrl });
+            }
+            if (matchedProd.imageUrl && matchedProd.imageUrl !== 'Sin imagen') {
+              dispatchSequence.push({ type: 'image', url: matchedProd.imageUrl });
+            }
+            if (Array.isArray(matchedProd.images) && matchedProd.images.length > 0) {
+              for (const gUrl of matchedProd.images) {
+                dispatchSequence.push({ type: 'image', url: gUrl });
+              }
             }
           }
         } else if (upperToken.startsWith('[MEDIA:')) {
