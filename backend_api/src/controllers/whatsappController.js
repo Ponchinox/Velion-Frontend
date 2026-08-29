@@ -1420,13 +1420,7 @@ Puedes usar las siguientes etiquetas dentro de tu respuesta para ejecutar accion
 âš™ï¸ ACCIONES INVISIBLES (Estas DEBEN ir siempre al FINAL ABSOLUTO de tu respuesta):
 `;
 
-    if (tenantDetails?.notifySalesWhatsApp === true) {
-      systemCommands += `- [ORDER_CONFIRMED: Producto, Cantidad, Total]: Úsalo ÚNICAMENTE para pedidos coordinados directamente con el cliente donde:
-  • El método de pago y condiciones están aprobadas por la tienda (según Políticas de la empresa).
-  • El cliente proporcionó nombre completo, dirección/ciudad y teléfono de contacto.
-  • JAMÁS la uses si el cliente envió una captura de pago: en ese caso usa [VERIFY_PAYMENT] en su lugar.\n`;
-      systemCommands += `- [VERIFY_PAYMENT: Monto_o_verbal | Descripción_pedido]: Úsalo en DOS casos:\n  A) Cuando el cliente envía una imagen de comprobante con monto suficiente: [VERIFY_PAYMENT: S/. X | producto].\n  B) Cuando el cliente afirma haber pagado pero NO puede o NO quiere enviar captura (después de pedirla 1 vez): [VERIFY_PAYMENT: verbal | producto]. En este caso NO le pidas la captura de nuevo.\n  En ambos casos, dile al cliente: "Entendido, un asesor verificará el pago y te confirmará en breve. ¡Gracias! 🙏 "\n`;
-    }
+
     
     systemCommands += `- [HUMAN_HANDOFF: Motivo]: Transfiere a un humano si el cliente insiste agresivamente o presenta quejas complejas, pero SOLO después de haber ofrecido tu ayuda primero.\n`;
     systemCommands += `- [BAN_USER]: Usa ESTA etiqueta como tu ÚNICA respuesta si el cliente te envía groserías o contenido inapropiado.\n`;
@@ -1586,13 +1580,124 @@ Atributos/Tags: ${Array.isArray(product.tags) ? product.tags.join(', ') : ''}
         const fcStart = Date.now();
         console.log(`📝 [FC] update_commercial_state invocado. Actualizando BD...`);
         try {
-          const updatedState = { ...currentCommercialState, ...args };
+          let updatedState = { ...currentCommercialState, ...args };
+          
+          // --- FASE 4: MÁQUINA DE ESTADOS COMERCIALES Y PEDIDOS ESTRUCTURADOS ---
+          const triggerStages = ['SHIPPING_COORDINATED', 'PAYMENT_PENDING', 'PAYMENT_VERIFIED', 'COMPLETED'];
+          if (triggerStages.includes(updatedState.currentStage)) {
+             const orderId = updatedState.activeOrderId;
+             const total = (updatedState.quantity || 1) * (updatedState.budget || 0);
+             
+             let orderStatus = 'PENDING';
+             let payStatus = 'UNPAID';
+             if (updatedState.currentStage === 'PAYMENT_VERIFIED') payStatus = 'VERIFYING';
+             if (updatedState.currentStage === 'COMPLETED') { orderStatus = 'COMPLETED'; payStatus = 'PAID'; }
+
+             if (!orderId) {
+               // 1. Crear nuevo Order estructurado
+               const newOrder = await prisma.order.create({
+                 data: {
+                   tenantId: tenant.id,
+                   customerId: customer.id,
+                   status: orderStatus,
+                   paymentStatus: payStatus,
+                   paymentMethod: updatedState.paymentMethod || null,
+                   shippingCity: updatedState.shippingCity || null,
+                   shippingAddress: updatedState.shippingAddress || null,
+                   customerNeeds: updatedState.customerNeeds || null,
+                   totalAmount: total,
+                   items: {
+                     create: [{
+                       productId: updatedState.productId || null,
+                       name: updatedState.productName || 'Producto sin nombre',
+                       quantity: updatedState.quantity || 1,
+                       price: updatedState.budget || 0,
+                       variant: updatedState.variant || null
+                     }]
+                   }
+                 }
+               });
+               updatedState.activeOrderId = newOrder.id; // Vincular al perfil del cliente
+               
+               // 2. Alerta y Notificación Nativas
+               await prisma.alert.create({
+                 data: {
+                   type: 'NEW_ORDER',
+                   severity: 'INFO',
+                   message: `ðŸ“¦ PEDIDO CREADO | Cliente: +${clientNumber} (${customer.name || 'Sin Nombre'}) | ${updatedState.productName || 'Producto'} x${updatedState.quantity || 1}`,
+                   tenantId: tenant.id
+                 }
+               });
+               
+               if (tenantDetails?.notifySalesWhatsApp === true) {
+                 const rawDestPhone = await resolveNotificationPhone(tenant.id, tenantDetails);
+                 const destPhone = sanitizePhoneForEvo(rawDestPhone);
+                 if (destPhone) {
+                   const txt = `ðŸš¨ *NUEVO PEDIDO CREADO por IA*\n\nðŸ“± *Cliente:* +${clientNumber} (${customer.name || 'Sin Nombre'})\nðŸ“¦ *Producto:* ${updatedState.productName || 'Producto'} x${updatedState.quantity || 1}\nðŸ’° *Monto aprox:* S/. ${total}\nðŸ“ *EnvÃ­o:* ${updatedState.shippingCity || '-'} / ${updatedState.shippingAddress || '-'}\n\nâš¡ _Velion Agent Auto-Notification_`;
+                   gatewaySendText({ tenantId: tenant.id, to: destPhone, text: txt }).catch(() => {});
+                 }
+               }
+             } else {
+               // 1. Actualizar Order existente (Sin duplicar)
+               await prisma.order.update({
+                 where: { id: orderId },
+                 data: {
+                   status: orderStatus,
+                   paymentStatus: payStatus,
+                   paymentMethod: updatedState.paymentMethod || null,
+                   shippingCity: updatedState.shippingCity || null,
+                   shippingAddress: updatedState.shippingAddress || null,
+                   customerNeeds: updatedState.customerNeeds || null,
+                   totalAmount: total
+                 }
+               });
+               // Sobreescribir items
+               await prisma.orderItem.deleteMany({ where: { orderId: orderId } });
+               await prisma.orderItem.create({
+                 data: {
+                   orderId: orderId,
+                   productId: updatedState.productId || null,
+                   name: updatedState.productName || 'Producto sin nombre',
+                   quantity: updatedState.quantity || 1,
+                   price: updatedState.budget || 0,
+                   variant: updatedState.variant || null
+                 }
+               });
+
+               // 2. Alerta si enviaron comprobante verbal/visual
+               if (updatedState.currentStage === 'PAYMENT_VERIFIED') {
+                 await prisma.alert.create({
+                   data: {
+                     type: 'PAYMENT_VERIFY',
+                     severity: 'HIGH',
+                     message: `ðŸ’³ VERIFICACIÃ“N DE PAGO REQUERIDA | Cliente: +${clientNumber} (${customer.name || 'Sin Nombre'})`,
+                     tenantId: tenant.id
+                   }
+                 });
+                 if (tenantDetails?.notifySalesWhatsApp === true) {
+                   const rawDestPhone = await resolveNotificationPhone(tenant.id, tenantDetails);
+                   const destPhone = sanitizePhoneForEvo(rawDestPhone);
+                   if (destPhone) {
+                     const txt = `ðŸ’³ *VERIFICACIÃ“N DE PAGO REQUERIDA*\n\nðŸ“± *Cliente:* +${clientNumber} (${customer.name || 'Sin Nombre'})\nðŸ“¦ *Producto:* ${updatedState.productName || 'Producto'} x${updatedState.quantity || 1}\n\nâš ï¸  Verifica el comprobante y confirma en el Dashboard.\n\nâš¡ _Velion Agent Auto-Notification_`;
+                     gatewaySendText({ tenantId: tenant.id, to: destPhone, text: txt }).catch(() => {});
+                   }
+                 }
+               }
+               
+               // Cierre de ciclo: liberar la memoria para una nueva compra a futuro
+               if (updatedState.currentStage === 'COMPLETED') {
+                  delete updatedState.activeOrderId;
+               }
+             }
+          }
+
+          // Guardar estado persistente JSON
           await prisma.customer.update({
             where: { id: customer.id },
             data: { commercialState: updatedState }
           });
           currentCommercialState = updatedState; // Reflejar en memoria local
-          console.log(`✅ [FC] update_commercial_state completado en ${Date.now() - fcStart}ms.`);
+          console.log(`✅ [FC] update_commercial_state completado y sincronizado (Stage: ${updatedState.currentStage}) en ${Date.now() - fcStart}ms.`);
           return { success: true, state: updatedState };
         } catch (err) {
           console.error('❌ Error en update_commercial_state:', err.message);

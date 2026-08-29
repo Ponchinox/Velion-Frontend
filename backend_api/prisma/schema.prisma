@@ -46,6 +46,7 @@ model Tenant {
   messages             Message[]
   registeredNumbers    RegisteredWhatsAppNumber[]
   users                User[]
+  orders               Order[]
 }
 
 model User {
@@ -133,6 +134,7 @@ model Product {
   images           String[]  @default([])
   videoUrl         String?
   user             User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  orderItems       OrderItem[]
 }
 
 model Alert {
@@ -190,6 +192,7 @@ model Customer {
   createdAt         DateTime  @default(now())
   updatedAt         DateTime  @updatedAt
   tenant            Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  orders            Order[]
 
   @@unique([tenantId, phone])
 }
@@ -245,4 +248,39 @@ model RegisteredWhatsAppNumber {
   updatedAt         DateTime @updatedAt
   instanceName      String?
   tenant            Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+}
+
+model Order {
+  id              String      @id @default(uuid())
+  tenantId        String
+  customerId      String
+  
+  status          String      @default("PENDING")
+  paymentStatus   String      @default("UNPAID")
+  
+  paymentMethod   String?
+  shippingCity    String?
+  shippingAddress String?
+  customerNeeds   String?
+  totalAmount     Float       @default(0)
+  
+  createdAt       DateTime    @default(now())
+  updatedAt       DateTime    @updatedAt
+
+  tenant          Tenant      @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  customer        Customer    @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  items           OrderItem[]
+}
+
+model OrderItem {
+  id        String   @id @default(uuid())
+  orderId   String
+  productId String?
+  name      String
+  quantity  Int      @default(1)
+  price     Float    @default(0)
+  variant   String?
+  
+  order     Order    @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  product   Product? @relation(fields: [productId], references: [id], onDelete: SetNull)
 }
