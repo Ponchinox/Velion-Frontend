@@ -727,17 +727,6 @@ async function callAiProviderCascade(systemPrompt, messages, mediaItems = [], to
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// MEMORIA A CORTO PLAZO (HISTORIAL POR USUARIO)
-// ─────────────────────────────────────────────────────────────────────────────
-
-/**
- * Mapa de historial en memoria por remoteJid.
- * Almacena roles como 'user' y 'model' para compatibilidad nativa con Gemini.
- * El rol 'model' es el equivalente de 'assistant' en la API de Gemini.
- */
-const userMemories = new Map();
-
-// ─────────────────────────────────────────────────────────────────────────────
 // DEDUPLICACIÓN DE PETICIONES (ANTI-DUPLICADOS POR messageId)
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -776,48 +765,45 @@ function markMessageId(messageId) {
 const userQueues = new Map();
 
 /**
- * Genera una respuesta de IA con cascada de resiliencia y memoria conversacional.
+ * Genera una respuesta de IA con cascada de resiliencia.
+ * La memoria conversacional ahora se maneja inyectando directamente el historial
+ * proveniente de la base de datos (PostgreSQL).
  *
  * @param {string}   prompt      - Instrucción del sistema
- * @param {Array}    context     - Contexto/historial [{role, content}]
+ * @param {Array}    context     - Contexto/historial ya formateado [{role, content}]
  * @param {string[]} mediaItems  - Multimedia en Base64 (opcional)
- * @param {string}   remoteJid   - ID único del usuario para memoria FIFO (opcional)
- * @param {string}   messageId   - ID único del mensaje WhatsApp/Evolution para deduplicación
- *                                 (key.id de Evolution o wamid de Meta). Si se provee,
- *                                 mensajes con el mismo ID se ignoran automáticamente.
+ * @param {string}   userLockKey - Clave única para cola (ej. tenantId:remoteJid)
+ * @param {string}   messageId   - ID único del mensaje para deduplicación
  * @returns {Promise<string>}
  */
-export async function generateAIResponse(prompt, context = [], mediaItems = [], remoteJid = null, messageId = null, tools = [], toolsHandler = null) {
+export async function generateAIResponse(prompt, context = [], mediaItems = [], userLockKey = null, messageId = null, tools = [], toolsHandler = null) {
   // ── Deduplicación por messageId ────────────────────────────────────────────
-  // Se deduplica por el ID único del mensaje.
   if (messageId) {
     if (processedMessageIds.has(messageId)) {
       console.warn(`⚠️ [AI] Mensaje duplicado detectado (messageId: ${messageId}). Ignorando.`);
       return '';
     }
-    markMessageId(messageId); // registrar inmediatamente para bloquear reentrada
+    markMessageId(messageId);
   }
 
-  if (!remoteJid) {
-    return _processAIRequest(prompt, context, mediaItems, null, tools, toolsHandler);
+  if (!userLockKey) {
+    return _processAIRequest(prompt, context, mediaItems, tools, toolsHandler);
   }
 
-  // ── Cola de procesamiento secuencial por remoteJid ───────────────────────
-  // Si llegan varios mensajes legítimos (diferente messageId) del mismo usuario
-  // mientras la IA procesa, se encolan para procesarse en orden.
-  const prevTask = userQueues.get(remoteJid) || Promise.resolve();
+  // ── Cola de procesamiento secuencial por userLockKey ───────────────────────
+  const prevTask = userQueues.get(userLockKey) || Promise.resolve();
   
   const nextTask = (async () => {
     await prevTask.catch(() => {});
-    return _processAIRequest(prompt, context, mediaItems, remoteJid, tools, toolsHandler);
+    return _processAIRequest(prompt, context, mediaItems, tools, toolsHandler);
   })();
 
-  userQueues.set(remoteJid, nextTask);
+  userQueues.set(userLockKey, nextTask);
 
   // Limpieza para no saturar memoria
   nextTask.finally(() => {
-    if (userQueues.get(remoteJid) === nextTask) {
-      userQueues.delete(remoteJid);
+    if (userQueues.get(userLockKey) === nextTask) {
+      userQueues.delete(userLockKey);
     }
   });
 
@@ -827,43 +813,14 @@ export async function generateAIResponse(prompt, context = [], mediaItems = [], 
 /**
  * Función interna que ejecuta la petición real.
  */
-async function _processAIRequest(prompt, context, mediaItems, remoteJid, tools, toolsHandler) {
+async function _processAIRequest(prompt, context, mediaItems, tools, toolsHandler) {
   try {
-    // ── Historial FIFO en memoria ───────────────────────────────────────────
-    // Se obtiene el historial JUSTO ANTES de procesar este mensaje (así incluye los anteriores)
-    const history     = remoteJid ? (userMemories.get(remoteJid) || []) : [];
-    const fullContext = [...history, ...context];
+    // La memoria en RAM ha sido completamente eliminada en FASE 2.
+    // 'context' ya contiene todo el historial recuperado de PostgreSQL.
+    const fullContext = [...context];
 
     // ── Llamada a la cascada ────────────────────────────────────────────────
     const aiText = await callAiProviderCascade(prompt, fullContext, mediaItems, tools, toolsHandler);
-
-    // ── Guardar en memoria (sin Base64 para ahorrar tokens) ─────────────────
-    if (remoteJid && aiText) {
-      const lastUserMsg    = context.find(m => m.role === 'user') || { content: '' };
-      let savedUserContent = '';
-
-      if (typeof lastUserMsg.content === 'string') {
-        savedUserContent = lastUserMsg.content;
-      } else if (Array.isArray(lastUserMsg.content)) {
-        const textPart   = lastUserMsg.content.find(p => p.type === 'text');
-        savedUserContent = textPart ? textPart.text : 'Analiza esta multimedia';
-      }
-
-      if (mediaItems && mediaItems.length > 0) {
-        savedUserContent = `[El usuario envió ${mediaItems.length} archivo(s) multimedia con el texto: "${savedUserContent}"]`;
-      }
-
-      const userHistory = userMemories.get(remoteJid) || [];
-      // Usar 'model' (no 'assistant') para compatibilidad nativa con Gemini
-      userHistory.push({ role: 'user',  content: savedUserContent });
-      userHistory.push({ role: 'model', content: aiText });
-
-      while (userHistory.length > MAX_HISTORIAL) {
-        userHistory.shift();
-      }
-
-      userMemories.set(remoteJid, userHistory);
-    }
 
     return aiText;
   } catch (error) {
