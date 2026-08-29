@@ -1916,7 +1916,6 @@ Estado Comercial Actual: ${JSON.stringify(currentCommercialState)}
     // ────────────────────────────────────────────────────────────────────────────────────────────
 
     const visibleText = aiResponse
-      .replace(saveMemRegex, '')
       .replace(orderRegex, '')
       .replace(handoffRegex, '')
       .replace(verifyPaymentRegex, '')
