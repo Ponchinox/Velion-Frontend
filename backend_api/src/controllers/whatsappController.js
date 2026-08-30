@@ -12,7 +12,7 @@ import {
 import { getCompactCatalogIndex } from '../services/catalogCacheService.js';
 
 /**
- * Helper para generar los headers de autenticaciÃ³n del Evolution API
+ * Helper para generar los headers de autenticación del Evolution API
  */
 function getEvoHeaders(customApiKey) {
   const key = (customApiKey || process.env.EVOLUTION_API_KEY || '').trim();
@@ -25,19 +25,19 @@ function getEvoHeaders(customApiKey) {
 }
 
 /**
- * â”€â”€â”€ GATEWAY: EnvÃ­a un mensaje de texto a travÃ©s del proveedor correcto â”€â”€â”€
+ * ─── GATEWAY: Envía un mensaje de texto a través del proveedor correcto ───
  * Abstrae la diferencia entre Evolution API y Meta Cloud API para que el
- * motor de IA y flujos no necesiten saber de dÃ³nde vino el mensaje.
+ * motor de IA y flujos no necesiten saber de dónde vino el mensaje.
  *
  * @param {object} opts
  * @param {string} [opts.provider]          - 'EVOLUTION' | 'META'
- * @param {string} opts.to                - NÃºmero destino (solo dÃ­gitos)
+ * @param {string} opts.to                - Número destino (solo dígitos)
  * @param {string} opts.text              - Texto a enviar
  * @param {string} [opts.instance]        - Nombre de instancia (Evolution)
  * @param {string} [opts.apiKey]          - API key de Evolution
  * @param {string} [opts.metaPhoneNumberId] - Phone Number ID de Meta
  * @param {string} [opts.metaAccessToken]   - Token de acceso de Meta
- * @param {string} [opts.tenantId]        - ID del tenant para resoluciÃ³n
+ * @param {string} [opts.tenantId]        - ID del tenant para resolución
  * @returns {Promise<string|null>}        - messageId (wamid o key.id) o null
  */
 async function sendWhatsAppReply(opts) {
@@ -50,7 +50,7 @@ async function sendWhatsAppReply(opts) {
 }
 
 /**
- * â”€â”€â”€ GATEWAY: EnvÃ­a una imagen o video a travÃ©s del proveedor correcto â”€â”€â”€
+ * ─── GATEWAY: Envía una imagen o video a través del proveedor correcto ───
  */
 async function sendWhatsAppMedia(opts) {
   try {
@@ -87,7 +87,7 @@ function containsKeywords(errorObj, keywords) {
 
 /**
  * Sanea el nombre de usuario recibido de WhatsApp (pushName)
- * Si estÃ¡ vacÃ­o, es solo sÃ­mbolos o caracteres invisibles, asigna "Cliente Desconocido"
+ * Si está vacío, es solo símbolos o caracteres invisibles, asigna "Cliente Desconocido"
  */
 function sanitizePushName(pushName) {
   if (!pushName || typeof pushName !== 'string') return 'Cliente Desconocido';
@@ -98,7 +98,7 @@ function sanitizePushName(pushName) {
     .replace(/[\uE000-\uF8FF]/g, '')
     .trim();
 
-  // Verificar que contenga al menos una letra o nÃºmero legible
+  // Verificar que contenga al menos una letra o número legible
   const hasAlphanumeric = /[a-zA-Z0-9\u00C0-\u024F]/.test(cleaned);
 
   if (!cleaned || !hasAlphanumeric) {
@@ -109,9 +109,9 @@ function sanitizePushName(pushName) {
 }
 
 /**
- * Helper para obtener el telÃ©fono de destino de notificaciones y alertas
+ * Helper para obtener el teléfono de destino de notificaciones y alertas
  * 1. Prioriza notificationPhone del tenant
- * 2. Si estÃ¡ vacÃ­o/null, realiza fallback al telÃ©fono del Perfil de Administrador
+ * 2. Si está vacío/null, realiza fallback al teléfono del Perfil de Administrador
  */
 async function resolveNotificationPhone(tenantId, tenantDetails) {
   let phone = tenantDetails?.notificationPhone?.replace(/[^0-9]/g, '') || '';
@@ -128,16 +128,16 @@ async function resolveNotificationPhone(tenantId, tenantDetails) {
         phone = adminUser.phone.replace(/[^0-9]/g, '');
       }
     } catch (err) {
-      console.error('âŒ [Alert Helper] Error buscando telÃ©fono de administrador fallback:', err.message);
+      console.error('âŒ [Alert Helper] Error buscando teléfono de administrador fallback:', err.message);
     }
   }
   return phone || null;
 }
 
 /**
- * Sanea un nÃºmero de telÃ©fono antes de enviarlo a Evolution API.
- * - Elimina todos los caracteres no numÃ©ricos (incl. el +)
- * - Si el nÃºmero resultante tiene exactamente 9 dÃ­gitos (formato PerÃº), agrega el prefijo 51
+ * Sanea un número de teléfono antes de enviarlo a Evolution API.
+ * - Elimina todos los caracteres no numéricos (incl. el +)
+ * - Si el número resultante tiene exactamente 9 dígitos (formato Perú), agrega el prefijo 51
  */
 function sanitizePhoneForEvo(rawPhone) {
   if (!rawPhone) return null;
@@ -148,26 +148,26 @@ function sanitizePhoneForEvo(rawPhone) {
   return digits;
 }
 
-// Escudo Anti-Spam: Cache en memoria para rate limiting por nÃºmero
+// Escudo Anti-Spam: Cache en memoria para rate limiting por número
 const spamCache = new Map();
 
-// Buffer de Mensajes (Debounce / Message Collector): Acumula mensajes enviados en rÃ¡faga antes de llamar a la IA (4000ms)
+// Buffer de Mensajes (Debounce / Message Collector): Acumula mensajes enviados en ráfaga antes de llamar a la IA (4000ms)
 const messageBuffers = new Map();
 
-// Escudo de FacturaciÃ³n: Cache en memoria para rate limiting de llamadas de IA (OpenAI)
+// Escudo de Facturación: Cache en memoria para rate limiting de llamadas de IA (OpenAI)
 const iaRateLimitCache = new Map();
 
 // Lock de Procesamiento de IA: Evita respuestas paralelas para el mismo usuario.
-// Si la IA estÃ¡ generando una respuesta y llegan mensajes nuevos, estos se encolan en
+// Si la IA está generando una respuesta y llegan mensajes nuevos, estos se encolan en
 // pendingQueues y se procesan de forma ordenada al finalizar la respuesta actual.
 const processingLocks = new Set();
 const pendingQueues = new Map();
 
 // Cache en memoria para rastrear mensajes enviados por el sistema (IA / Flujos / Panel)
-// Permite distinguir intervenciÃ³n humana manual desde el celular/WhatsApp Web
+// Permite distinguir intervención humana manual desde el celular/WhatsApp Web
 const sentByAiCache = new Set();
 
-// Cache para deduplicaciÃ³n de webhooks entrantes (5 minutos de TTL)
+// Cache para deduplicación de webhooks entrantes (5 minutos de TTL)
 const processedWebhooksCache = new Map();
 
 export function markMessageAsSentByAi(textOrId) {
@@ -181,12 +181,12 @@ export function markMessageAsSentByAi(textOrId) {
 }
 
 /**
- * Obtiene el estado real de la conexiÃ³n de la instancia desde Evolution API
+ * Obtiene el estado real de la conexión de la instancia desde Evolution API
  */
 export async function getStatus(req, res) {
   const tenantId = req.user.tenantId;
   if (!tenantId) {
-    return res.status(400).json({ error: 'El usuario no estÃ¡ asociado a ningÃºn Tenant.' });
+    return res.status(400).json({ error: 'El usuario no está asociado a ningún Tenant.' });
   }
 
   const instanceName = getEvoInstanceName(tenantId);
@@ -243,12 +243,12 @@ export async function getStatus(req, res) {
 }
 
 /**
- * Solicita o genera el cÃ³digo QR interactivo de conexiÃ³n desde la Evolution API
+ * Solicita o genera el código QR interactivo de conexión desde la Evolution API
  */
 export async function connectDevice(req, res) {
   const tenantId = req.user.tenantId;
   if (!tenantId) {
-    return res.status(400).json({ error: 'El usuario no estÃ¡ asociado a ningÃºn Tenant.' });
+    return res.status(400).json({ error: 'El usuario no está asociado a ningún Tenant.' });
   }
 
   const instanceName = getEvoInstanceName(tenantId);
@@ -260,7 +260,7 @@ export async function connectDevice(req, res) {
   const apiKeyParam = cleanApiKey ? `?apikey=${cleanApiKey}` : '';
   const webhookUrl = rawWebhookUrl.includes('?') ? `${rawWebhookUrl}&apikey=${cleanApiKey}` : `${rawWebhookUrl}${apiKeyParam}`;
 
-  // 1. Asegurar la creaciÃ³n previa de la instancia
+  // 1. Asegurar la creación previa de la instancia
   try {
     await axios.post(
       `${evoUrl}/instance/create`,
@@ -288,7 +288,7 @@ export async function connectDevice(req, res) {
                            containsKeywords(errorMsg, ['already in use', 'already exists', 'in use', 'exists', 'registrada']);
 
     if (isAlreadyInUse) {
-      console.log(`âš ï¸ Instancia "${instanceName}" ya registrada o en uso en Evolution API. Continuando flujo.`);
+      console.log(`⚠️ Instancia "${instanceName}" ya registrada o en uso en Evolution API. Continuando flujo.`);
     } else {
       console.error('âŒ Error al crear la instancia en Evolution API:', createError.response?.data || createError.message);
     }
@@ -296,7 +296,7 @@ export async function connectDevice(req, res) {
 
   // 1.5. Configurar el webhook en Evolution API para que los mensajes lleguen al backend
   try {
-    console.log(`ðŸ”Œ [Evolution API] Sobrescribiendo webhook en: ${webhookUrl} para la instancia: ${instanceName}`);
+    console.log(`🔌 [Evolution API] Sobrescribiendo webhook en: ${webhookUrl} para la instancia: ${instanceName}`);
     await axios.post(
       `${evoUrl}/webhook/set/${instanceName}`,
       {
@@ -316,64 +316,64 @@ export async function connectDevice(req, res) {
       },
       getEvoHeaders()
     );
-    console.log('âœ… [Evolution API] Webhook sobrescrito y actualizado con Ã©xito.');
+    console.log('✅ [Evolution API] Webhook sobrescrito y actualizado con éxito.');
   } catch (webhookError) {
-    console.error('ðŸš¨ Detalle Webhook:', JSON.stringify(webhookError?.response?.data || webhookError.message, null, 2));
+    console.error('🚨 Detalle Webhook:', JSON.stringify(webhookError?.response?.data || webhookError.message, null, 2));
   }
 
-  // 2. Solicitar el cÃ³digo QR de conexiÃ³n de forma segura
+  // 2. Solicitar el código QR de conexión de forma segura
   try {
     const connectRes = await axios.get(
       `${evoUrl}/instance/connect/${instanceName}`,
       getEvoHeaders()
     );
 
-    // Registrar logs de respuesta de Evolution API para diagnÃ³stico
-    console.log('ðŸ“¡ [Evolution API] Respuesta de /connect:', JSON.stringify(connectRes.data, null, 2));
+    // Registrar logs de respuesta de Evolution API para diagnóstico
+    console.log('📡 [Evolution API] Respuesta de /connect:', JSON.stringify(connectRes.data, null, 2));
 
     const qrBase64 = connectRes.data?.base64 || connectRes.data?.qrcode?.base64 || null;
 
     if (!qrBase64) {
-      // Intentar ver si en la respuesta del servidor venÃ­a que ya estaba conectada
+      // Intentar ver si en la respuesta del servidor venía que ya estaba conectada
       const lowerDataStr = JSON.stringify(connectRes.data || {}).toLowerCase();
       const isAlreadyConnected = lowerDataStr.includes('already connected') || 
                                  lowerDataStr.includes('connected') || 
                                  lowerDataStr.includes('open');
 
       if (isAlreadyConnected) {
-        console.log(`âœ… [Evolution API] Instancia "${instanceName}" ya se encuentra conectada (detectado en 200 OK).`);
+        console.log(`✅ [Evolution API] Instancia "${instanceName}" ya se encuentra conectada (detectado en 200 OK).`);
         return res.status(200).json({
           success: true,
           status: 'CONNECTED',
-          message: 'La instancia ya estÃ¡ conectada y activa.',
+          message: 'La instancia ya está conectada y activa.',
         });
       }
 
-      console.error('âŒ [Evolution API] No se encontrÃ³ cÃ³digo QR base64 en la respuesta:', JSON.stringify(connectRes.data, null, 2));
-      return res.status(400).json({ error: 'No se pudo generar el cÃ³digo QR de vinculaciÃ³n.' });
+      console.error('âŒ [Evolution API] No se encontró código QR base64 en la respuesta:', JSON.stringify(connectRes.data, null, 2));
+      return res.status(400).json({ error: 'No se pudo generar el código QR de vinculación.' });
     }
 
     return res.json({
       success: true,
       qr: qrBase64,
       qrCode: qrBase64, // Alias de seguridad
-      message: 'CÃ³digo QR obtenido con Ã©xito.',
+      message: 'Código QR obtenido con éxito.',
     });
   } catch (error) {
-    console.error('ðŸ’¥ ERROR FATAL AL OBTENER QR:', JSON.stringify(error?.response?.data || error.message, null, 2));
+    console.error('💥 ERROR FATAL AL OBTENER QR:', JSON.stringify(error?.response?.data || error.message, null, 2));
 
-    // Si la instancia ya estÃ¡ conectada (open), Evolution API devuelve un error 400.
+    // Si la instancia ya está conectada (open), Evolution API devuelve un error 400.
     // Devolvemos exitosamente status: 'CONNECTED' para que el frontend cierre el modal de QR
     const errorMsg = error.response?.data || error.message || '';
     const isAlreadyConnected = error.response?.status === 400 && 
                                containsKeywords(errorMsg, ['already connected', 'connected', 'open', 'conectada']);
 
     if (isAlreadyConnected) {
-      console.log(`âœ… [Evolution API] Instancia "${instanceName}" ya se encuentra conectada (detectado en catch 400).`);
+      console.log(`✅ [Evolution API] Instancia "${instanceName}" ya se encuentra conectada (detectado en catch 400).`);
       return res.status(200).json({
         success: true,
         status: 'CONNECTED',
-        message: 'La instancia ya estÃ¡ conectada y activa.',
+        message: 'La instancia ya está conectada y activa.',
       });
     }
 
@@ -382,12 +382,12 @@ export async function connectDevice(req, res) {
 }
 
 /**
- * Cierra la sesiÃ³n activa y destruye por completo la conexiÃ³n en Evolution API (evitando instancias zombis)
+ * Cierra la sesión activa y destruye por completo la conexión en Evolution API (evitando instancias zombis)
  */
 export async function disconnectDevice(req, res) {
   const tenantId = req.user.tenantId;
   if (!tenantId) {
-    return res.status(400).json({ error: 'El usuario no estÃ¡ asociado a ningÃºn Tenant.' });
+    return res.status(400).json({ error: 'El usuario no está asociado a ningún Tenant.' });
   }
 
   let instanceName = req.body.instanceName;
@@ -397,33 +397,33 @@ export async function disconnectDevice(req, res) {
   const evoUrl = process.env.EVOLUTION_API_URL || 'http://localhost:8080';
 
   try {
-    // 1. Logout previo en Evolution API (cerrar sesiÃ³n WhatsApp Baileys)
+    // 1. Logout previo en Evolution API (cerrar sesión WhatsApp Baileys)
     try {
       await axios.delete(
         `${evoUrl}/instance/logout/${instanceName}`,
         getEvoHeaders()
       );
-      console.log(`ðŸ”Œ [Evolution API] Logout exitoso para la instancia "${instanceName}".`);
+      console.log(`🔌 [Evolution API] Logout exitoso para la instancia "${instanceName}".`);
     } catch (logoutErr) {
       console.log(`â„¹ï¸ [Evolution API] Aviso en logout (${logoutErr.response?.status}):`, logoutErr.response?.data || logoutErr.message);
     }
 
-    // 2. DestrucciÃ³n total de la instancia en Evolution API
+    // 2. Destrucción total de la instancia en Evolution API
     try {
       await axios.delete(
         `${evoUrl}/instance/delete/${instanceName}`,
         getEvoHeaders()
       );
-      console.log(`ðŸ—‘ï¸ [Evolution API] Instancia "${instanceName}" eliminada/destruida por completo.`);
+      console.log(`🗑️ [Evolution API] Instancia "${instanceName}" eliminada/destruida por completo.`);
     } catch (deleteErr) {
       if (deleteErr.response && (deleteErr.response.status === 404 || deleteErr.response.status === 400)) {
-        console.log(`â„¹ï¸ [Evolution API] Instancia "${instanceName}" ya no existÃ­a en el servidor (404/400).`);
+        console.log(`â„¹ï¸ [Evolution API] Instancia "${instanceName}" ya no existía en el servidor (404/400).`);
       } else {
-        console.warn(`âš ï¸ Advertencia al eliminar la instancia "${instanceName}" en Evolution API:`, deleteErr.response?.data || deleteErr.message);
+        console.warn(`⚠️ Advertencia al eliminar la instancia "${instanceName}" en Evolution API:`, deleteErr.response?.data || deleteErr.message);
       }
     }
 
-    // La limpieza de conexiones se gestiona a travÃ©s de RegisteredWhatsAppNumber.
+    // La limpieza de conexiones se gestiona a través de RegisteredWhatsAppNumber.
     if (req.body.instanceName) {
       await prisma.registeredWhatsAppNumber.deleteMany({
         where: { tenantId, instanceName: req.body.instanceName }
@@ -436,7 +436,7 @@ export async function disconnectDevice(req, res) {
 
     return res.json({
       status: 'DISCONNECTED',
-      message: 'Instancia eliminada y sesiÃ³n de WhatsApp destruida con Ã©xito.',
+      message: 'Instancia eliminada y sesión de WhatsApp destruida con éxito.',
     });
   } catch (error) {
     console.error("DETALLE DEL ERROR DE EVOLUTION:", error.response?.data || error.message);
@@ -445,15 +445,15 @@ export async function disconnectDevice(req, res) {
 }
 
 /**
- * EnvÃ­a un mensaje de texto a travÃ©s del proveedor activo del Tenant
- * â”€â”€â”€ GATEWAY: consulta la BD para determinar si usar Evolution API o Meta Cloud API â”€â”€â”€
+ * Envía un mensaje de texto a través del proveedor activo del Tenant
+ * ─── GATEWAY: consulta la BD para determinar si usar Evolution API o Meta Cloud API ───
  */
 export async function sendMessage(req, res) {
   const { number, message, instanceName } = req.body;
   const tenantId = req.user?.tenantId;
 
   if (!number || !message) {
-    return res.status(400).json({ error: 'Faltan parÃ¡metros requeridos (number, message).' });
+    return res.status(400).json({ error: 'Faltan parámetros requeridos (number, message).' });
   }
 
   try {
@@ -473,7 +473,7 @@ export async function sendMessage(req, res) {
     if (msgId) markMessageAsSentByAi(msgId);
     markMessageAsSentByAi(message);
 
-    console.log(`ðŸ“¤ [sendMessage API | ${ctx.provider}] Mensaje enviado a +${cleanNumber}`);
+    console.log(`📤 [sendMessage API | ${ctx.provider}] Mensaje enviado a +${cleanNumber}`);
 
     return res.json({ success: true, provider: ctx.provider });
   } catch (error) {
@@ -486,8 +486,8 @@ export async function sendMessage(req, res) {
 }
 
 /**
- * â”€â”€â”€ GATEWAY: VerificaciÃ³n de Webhook de Meta Cloud API (GET) â”€â”€â”€
- * Meta envÃ­a un GET request para verificar que el endpoint es vÃ¡lido.
+ * ─── GATEWAY: Verificación de Webhook de Meta Cloud API (GET) ───
+ * Meta envía un GET request para verificar que el endpoint es válido.
  * Debemos responder con el hub.challenge si el token coincide.
  */
 export function receiveMetaVerification(req, res) {
@@ -497,16 +497,16 @@ export function receiveMetaVerification(req, res) {
   const challenge = req.query['hub.challenge'];
 
   if (mode === 'subscribe' && token === VERIFY_TOKEN) {
-    console.log('âœ… [Meta Gateway] Webhook verificado correctamente por Meta.');
+    console.log('✅ [Meta Gateway] Webhook verificado correctamente por Meta.');
     return res.status(200).send(challenge);
   }
-  console.error('âŒ [Meta Gateway] VerificaciÃ³n de webhook fallida. Token incorrecto.');
+  console.error('âŒ [Meta Gateway] Verificación de webhook fallida. Token incorrecto.');
   return res.status(403).json({ error: 'Forbidden' });
 }
 
 /**
- * â”€â”€â”€ GATEWAY: Normaliza el payload de Meta Cloud API â”€â”€â”€
- * Extrae remitente, texto, audios, imÃ¡genes, statuses y phoneNumberId.
+ * ─── GATEWAY: Normaliza el payload de Meta Cloud API ───
+ * Extrae remitente, texto, audios, imágenes, statuses y phoneNumberId.
  *
  * @param {object} body - req.body del webhook de Meta
  * @returns {object|null}
@@ -517,7 +517,7 @@ function normalizeMeta(body) {
     const change = entry?.changes?.[0];
     const value = change?.value;
 
-    // 1. DetecciÃ³n de Eventos de Estado (sent, delivered, read, failed)
+    // 1. Detección de Eventos de Estado (sent, delivered, read, failed)
     if (value?.statuses?.[0]) {
       return {
         isStatusEvent: true,
@@ -526,12 +526,12 @@ function normalizeMeta(body) {
       };
     }
 
-    // 2. DetecciÃ³n de Mensajes Entrantes
+    // 2. Detección de Mensajes Entrantes
     const msg = value?.messages?.[0];
     if (!msg) return null;
 
     const metaPhoneNumberId = value?.metadata?.phone_number_id || '';
-    const sender = msg.from || ''; // nÃºmero del remitente, solo dÃ­gitos
+    const sender = msg.from || ''; // número del remitente, solo dígitos
     const msgId = msg.id || null;
 
     let text = '';
@@ -545,11 +545,11 @@ function normalizeMeta(body) {
       text = msg.image?.caption || 'Analiza esta imagen';
       imageId = msg.image?.id || null;
     } else if (msg.type === 'audio') {
-      text = '[Nota de voz de WhatsApp] Escucha este audio y respÃ³ndeme o ejecuta mi solicitud.';
+      text = '[Nota de voz de WhatsApp] Escucha este audio y respóndeme o ejecuta mi solicitud.';
       audioId = msg.audio?.id || null;
       audioMime = msg.audio?.mime_type || 'audio/ogg';
     } else if (msg.type === 'video') {
-      text = '[Video de WhatsApp] El usuario enviÃ³ un video. Dile amablemente que no puedes procesar videos, que por favor lo explique por texto o envÃ­e una foto.';
+      text = '[Video de WhatsApp] El usuario envió un video. Dile amablemente que no puedes procesar videos, que por favor lo explique por texto o envíe una foto.';
     } else {
       // Tipo no soportado (sticker, location, etc.)
       return null;
@@ -565,7 +565,7 @@ function normalizeMeta(body) {
 }
 
 /**
- * â”€â”€â”€ GATEWAY: Normaliza el payload de Evolution API â”€â”€â”€
+ * ─── GATEWAY: Normaliza el payload de Evolution API ───
  * Extrae remitente, texto e instancia del formato Evolution.
  *
  * @param {object} body - req.body del webhook de Evolution
@@ -580,7 +580,7 @@ async function normalizeEvolution(body, requestApiKey) {
   let remoteJid = key.remoteJid || '';
   let sender = remoteJid.split('@')[0] || '';
 
-  // Si viene como @lid, intentamos extraer el nÃºmero telefÃ³nico real
+  // Si viene como @lid, intentamos extraer el número telefónico real
   if (remoteJid.includes('@lid')) {
     if (key.remoteJidAlt) {
       remoteJid = key.remoteJidAlt;
@@ -632,10 +632,10 @@ async function normalizeEvolution(body, requestApiKey) {
     } catch (e) {
       console.error('âŒ [Evolution] Error descargando audio:', e.message);
     }
-    text = '[Nota de voz de WhatsApp] Escucha este audio y respÃ³ndeme o ejecuta mi solicitud.';
+    text = '[Nota de voz de WhatsApp] Escucha este audio y respóndeme o ejecuta mi solicitud.';
   } else if (data.message?.videoMessage) {
     text = (data.message.videoMessage.caption || '[Video de WhatsApp]') +
-      '\n[Sistema: El usuario enviÃ³ un video. Dile amablemente que no puedes procesar videos, que por favor lo explique por texto o envÃ­e una foto.]';
+      '\n[Sistema: El usuario envió un video. Dile amablemente que no puedes procesar videos, que por favor lo explique por texto o envíe una foto.]';
   }
 
   const pushName = !fromMe ? (data?.pushName || data?.key?.pushName || null) : null;
@@ -645,21 +645,21 @@ async function normalizeEvolution(body, requestApiKey) {
 
 /**
  * Procesa los webhooks entrantes de WhatsApp.
- * â”€â”€â”€ GATEWAY PATTERN â”€â”€â”€
- * Detecta automÃ¡ticamente si el origen es Meta Cloud API o Evolution API,
- * normaliza el payload a un objeto estÃ¡ndar y lo procesa de forma unificada.
+ * ─── GATEWAY PATTERN ───
+ * Detecta automáticamente si el origen es Meta Cloud API o Evolution API,
+ * normaliza el payload a un objeto estándar y lo procesa de forma unificada.
  */
 export async function receiveWebhook(req, res) {
-  // â”€â”€ 1. DETECCIÃ“N DE PROVEEDOR â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // ── 1. DETECCIÓN DE PROVEEDOR ──────────────────────────────────────────────
   const isMeta = req.body?.object === 'whatsapp_business_account';
   const provider = isMeta ? 'META' : 'EVOLUTION';
 
-  // â”€â”€ 2. VALIDACIÃ“N DE SEGURIDAD (Solo Evolution requiere API Key) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // ── 2. VALIDACIÓN DE SEGURIDAD (Solo Evolution requiere API Key) ────────────
   if (!isMeta) {
     const requestApiKey = (req.query?.apikey || req.headers?.apikey || req.body?.apikey || req.headers?.['x-api-key'] || '').trim();
     const systemApiKey = (process.env.EVOLUTION_API_KEY || '').trim();
     if (systemApiKey && requestApiKey && requestApiKey !== systemApiKey) {
-      console.error('ðŸš¨ [Seguridad Webhook] PeticiÃ³n bloqueada por ApiKey explÃ­citamente invÃ¡lida.');
+      console.error('🚨 [Seguridad Webhook] Petición bloqueada por ApiKey explícitamente inválida.');
       return res.status(401).json({ error: 'Unauthorized' });
     }
   }
@@ -667,14 +667,14 @@ export async function receiveWebhook(req, res) {
   // Meta requiere respuesta inmediata 200 antes de procesar
   res.sendStatus(200);
 
-  // â”€â”€ 3. NORMALIZACIÃ“N DEL PAYLOAD â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // ── 3. NORMALIZACIÓN DEL PAYLOAD ───────────────────────────────────────────
   let normalized = null;
   let instance = null;
   let requestApiKey = '';
   let metaNumberRecord = null;
 
   if (isMeta) {
-    // â”€â”€ 3A. META CLOUD API â”€â”€
+    // ── 3A. META CLOUD API ──
     normalized = normalizeMeta(req.body);
     if (!normalized) {
       return;
@@ -683,7 +683,7 @@ export async function receiveWebhook(req, res) {
     // Procesar evento de Status (sent, delivered, read, failed)
     if (normalized.isStatusEvent && normalized.statusObj) {
       const { id: statusId, status: statusName, recipient_id: recipientPhone } = normalized.statusObj;
-      console.log(`ðŸ“Š [Meta Status] Mensaje ${statusId} -> ${statusName} (Para: +${recipientPhone})`);
+      console.log(`📊 [Meta Status] Mensaje ${statusId} -> ${statusName} (Para: +${recipientPhone})`);
 
       try {
         const existingMsg = await prisma.message.findFirst({
@@ -714,9 +714,9 @@ export async function receiveWebhook(req, res) {
       return;
     }
 
-    console.log(`[ðŸ“± META] ðŸ“¥ De: +${normalized.sender} | Texto: "${normalized.text}" (msgId: ${normalized.msgId || 'N/A'})`);
+    console.log(`[📱 META] 📥 De: +${normalized.sender} | Texto: "${normalized.text}" (msgId: ${normalized.msgId || 'N/A'})`);
   } else {
-    // â”€â”€ 3B. EVOLUTION API â”€â”€
+    // ── 3B. EVOLUTION API ──
     requestApiKey = (req.query?.apikey || req.headers?.apikey || req.body?.apikey || req.headers?.['x-api-key'] || '').trim();
     instance = req.body?.instance;
     
@@ -741,7 +741,7 @@ export async function receiveWebhook(req, res) {
           }
         }
 
-        console.log(`ðŸ”Œ [Webhook] Connection Update: Instancia ${instance} -> State: ${state}, Phone: ${phone || 'N/A'}`);
+        console.log(`🔌 [Webhook] Connection Update: Instancia ${instance} -> State: ${state}, Phone: ${phone || 'N/A'}`);
 
         if (phone) {
           // Encontrar tenant por nombre de instancia
@@ -754,7 +754,7 @@ export async function receiveWebhook(req, res) {
           }
         }
       } else {
-        console.log(`ðŸ”Œ [Webhook] Connection Update: Instancia ${instance} -> State: ${state}`);
+        console.log(`🔌 [Webhook] Connection Update: Instancia ${instance} -> State: ${state}`);
       }
       return; // Fin del procesamiento para este evento
     }
@@ -766,7 +766,7 @@ export async function receiveWebhook(req, res) {
     normalized = evoNorm;
     instance = evoNorm.instance;
     const tenantTag = instance ? instance.replace('bot_prod_', '').substring(0, 8) : 'sistema';
-    console.log(`[ðŸ¢ TENANT: ${tenantTag}] ðŸ“¥ EVENTO: ${req.body?.event || 'N/A'} | De: +${normalized.sender} | Proveedor: EVOLUTION`);
+    console.log(`[🏢 TENANT: ${tenantTag}] 📥 EVENTO: ${req.body?.event || 'N/A'} | De: +${normalized.sender} | Proveedor: EVOLUTION`);
   }
 
   const { sender: clientNumber, text: userMessageText, pushName } = normalized;
@@ -779,7 +779,7 @@ export async function receiveWebhook(req, res) {
   if (!isMeta) {
     const isGroup = remoteJid.endsWith('@g.us') || !!normalized.rawData?.key?.participant || normalized.rawData?.isGroup === true;
     if (isGroup) {
-      console.log(`ðŸ›¡ï¸ [Bloqueo Estricto de Grupos] Mensaje de grupo ignorado para ${remoteJid}.`);
+      console.log(`🛡️ [Bloqueo Estricto de Grupos] Mensaje de grupo ignorado para ${remoteJid}.`);
       return;
     }
   }
@@ -787,10 +787,10 @@ export async function receiveWebhook(req, res) {
   // Ignorar mensajes sin texto
   if (!userMessageText?.trim()) return;
 
-  // â”€â”€ 3.5 DEDUPLICACIÃ“N DE WEBHOOKS (REINTENTOS DE RED) â”€â”€
+  // ── 3.5 DEDUPLICACIÓN DE WEBHOOKS (REINTENTOS DE RED) ──
   if (normalized.msgId) {
     if (processedWebhooksCache.has(normalized.msgId)) {
-      console.log(`â™»ï¸ [Deduplication] Webhook duplicado ignorado (msgId: ${normalized.msgId}) de +${cleanJid}`);
+      console.log(`♻️ [Deduplication] Webhook duplicado ignorado (msgId: ${normalized.msgId}) de +${cleanJid}`);
       return;
     }
     processedWebhooksCache.set(normalized.msgId, Date.now());
@@ -805,7 +805,7 @@ export async function receiveWebhook(req, res) {
   }
 
   try {
-    // â”€â”€ 4. RESOLUCIÃ“N DE TENANT â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // ── 4. RESOLUCIÓN DE TENANT ────────────────────────────────────────────────
     let tenant = null;
 
     if (isMeta) {
@@ -817,27 +817,27 @@ export async function receiveWebhook(req, res) {
         include: { tenant: true }
       });
       if (!metaNumberRecord) {
-        console.warn(`âš ï¸ [Meta Gateway] No se encontrÃ³ Tenant para metaPhoneNumberId: ${normalized.metaPhoneNumberId}`);
+        console.warn(`⚠️ [Meta Gateway] No se encontró Tenant para metaPhoneNumberId: ${normalized.metaPhoneNumberId}`);
         return;
       }
       tenant = metaNumberRecord.tenant;
-      console.log(`âœ… [Meta Gateway] Tenant resuelto: ${tenant.name} (${tenant.id})`);
+      console.log(`✅ [Meta Gateway] Tenant resuelto: ${tenant.name} (${tenant.id})`);
 
-      // â”€â”€ DESCARGA DE AUDIO / NOTA DE VOZ EN META CLOUD API â”€â”€
+      // ── DESCARGA DE AUDIO / NOTA DE VOZ EN META CLOUD API ──
       const metaToken = metaNumberRecord.metaAccessToken || process.env.META_ACCESS_TOKEN;
       if (normalized.audioId && metaToken) {
-        console.log(`ðŸŽ™ï¸ [Meta Audio] Descargando nota de voz (${normalized.audioId}) vÃ­a Graph API...`);
+        console.log(`🎙️ [Meta Audio] Descargando nota de voz (${normalized.audioId}) vía Graph API...`);
         const audioRes = await downloadMetaMedia(normalized.audioId, metaToken);
         if (audioRes?.dataUrl) {
           mediaItems.push(audioRes.dataUrl);
-          console.log(`âœ… [Meta Audio] Nota de voz descargada y enviada a IA (${audioRes.mimeType})`);
+          console.log(`✅ [Meta Audio] Nota de voz descargada y enviada a IA (${audioRes.mimeType})`);
         }
       } else if (normalized.imageId && metaToken) {
-        console.log(`ðŸ“¸ [Meta Imagen] Descargando imagen (${normalized.imageId}) vÃ­a Graph API...`);
+        console.log(`📸 [Meta Imagen] Descargando imagen (${normalized.imageId}) vía Graph API...`);
         const imgRes = await downloadMetaMedia(normalized.imageId, metaToken);
         if (imgRes?.dataUrl) {
           mediaItems.push(imgRes.dataUrl);
-          console.log(`âœ… [Meta Imagen] Imagen descargada y enviada a IA`);
+          console.log(`✅ [Meta Imagen] Imagen descargada y enviada a IA`);
         }
       }
     } else {
@@ -845,7 +845,7 @@ export async function receiveWebhook(req, res) {
       const tenants = await prisma.tenant.findMany({ select: { id: true } });
       const matchingTenant = tenants.find(t => t.id.toLowerCase().startsWith(tenantPrefix.toLowerCase()));
       if (!matchingTenant) {
-        console.warn(`âš ï¸ [Webhook Evolution] No se encontrÃ³ Tenant para prefijo: ${tenantPrefix}`);
+        console.warn(`⚠️ [Webhook Evolution] No se encontró Tenant para prefijo: ${tenantPrefix}`);
         return;
       }
       tenant = await prisma.tenant.findUnique({ where: { id: matchingTenant.id } });
@@ -857,12 +857,12 @@ export async function receiveWebhook(req, res) {
     if (!isMeta) {
       const isGroup = remoteJid.endsWith('@g.us') || !!normalized.rawData?.key?.participant || normalized.rawData?.isGroup === true;
       if (isGroup && !tenant.respondInGroups) {
-        console.log(`ðŸ›¡ï¸ [Seguridad] Mensaje de grupo ignorado (respondInGroups: false)`);
+        console.log(`🛡️ [Seguridad] Mensaje de grupo ignorado (respondInGroups: false)`);
         return;
       }
     }
 
-    // â”€â”€ 5. PERSISTENCIA EN CRM (Contact, Chat) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // ── 5. PERSISTENCIA EN CRM (Contact, Chat) ────────────────────────────────
     const cleanPhone = String(clientNumber).includes('@lid') ? String(clientNumber).trim() : (String(clientNumber).replace(/\D/g, '') || clientNumber);
     const isOutgoing = fromMe;
 
@@ -894,7 +894,7 @@ export async function receiveWebhook(req, res) {
     }
 
 
-    // â”€â”€ 6. MENSAJES SALIENTES (Solo Evolution, Meta no nos envÃ­a los nuestros) â”€
+    // ── 6. MENSAJES SALIENTES (Solo Evolution, Meta no nos envía los nuestros) ─
     if (fromMe) {
       const key = normalized.key || {};
       const msgId = key.id;
@@ -904,19 +904,20 @@ export async function receiveWebhook(req, res) {
       if (isAiMessage) {
         if (msgId) sentByAiCache.delete(msgId);
         if (userMessageText) sentByAiCache.delete(userMessageText.trim());
-        console.log(`ðŸ¤– [Webhook Evolution] Mensaje saliente de IA verificado para +${clientNumber}.`);
+        console.log(`🤖 [Webhook Evolution] Mensaje saliente de IA verificado para +${clientNumber}.`);
       } else {
-        console.log(`ðŸ‘¤ [Auto-Pausa Human Handoff] IntervenciÃ³n humana detectada en +${clientNumber}. Pausando bot...`);
+        console.log(`👤 [Auto-Pausa Human Handoff] Intervención humana detectada en +${clientNumber}. Pausando bot...`);
         if (contact && !contact.botPaused) await prisma.contact.update({ where: { id: contact.id }, data: { botPaused: true } });
         if (chat && !chat.botPaused) await prisma.chat.update({ where: { id: chat.id }, data: { botPaused: true } });
         await prisma.customer.updateMany({
           where: { tenantId: tenant.id, phone: { contains: cleanPhone } },
           data: { isBotPaused: true }
         });
-        if (messageBuffers.has(cleanJid)) {
-          const buf = messageBuffers.get(cleanJid);
+        const bufferKey = `${tenant.id}:${cleanJid}`;
+        if (messageBuffers.has(bufferKey)) {
+          const buf = messageBuffers.get(bufferKey);
           if (buf?.timer) clearTimeout(buf.timer);
-          messageBuffers.delete(cleanJid);
+          messageBuffers.delete(bufferKey);
         }
         if (req.io) {
           req.io.emit('contact_updated', { contactId: contact?.id, phone: cleanPhone, botPaused: true, reason: 'HUMAN_INTERVENTION' });
@@ -933,11 +934,11 @@ export async function receiveWebhook(req, res) {
         });
       }
       if (req.io) req.io.emit('new_whatsapp_message', { chatId: chat.id, remoteJid, text: userMessageText, type: 'outgoing', timestamp: new Date() });
-      console.log(`ðŸ“¤ [Webhook Evolution] Mensaje saliente propio de +${clientNumber} guardado.`);
+      console.log(`📤 [Webhook Evolution] Mensaje saliente propio de +${clientNumber} guardado.`);
       return;
     }
 
-    // â”€â”€ 7. REGISTRO DEL MENSAJE ENTRANTE EN CRM â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // ── 7. REGISTRO DEL MENSAJE ENTRANTE EN CRM ────────────────────────────────
     await prisma.message.create({
       data: {
         content: userMessageText,
@@ -958,7 +959,7 @@ export async function receiveWebhook(req, res) {
       timestamp: new Date()
     });
 
-    // â”€â”€ 8. AUTO-PAUSA Y AUTO-REACTIVACIÃ“N 24H â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // ── 8. AUTO-PAUSA Y AUTO-REACTIVACIÓN 24H ─────────────────────────────────
     const existingCustomerForCheck = await prisma.customer.findUnique({
       where: { tenantId_phone: { tenantId: tenant.id, phone: remoteJid } }
     });
@@ -966,7 +967,7 @@ export async function receiveWebhook(req, res) {
     let isPaused = Boolean(contact?.botPaused || existingCustomerForCheck?.isBotPaused);
 
     if (isPaused) {
-      // Buscar la interacciÃ³n previa en el chat (saltando el mensaje entrante reciÃ©n guardado)
+      // Buscar la interacción previa en el chat (saltando el mensaje entrante recién guardado)
       const previousMessage = await prisma.message.findFirst({
         where: { chatId: chat.id },
         orderBy: { createdAt: 'desc' },
@@ -983,7 +984,7 @@ export async function receiveWebhook(req, res) {
 
       if (timeDiffMs >= TWENTY_FOUR_HOURS_MS) {
         const hoursPassed = Math.round(timeDiffMs / (1000 * 60 * 60));
-        console.log(`ðŸ”„ [Auto-ReactivaciÃ³n 24h] Han pasado ${hoursPassed}h desde la Ãºltima interacciÃ³n con +${clientNumber}. Reactivando Bot automÃ¡ticamente...`);
+        console.log(`🔄 [Auto-Reactivación 24h] Han pasado ${hoursPassed}h desde la última interacción con +${clientNumber}. Reactivando Bot automáticamente...`);
 
         // 1. Despausar en PostgreSQL (Contact, Chat, Customer)
         if (contact) {
@@ -993,7 +994,6 @@ export async function receiveWebhook(req, res) {
           });
           contact.botPaused = false;
         }
-
         if (chat) {
           await prisma.chat.update({
             where: { id: chat.id },
@@ -1029,15 +1029,16 @@ export async function receiveWebhook(req, res) {
     }
 
     if (isPaused) {
-      console.log(`ðŸ‘¥ [Auto-Pausa Human Handoff] Bot pausado para +${clientNumber} (< 24h desde la Ãºltima interacciÃ³n).`);
+      console.log(`👥 [Auto-Pausa Human Handoff] Bot pausado para +${clientNumber} (< 24h desde la última interacción).`);
       return; // Respuesta 200 ya enviada al inicio del webhook.
     }
 
     // 3. Sistema de Message Buffer / Debounce + Lock de Procesamiento
     const provider = isMeta ? 'META' : 'EVOLUTION';
+    const bufferKey = `${tenant.id}:${cleanJid}`;
     
-    if (processingLocks.has(cleanJid)) {
-      const existingQueue = pendingQueues.get(cleanJid);
+    if (processingLocks.has(bufferKey)) {
+      const existingQueue = pendingQueues.get(bufferKey);
       if (existingQueue) {
         existingQueue.text += '\n' + userMessageText;
         if (mediaItems.length > 0) {
@@ -1047,9 +1048,10 @@ export async function receiveWebhook(req, res) {
             existingQueue.mediaItems.push(...mediaItems.slice(0, remaining));
           }
         }
-        console.log(`ðŸ”’ [Processing Lock] IA ocupada para +${clientNumber}. Mensaje encolado en pendingQueue (acumulado).`);
+        console.log(`🔒 [Processing Lock] IA ocupada para +${clientNumber} (tenant: ${tenant.id}). Mensaje encolado en pendingQueue (acumulado).`);
       } else {
-        pendingQueues.set(cleanJid, {
+        pendingQueues.set(bufferKey, {
+          bufferKey,
           remoteJid: cleanJid, clientNumber, text: userMessageText, mediaItems: mediaItems.slice(0, 3),
           tenant, contact, chat, instance, requestApiKey, provider,
           metaPhoneNumberId: metaNumberRecord?.metaPhoneNumberId,
@@ -1057,48 +1059,49 @@ export async function receiveWebhook(req, res) {
           data: normalized.rawData, reqIo: req.io,
           msgId: normalized.msgId
         });
-        console.log(`ðŸ”’ [Processing Lock] IA ocupada para +${clientNumber}. Mensaje guardado en pendingQueue.`);
+        console.log(`🔒 [Processing Lock] IA ocupada para +${clientNumber} (tenant: ${tenant.id}). Mensaje guardado en pendingQueue.`);
       }
-      // Respuesta 200 ya enviada al inicio del webhook â€” no re-enviar.
-      return; // âœ”ï¸ IMPORTANTE: salir ya, el mensaje fue manejado por la cola.
+      // Respuesta 200 ya enviada al inicio del webhook — no re-enviar.
+      return; // ✔️ IMPORTANTE: salir ya, el mensaje fue manejado por la cola.
     }
 
-    // â”€â”€ CHECK TEMPRANO: IA deshabilitada a nivel de Tenant â”€â”€
-    // Si el dueÃ±o de la tienda desactivÃ³ la IA desde Ajustes, cortocircuitar
+    // ── CHECK TEMPRANO: IA deshabilitada a nivel de Tenant ──
+    // Si el dueño de la tienda desactivó la IA desde Ajustes, cortocircuitar
     // ANTES de entrar al buffer para no consumir cuota ni ciclos de CPU.
     const aiEnabledCheck = await prisma.tenant.findUnique({
       where: { id: tenant.id },
       select: { aiEnabled: true }
     });
     if (aiEnabledCheck?.aiEnabled === false) {
-      console.log(`ðŸ¤– [IA Desactivada] aiEnabled=false para tenant '${tenant.name}'. Se ignora el mensaje de +${clientNumber}.`);
+      console.log(`🤖 [IA Desactivada] aiEnabled=false para tenant '${tenant.name}'. Se ignora el mensaje de +${clientNumber}.`);
       return;
     }
 
-    // CASO B: No hay lock activo â†’ aplicar debounce normal de 4000ms.
-    const existingBuffer = messageBuffers.get(cleanJid);
+    // CASO B: No hay lock activo → aplicar debounce normal de 4000ms (aislado por tenant).
+    const existingBuffer = messageBuffers.get(bufferKey);
     if (existingBuffer) {
       clearTimeout(existingBuffer.timer);
       existingBuffer.text += '\n' + userMessageText;
       if (mediaItems.length > 0) {
         if (!existingBuffer.mediaItems) existingBuffer.mediaItems = [];
-        // Tope duro: mÃ¡ximo 3 imÃ¡genes por rÃ¡faga para evitar consumo excesivo de tokens
+        // Tope duro: máximo 3 imágenes por ráfaga para evitar consumo excesivo de tokens
         const remaining = 3 - existingBuffer.mediaItems.length;
         if (remaining > 0) {
           existingBuffer.mediaItems.push(...mediaItems.slice(0, remaining));
           if (mediaItems.length > remaining) {
-            console.warn(`âš ï¸ [Image Cap] ${mediaItems.length - remaining} imagen(es) descartada(s) por lÃ­mite de seguridad (mÃ¡x 3 por rÃ¡faga).`);
+            console.warn(`⚠️ [Image Cap] ${mediaItems.length - remaining} imagen(es) descartada(s) por límite de seguridad (máx 3 por ráfaga).`);
           }
         } else {
-          console.warn(`âš ï¸ [Image Cap] ${mediaItems.length} imagen(es) descartada(s): ya hay 3 imÃ¡genes en el buffer actual.`);
+          console.warn(`⚠️ [Image Cap] ${mediaItems.length} imagen(es) descartada(s): ya hay 3 imágenes en el buffer actual.`);
         }
       }
       existingBuffer.timer = setTimeout(() => {
-        processBufferedMessage(cleanJid);
+        processBufferedMessage(bufferKey);
       }, 4000);
-      console.log(`â³ [Message Buffer] Mensaje en rÃ¡faga concatenado para +${clientNumber}. Temporizador reiniciado a 4000ms.`);
+      console.log(`⏳ [Message Buffer] Mensaje en ráfaga concatenado para +${clientNumber} (tenant: ${tenant.id}). Temporizador reiniciado a 4000ms.`);
     } else {
       const bufferEntry = {
+        bufferKey,
         remoteJid: cleanJid,
         clientNumber,
         text: userMessageText,
@@ -1108,10 +1111,8 @@ export async function receiveWebhook(req, res) {
         chat,
         instance,
         requestApiKey,
-        // â”€â”€â”€ Contexto de proveedor: esencial para que Meta Cloud API
+        // ─── Contexto de proveedor: esencial para que Meta Cloud API
         // funcione correctamente cuando el buffer dispara tras 4s.
-        // Sin estos campos, las respuestas de IA a clientes Meta se
-        // enrutaban errÃ³neamente a Evolution en vez de graph.facebook.com.
         provider,
         metaPhoneNumberId: metaNumberRecord?.metaPhoneNumberId || null,
         metaAccessToken: metaNumberRecord?.metaAccessToken || null,
@@ -1119,30 +1120,31 @@ export async function receiveWebhook(req, res) {
         reqIo: req.io,
         msgId: normalized.msgId || null,
         timer: setTimeout(() => {
-          processBufferedMessage(cleanJid);
+          processBufferedMessage(bufferKey);
         }, 4000)
       };
-      messageBuffers.set(cleanJid, bufferEntry);
-      console.log(`â³ [Message Buffer] Primer mensaje de +${clientNumber}. Esperando 4000ms de silencio absoluto antes de invocar la IA...`);
+      messageBuffers.set(bufferKey, bufferEntry);
+      console.log(`⏳ [Message Buffer] Primer mensaje de +${clientNumber}. Esperando 4000ms de silencio absoluto antes de invocar la IA...`);
     }
-    // Respuesta ya enviada al inicio (res.sendStatus(200) en lÃ­nea ~649).
+    // Respuesta ya enviada al inicio (res.sendStatus(200) en línea ~649).
   } catch (error) {
-    console.error('âŒ Error en webhook de recepciÃ³n:', error.message);
+    console.error('❌ Error en webhook de recepción:', error.message);
     // La respuesta 200 ya fue enviada al inicio del webhook, no podemos re-enviar.
   }
 }
 
 /**
- * Procesa la rÃ¡faga acumulada de mensajes en el buffer tras caducar el temporizador de 4000ms
+ * Procesa la ráfaga acumulada de mensajes en el buffer tras caducar el temporizador de 4000ms
  */
-async function processBufferedMessage(cleanJid) {
-  const buffer = messageBuffers.get(cleanJid);
+async function processBufferedMessage(bufferKey) {
+  const buffer = messageBuffers.get(bufferKey);
   if (!buffer) return;
 
   // Sacar y eliminar del buffer inmediatamente para liberar slot
-  messageBuffers.delete(cleanJid);
+  messageBuffers.delete(bufferKey);
 
   const {
+    remoteJid: cleanJid,
     text: userMessageText,
     mediaItems,
     tenant,
@@ -1162,15 +1164,13 @@ async function processBufferedMessage(cleanJid) {
   // Contexto de Gateway para enviar respuestas por el proveedor correcto
   const gatewayCtx = { provider, instance, apiKey: requestApiKey, metaPhoneNumberId, metaAccessToken };
 
-  console.log(`ðŸ¤– [Message Buffer] Procesando rÃ¡faga acumulada para +${clientNumber} (${userMessageText.length} caracteres): "${userMessageText.replace(/\n/g, ' ')}"`);
+  console.log(`🤖 [Message Buffer] Procesando ráfaga acumulada para +${clientNumber} (${userMessageText.length} caracteres): "${userMessageText.replace(/\n/g, ' ')}"`);
   const finalCleanNumber = String(clientNumber || '').includes('@lid') ? String(clientNumber || '').trim() : String(clientNumber || '').replace(/[^0-9]/g, '');
 
-  // â”€â”€â”€ LOCK DE PROCESAMIENTO (ANTI-PARALELISMO) â”€â”€â”€
-  // Marcar al usuario como "ocupado" para que los mensajes entrantes durante
-  // la generaciÃ³n de la IA se encolen en pendingQueues en lugar de disparar
-  // una segunda llamada paralela a la IA.
-  processingLocks.add(cleanJid);
-  console.log(`ðŸ”’ [Processing Lock] Lock activado para +${clientNumber}. La IA estÃ¡ generando respuesta.`);
+  // ─── LOCK DE PROCESAMIENTO (ANTI-PARALELISMO) ───
+  // Marcar al usuario como "ocupado" por tenant para evitar colisiones
+  processingLocks.add(bufferKey);
+  console.log(`🔒 [Processing Lock] Lock activado para +${clientNumber} (tenant: ${tenant.id}). La IA está generando respuesta.`);
 
   try {
     const evoUrl = process.env.EVOLUTION_API_URL || 'http://localhost:8080';
@@ -1193,13 +1193,13 @@ async function processBufferedMessage(cleanJid) {
           name: contact?.name || 'Cliente'
         }
       });
-      console.log(`ðŸ‘¤ [CRM] Nuevo cliente registrado en base de datos: +${clientNumber}`);
+      console.log(`👤 [CRM] Nuevo cliente registrado en base de datos: +${clientNumber}`);
     }
 
-    // â”€â”€â”€ DESACTIVACIÃ“N DE BANEO PERMANENTE -> CONVERSIÃ“N A HUMAN HANDOFF (PAUSA) â”€â”€â”€
+    // ─── DESACTIVACIÓN DE BANEO PERMANENTE -> CONVERSIÓN A HUMAN HANDOFF (PAUSA) ───
     // Si un cliente figuraba con baneo antiguo (isBanned: true), convertimos ese estado a Pausa de Bot (Human Handoff)
     if (customer.isBanned) {
-      console.log(`ðŸ‘¥ [Human Handoff] Desactivando baneo permanente antiguo para +${clientNumber} y pausando bot para atenciÃ³n humana...`);
+      console.log(`👥 [Human Handoff] Desactivando baneo permanente antiguo para +${clientNumber} y pausando bot para atención humana...`);
       await prisma.customer.update({
         where: { id: customer.id },
         data: { isBanned: false, isBotPaused: true }
@@ -1214,27 +1214,27 @@ async function processBufferedMessage(cleanJid) {
       customer.isBotPaused = true;
     }
 
-    // --- SEGURO DE ATENCIÃ“N HUMANA (HUMAN HANDOFF) ---
+    // --- SEGURO DE ATENCIÓN HUMANA (HUMAN HANDOFF) ---
     if (customer.isBotPaused) {
-      console.log(`ðŸ‘¥ [Human Handoff] Bot pausado para +${clientNumber}. ConversaciÃ³n atendida por asesor.`);
+      console.log(`👥 [Human Handoff] Bot pausado para +${clientNumber}. Conversación atendida por asesor.`);
       return;
     }
 
     // --- MOTOR DE FLUJOS AUTOMATIZADOS (FASE 2) ---
     const isFlowHandled = await flowService.executeFlowContext(customer, userMessageText, instance);
     if (isFlowHandled) {
-      console.log(`ðŸ¤– [Flow Engine] Flujo visual tomÃ³ control de la conversaciÃ³n para +${clientNumber}`);
+      console.log(`🤖 [Flow Engine] Flujo visual tomó control de la conversación para +${clientNumber}`);
       return;
     }
 
-    // --- ESCUDO DE FACTURACIÃ“N: Rate Limiter de IA (MÃ¡ximo 10 mensajes de IA por minuto por usuario) ---
+    // --- ESCUDO DE FACTURACIÓN: Rate Limiter de IA (Máximo 10 mensajes de IA por minuto por usuario) ---
     if (cleanJid) {
       const now = Date.now();
       const limitData = iaRateLimitCache.get(cleanJid);
       if (limitData) {
         if (now < limitData.resetTime) {
           if (limitData.count >= 10) {
-            console.warn(`ðŸ›¡ï¸ [IA Rate Limiter] LÃ­mite de IA excedido para +${clientNumber}. Bloqueando respuesta para proteger tokens de OpenAI.`);
+            console.warn(`🛡️ [IA Rate Limiter] Límite de IA excedido para +${clientNumber}. Bloqueando respuesta para proteger tokens de OpenAI.`);
             return;
           }
           limitData.count += 1;
@@ -1246,9 +1246,9 @@ async function processBufferedMessage(cleanJid) {
       }
     }
 
-    // La consulta estÃ¡tica de productos ha sido eliminada y reemplazada por Function Calling (BÃºsqueda DinÃ¡mica)
+    // La consulta estática de productos ha sido eliminada y reemplazada por Function Calling (Búsqueda Dinámica)
 
-    // Obtener informaciÃ³n institucional del Tenant para inyecciÃ³n de contexto
+    // Obtener información institucional del Tenant para inyección de contexto
     const tenantDetails = await prisma.tenant.findUnique({
       where: { id: tenant.id }
     });
@@ -1294,7 +1294,7 @@ async function processBufferedMessage(cleanJid) {
       }
     }
 
-    // â”€â”€â”€ CONTROL DE CUOTA / LÃMITE DE MENSAJES MENSUALES DEL TENANT â”€â”€â”€
+    // ─── CONTROL DE CUOTA / LÍMITE DE MENSAJES MENSUALES DEL TENANT ───
     const startOfMonth = new Date();
     startOfMonth.setDate(1);
     startOfMonth.setHours(0, 0, 0, 0);
@@ -1309,20 +1309,20 @@ async function processBufferedMessage(cleanJid) {
     const tenantMsgLimit = tenantDetails?.msgLimit || 1000;
 
     if (monthMsgCount >= tenantMsgLimit) {
-      console.warn(`ðŸ›‘ [LÃ­mite Excedido] Tenant '${tenant.name}' alcanzÃ³ su lÃ­mite mensual (${monthMsgCount}/${tenantMsgLimit}). Se detiene la IA y se notifica al usuario.`);
+      console.warn(`🛑 [Límite Excedido] Tenant '${tenant.name}' alcanzó su límite mensual (${monthMsgCount}/${tenantMsgLimit}). Se detiene la IA y se notifica al usuario.`);
       try {
         await sendWhatsAppReply({
           ...gatewayCtx,
           to: finalCleanNumber,
-          text: 'Has alcanzado el lÃ­mite mensual de mensajes de tu plan.'
+          text: 'Has alcanzado el límite mensual de mensajes de tu plan.'
         });
       } catch (limitSendErr) {
-        console.error(`âŒ Error enviando mensaje de lÃ­mite excedido:`, limitSendErr.message);
+        console.error(`❌ Error enviando mensaje de límite excedido:`, limitSendErr.message);
       }
       return;
     }
 
-    // (LÃ³gica de inventarioTexto estÃ¡tica eliminada - Ahora se maneja vÃ­a Tools/Function Calling dinÃ¡micamente)
+    // (Lógica de inventarioTexto estática eliminada - Ahora se maneja vía Tools/Function Calling dinámicamente)
 
 
     // =============================================================================
@@ -1375,48 +1375,48 @@ La tienda es la UNICA fuente de verdad para productos, precios, stock, promocion
 `.trim()
 
 
-    // â”€â”€â”€ CAPA 2: CAPA DEL SISTEMA (Reglas Duras de Plataforma e Inventario PostgreSQL) â”€â”€â”€
+    // ─── CAPA 2: CAPA DEL SISTEMA (Reglas Duras de Plataforma e Inventario PostgreSQL) ───
     let infoInstitucional = '';
     if (tenantDetails) {
       const nombreComercial = tenantDetails.companyName || tenantDetails.name || 'nuestra empresa';
       const sector = tenantDetails.businessSector || 'sector comercial';
       
-      infoInstitucional = `\n\nINFORMACIÃ“N DE LA EMPRESA: ${nombreComercial}, sector: ${sector}.`;
+      infoInstitucional = `\n\nINFORMACIÓN DE LA EMPRESA: ${nombreComercial}, sector: ${sector}.`;
 
-      let detallesExt = '\nINFORMACIÃ“N COMPLEMENTARIA DE LA EMPRESA:';
-      if (tenantDetails.address) detallesExt += `\n- DirecciÃ³n fÃ­sica: ${tenantDetails.address}.`;
-      if (tenantDetails.phone) detallesExt += `\n- TelÃ©fono de contacto: ${tenantDetails.phone}.`;
+      let detallesExt = '\nINFORMACIÓN COMPLEMENTARIA DE LA EMPRESA:';
+      if (tenantDetails.address) detallesExt += `\n- Dirección física: ${tenantDetails.address}.`;
+      if (tenantDetails.phone) detallesExt += `\n- Teléfono de contacto: ${tenantDetails.phone}.`;
       if (tenantDetails.email) detallesExt += `\n- Email de soporte: ${tenantDetails.email}.`;
-      if (tenantDetails.businessHours) detallesExt += `\n- Horarios de atenciÃ³n: ${tenantDetails.businessHours}.`;
+      if (tenantDetails.businessHours) detallesExt += `\n- Horarios de atención: ${tenantDetails.businessHours}.`;
       if (tenantDetails.bankAccounts && tenantDetails.bankAccounts.trim()) {
-        detallesExt += `\n- Cuentas bancarias y mÃ©todos de pago autorizados (CONFIDENCIAL - REGLA ESTRICTA: Solo existen estos mÃ©todos autorizados; proporcionar ÃšNICAMENTE si el cliente confirmÃ³ explÃ­citamente su decisiÃ³n de pagar o comprar): ${tenantDetails.bankAccounts.trim()}.`;
+        detallesExt += `\n- Cuentas bancarias y métodos de pago autorizados (CONFIDENCIAL - REGLA ESTRICTA: Solo existen estos métodos autorizados; proporcionar ÚNICAMENTE si el cliente confirmó explícitamente su decisión de pagar o comprar): ${tenantDetails.bankAccounts.trim()}.`;
       } else {
-        detallesExt += `\n- Cuentas bancarias y mÃ©todos de pago autorizados: Actualmente no hay cuentas registradas en el sistema. Si el cliente solicita pagar, indÃ­cale amablemente que un asesor le brindarÃ¡ los datos de pago en breve.`;
+        detallesExt += `\n- Cuentas bancarias y métodos de pago autorizados: Actualmente no hay cuentas registradas en el sistema. Si el cliente solicita pagar, indícale amablemente que un asesor le brindará los datos de pago en breve.`;
       }
-      if (tenantDetails.termsAndPolicies) detallesExt += `\n- PolÃ­ticas de envÃ­o, devoluciÃ³n y tÃ©rminos: ${tenantDetails.termsAndPolicies}.`;
+      if (tenantDetails.termsAndPolicies) detallesExt += `\n- Políticas de envío, devolución y términos: ${tenantDetails.termsAndPolicies}.`;
       
       infoInstitucional += detallesExt;
     }
 
     const isMultiMessageActive = tenantDetails?.multiMessageMode !== false; 
 
-    // â”€â”€â”€ DICCIONARIO DE COMANDOS DEL SISTEMA â”€â”€â”€
-    let systemCommands = `\nðŸ› ï¸ DICCIONARIO DE COMANDOS DEL SISTEMA:
-Puedes usar las siguientes etiquetas dentro de tu respuesta para ejecutar acciones. EscrÃ­belas exactamente como se indica:\n`;
+    // ─── DICCIONARIO DE COMANDOS DEL SISTEMA ───
+    let systemCommands = `\n🛠️ DICCIONARIO DE COMANDOS DEL SISTEMA:
+Puedes usar las siguientes etiquetas dentro de tu respuesta para ejecutar acciones. Escríbelas exactamente como se indica:\n`;
 
     if (isMultiMessageActive) {
-      systemCommands += `\nðŸ§  DINÃMICA DE CONVERSACIÃ“N HUMANA (MODO MULTI-MENSAJE NATIVO):
+      systemCommands += `\n🧠 DINÁMICA DE CONVERSACIÓN HUMANA (MODO MULTI-MENSAJE NATIVO):
 - Tienes la capacidad de dividir tu respuesta en "globos de chat" usando la etiqueta [SPLIT].
-- Si tu respuesta es CORTA y SIMPLE (ej. "SÃ­, claro", "Entendido", un saludo), NO USES [SPLIT]. EnvÃ­a un solo bloque.
-- Si envÃ­as una imagen o video, usa [SPLIT] para separar el texto introductorio, luego la etiqueta de la imagen, y finalmente un texto de seguimiento.
-- LÃMITE ESTRICTO DE RÃFAGA: ESTÃ ESTRICTAMENTE PROHIBIDO usar mÃ¡s de 2 o 3 [SPLIT] por respuesta. NUNCA envÃ­es rÃ¡fagas largas de 4 o mÃ¡s mensajes. SÃ© conciso y agrupa tus ideas.\n\n`;
+- Si tu respuesta es CORTA y SIMPLE (ej. "Sí, claro", "Entendido", un saludo), NO USES [SPLIT]. Envía un solo bloque.
+- Si envías una imagen o video, usa [SPLIT] para separar el texto introductorio, luego la etiqueta de la imagen, y finalmente un texto de seguimiento.
+- LÍMITE ESTRICTO DE RÁFAGA: ESTÁ ESTRICTAMENTE PROHIBIDO usar más de 2 o 3 [SPLIT] por respuesta. NUNCA envíes ráfagas largas de 4 o más mensajes. Sé conciso y agrupa tus ideas.\n\n`;
     }
     
-    systemCommands += `ðŸ“¦ MULTIMEDIA (Ãšsalas en cualquier parte de tu texto, se enviarÃ¡n en ese orden exacto):
+    systemCommands += `📦 MULTIMEDIA (Úsalas en cualquier parte de tu texto, se enviarán en ese orden exacto):
 - [SHOW_GALLERY: ID]: Úsala para mostrar FOTOS y/o VIDEOS del producto. Si el cliente pide un video, usa este mismo comando. El ID DEBE OBTENERSE EXACTAMENTE de <catalog_index>. NO inventes IDs. Ej: "Aquí tienes el video y fotos del modelo [SHOW_GALLERY: 550e8400-e29b-41d4-a716-446655440000]"
-- [MEDIA: https://url.jpg]: EnvÃ­a una imagen o video externo por URL directa (NO uses Markdown).
+- [MEDIA: https://url.jpg]: Envía una imagen o video externo por URL directa (NO uses Markdown).
 
-âš™ï¸ ACCIONES INVISIBLES (Estas DEBEN ir siempre al FINAL ABSOLUTO de tu respuesta):
+⚙️ ACCIONES INVISIBLES (Estas DEBEN ir siempre al FINAL ABSOLUTO de tu respuesta):
 `;
 
 
@@ -1522,8 +1522,11 @@ ${catalogIndexCsv}
         console.log(`🔍 [FC] get_product_details — ID: "${productId}"`);
 
         try {
-          const product = await prisma.product.findUnique({
-            where: { id: productId },
+          const product = await prisma.product.findFirst({
+            where: { 
+              id: productId,
+              user: { tenantId: tenant.id }
+            },
             select: {
               name: true, description: true, price: true, category: true,
               tags: true, isAvailable: true, promotionalPrice: true,
@@ -1533,7 +1536,7 @@ ${catalogIndexCsv}
           });
 
           if (!product) {
-            return { result: 'Producto no encontrado o ID incorrecto.' };
+            return { result: 'Producto no encontrado o no disponible en esta tienda.' };
           }
 
           if (product.user?.tenantId && product.user.tenantId !== tenant.id) {
@@ -1579,6 +1582,20 @@ Atributos/Tags: ${Array.isArray(product.tags) ? product.tags.join(', ') : ''}
         const fcStart = Date.now();
         console.log(`📝 [FC] update_commercial_state invocado. Actualizando BD...`);
         try {
+          // ─── VALIDACIÓN BACKEND DE MÉTODOS DE PAGO AUTORIZADOS ───
+          if (args.paymentMethod) {
+            const rawMethod = String(args.paymentMethod).toLowerCase().trim();
+            const isYape = rawMethod.includes('yape');
+            const isContraentrega = rawMethod.includes('contraentrega') || rawMethod.includes('contra entrega') || rawMethod.includes('contra-entrega') || rawMethod.includes('efectivo');
+            
+            if (!isYape && !isContraentrega) {
+              console.warn(`⚠️ [FC] update_commercial_state rechazó método de pago no autorizado: "${args.paymentMethod}"`);
+              return { 
+                error: 'Método de pago no autorizado. La tienda ÚNICAMENTE acepta Yape o Contraentrega (con adelanto de flete por Shalom si es provincia). No aceptes ni guardes otros medios de pago.' 
+              };
+            }
+          }
+
           let updatedState = { ...currentCommercialState, ...args };
           
           // --- FASE 4: MÁQUINA DE ESTADOS COMERCIALES Y PEDIDOS ESTRUCTURADOS ---
@@ -1588,9 +1605,15 @@ Atributos/Tags: ${Array.isArray(product.tags) ? product.tags.join(', ') : ''}
              
              let productPrice = parseFloat(updatedState.budget) || 0;
              if (updatedState.productId) {
-               const p = await prisma.product.findUnique({ where: { id: updatedState.productId }, select: { price: true, promotionalPrice: true } });
+               const p = await prisma.product.findFirst({
+                 where: { 
+                   id: updatedState.productId,
+                   user: { tenantId: tenant.id }
+                 },
+                 select: { price: true, promotionalPrice: true }
+               });
                if (p) {
-                 productPrice = p.promotionalPrice || p.price;
+                 productPrice = (p.promotionalPrice && p.promotionalPrice > 0) ? p.promotionalPrice : p.price;
                }
              }
              
@@ -1719,11 +1742,11 @@ Atributos/Tags: ${Array.isArray(product.tags) ? product.tags.join(', ') : ''}
     console.log(`🧠 [Cerebro IA] Generando respuesta para +${clientNumber} [${provider}]...`);
 
     if (tenantDetails?.aiEnabled === false) {
-      console.log(`ðŸ¤– [Control Manual] Inteligencia Artificial deshabilitada globalmente para el tenant. Ignorando mensaje de +${clientNumber}.`);
+      console.log(`🤖 [Control Manual] Inteligencia Artificial deshabilitada globalmente para el tenant. Ignorando mensaje de +${clientNumber}.`);
       return;
     }
 
-    // Indicador "escribiendo..." â€” solo soportado en Evolution
+    // Indicador "escribiendo..." — solo soportado en Evolution
     if (provider === 'EVOLUTION') {
       try {
         axios.post(
@@ -1751,7 +1774,7 @@ Atributos/Tags: ${Array.isArray(product.tags) ? product.tags.join(', ') : ''}
     }
 
     if (aiResponse.trim() === '[BAN_USER]') {
-      console.log(`ðŸ‘¥ [Auto-Pausa Human Handoff] Lenguaje inapropiado detectado para +${clientNumber}. Pausando bot...`);
+      console.log(`👥 [Auto-Pausa Human Handoff] Lenguaje inapropiado detectado para +${clientNumber}. Pausando bot...`);
       if (contact && !contact.botPaused) {
         await prisma.contact.update({ where: { id: contact.id }, data: { botPaused: true } });
       }
@@ -1771,7 +1794,7 @@ Atributos/Tags: ${Array.isArray(product.tags) ? product.tags.join(', ') : ''}
 
 
 
-    // â”€â”€â”€ DETECCIÃ“N DE TRANSFERENCIA A HUMANO [HUMAN_HANDOFF: ...] (AUTO-PAUSA) â”€â”€â”€
+    // ─── DETECCIÓN DE TRANSFERENCIA A HUMANO [HUMAN_HANDOFF: ...] (AUTO-PAUSA) ───
     const handoffRegex = /\[HUMAN_HANDOFF:\s*([\s\S]+?)\]/g;
     const handoffMatches = [];
     let handoffMatch;
@@ -1799,21 +1822,21 @@ Atributos/Tags: ${Array.isArray(product.tags) ? product.tags.join(', ') : ''}
         reqIo.emit('bot_status_changed', { contactId: contact?.id, phone: clientNumber, botPaused: true });
       }
 
-      // 3. Enviar notificaciÃ³n por WhatsApp si el tenant tiene configurado telÃ©fono de alertas
+      // 3. Enviar notificación por WhatsApp si el tenant tiene configurado teléfono de alertas
       const rawDestPhone = await resolveNotificationPhone(tenant.id, tenantDetails);
       const destPhone = sanitizePhoneForEvo(rawDestPhone);
       if (destPhone) {
         for (const reason of handoffMatches) {
-          const alertMessage = `ðŸš¨ *ALERTA DE ASESOR REQUERIDO* ðŸš¨\nEl cliente *+${clientNumber}* requiere atenciÃ³n de un asesor humano.\n*Motivo / Ãšltimo mensaje:* ${reason}\nÂ¡Por favor, entra al chat y atiÃ©ndelo!`;
+          const alertMessage = `🚨 *ALERTA DE ASESOR REQUERIDO* 🚨\nEl cliente *+${clientNumber}* requiere atención de un asesor humano.\n*Motivo / Último mensaje:* ${reason}\n¡Por favor, entra al chat y atiéndelo!`;
           try {
             await gatewaySendText({
               tenantId: tenant.id,
               to: destPhone,
               text: alertMessage
             });
-            console.log(`ðŸš¨ [Human Handoff] Alerta enviada a +${destPhone} vÃ­a Gateway para cliente +${clientNumber}`);
+            console.log(`🚨 [Human Handoff] Alerta enviada a +${destPhone} vía Gateway para cliente +${clientNumber}`);
           } catch (errHandoff) {
-            console.error(`âŒ [Human Handoff] Error al enviar alerta a +${destPhone}:`, errHandoff.message);
+            console.error(`❌ [Human Handoff] Error al enviar alerta a +${destPhone}:`, errHandoff.message);
           }
         }
       }
@@ -1870,7 +1893,7 @@ Atributos/Tags: ${Array.isArray(product.tags) ? product.tags.join(', ') : ''}
             dispatchSequence.push({ type: 'text', content: textBuffer.trim() });
             textBuffer = "";
           } else if (!isMultiMsg) {
-            textBuffer += " "; // Si el modo humano estÃ¡ desactivado, el SPLIT se ignora como espacio
+            textBuffer += " "; // Si el modo humano está desactivado, el SPLIT se ignora como espacio
           }
         } else if (upperToken.startsWith('[SHOW_GALLERY:')) {
           if (textBuffer.trim()) {
@@ -1878,8 +1901,11 @@ Atributos/Tags: ${Array.isArray(product.tags) ? product.tags.join(', ') : ''}
             textBuffer = "";
           }
           const productId = token.substring(14, token.length - 1).trim();
-          const matchedProd = await prisma.product.findUnique({
-            where: { id: productId },
+          const matchedProd = await prisma.product.findFirst({
+            where: { 
+              id: productId,
+              user: { tenantId: tenant.id }
+            },
             select: { imageUrl: true, images: true, videoUrl: true }
           });
           
@@ -1919,7 +1945,7 @@ Atributos/Tags: ${Array.isArray(product.tags) ? product.tags.join(', ') : ''}
         dispatchSequence.push({ type: 'text', content: textBuffer.trim() });
       }
 
-      // â”€â”€â”€ LÃMITE DURO DE FRAGMENTOS (MÃXIMO 3 TEXTOS) â”€â”€â”€
+      // ─── LÍMITE DURO DE FRAGMENTOS (MÁXIMO 3 TEXTOS) ───
       let textCount = 0;
       let limitedSequence = [];
       for (const item of dispatchSequence) {
@@ -1939,26 +1965,26 @@ Atributos/Tags: ${Array.isArray(product.tags) ? product.tags.join(', ') : ''}
       }
       dispatchSequence = limitedSequence;
 
-      console.log(`ðŸ“¤ [${provider} Gateway] Secuencia de despacho: ${dispatchSequence.length} elementos para ${finalCleanNumber}.`);
+      console.log(`📤 [${provider} Gateway] Secuencia de despacho: ${dispatchSequence.length} elementos para ${finalCleanNumber}.`);
 
-      // â”€â”€â”€ DESPACHO SECUENCIAL â”€â”€â”€
+      // ─── DESPACHO SECUENCIAL ───
       for (let i = 0; i < dispatchSequence.length; i++) {
-        // â”€â”€â”€ INTERRUPCIÃ“N DE SECUENCIA (CANCELACIÃ“N DE COLA) â”€â”€â”€
-        if (pendingQueues.has(cleanJid)) {
-          console.log(`ðŸ›‘ [InterrupciÃ³n Activa] El usuario +${finalCleanNumber} enviÃ³ un nuevo mensaje. Cancelando el envÃ­o de ${dispatchSequence.length - i} globos restantes de la rÃ¡faga anterior...`);
-          break; // Rompe el bucle de despacho. El bloque finally procesarÃ¡ la nueva cola.
+        // ─── INTERRUPCIÓN DE SECUENCIA (CANCELACIÓN DE COLA) ───
+        if (pendingQueues.has(bufferKey)) {
+          console.log(`🛑 [Interrupción Activa] El usuario +${finalCleanNumber} envió un nuevo mensaje. Cancelando el envío de ${dispatchSequence.length - i} globos restantes de la ráfaga anterior...`);
+          break; // Rompe el bucle de despacho. El bloque finally procesará la nueva cola.
         }
 
         const item = dispatchSequence[i];
         
-        // --- RETRASO DINÃMICO DE RESPUESTA (SimulaciÃ³n Humana) ---
+        // --- RETRASO DINÁMICO DE RESPUESTA (Simulación Humana) ---
         let typingDelay = 2000;
         if (item.type === 'text') {
-          // 40ms por caracter. MÃ­nimo 2s, mÃ¡ximo 12s.
+          // 40ms por caracter. Mínimo 2s, máximo 12s.
           typingDelay = Math.max(2000, Math.min(12000, item.content.length * 40));
         }
 
-        // Enviar estado "escribiendo..." justo el tiempo que tardarÃ¡ en enviarse
+        // Enviar estado "escribiendo..." justo el tiempo que tardará en enviarse
         if (provider === 'EVOLUTION') {
           try {
             const evoUrl = process.env.EVOLUTION_API_URL || 'http://localhost:8080';
@@ -1979,7 +2005,7 @@ Atributos/Tags: ${Array.isArray(product.tags) ? product.tags.join(', ') : ''}
             markMessageAsSentByAi(item.content);
             const msgId = await sendWhatsAppReply({ ...gatewayCtx, to: finalCleanNumber, text: item.content });
             if (msgId) markMessageAsSentByAi(msgId);
-            console.log(`âœ… [${provider} Gateway] Texto enviado (msgId: ${msgId}).`);
+            console.log(`✅ [${provider} Gateway] Texto enviado (msgId: ${msgId}).`);
 
             const savedMsg = await prisma.message.create({
               data: {
@@ -2003,12 +2029,12 @@ Atributos/Tags: ${Array.isArray(product.tags) ? product.tags.join(', ') : ''}
               timestamp: new Date()
             });
           } catch (sendErr) {
-            console.error(`âŒ [${provider} Gateway] Error al enviar texto:`, sendErr.message);
+            console.error(`❌ [${provider} Gateway] Error al enviar texto:`, sendErr.message);
           }
         } else if (item.type === 'image' || item.type === 'video') {
           try {
             const mediaMsgId = await sendWhatsAppMedia({ ...gatewayCtx, to: finalCleanNumber, url: item.url, mediaType: item.type });
-            console.log(`âœ… [${provider} Gateway] Multimedia (${item.type}) enviado a ${finalCleanNumber} (msgId: ${mediaMsgId})`);
+            console.log(`✅ [${provider} Gateway] Multimedia (${item.type}) enviado a ${finalCleanNumber} (msgId: ${mediaMsgId})`);
 
             const savedMediaMsg = await prisma.message.create({
               data: {
@@ -2045,25 +2071,23 @@ Atributos/Tags: ${Array.isArray(product.tags) ? product.tags.join(', ') : ''}
   } catch (error) {
     console.error('âŒ Error en el procesamiento del buffer de mensajes:', error.message);
   } finally {
-    // â”€â”€â”€ LIBERAR LOCK Y DESPACHAR COLA PENDIENTE â”€â”€â”€
-    // Sea cual sea el resultado (Ã©xito o error), siempre liberamos el lock.
-    // Si hay mensajes encolados en pendingQueues, los inyectamos en el buffer
-    // con un pequeÃ±o delay para que el cliente sienta la conversaciÃ³n fluida.
-    processingLocks.delete(cleanJid);
-    console.log(`ðŸ”“ [Processing Lock] Lock liberado para ${cleanJid}.`);
+    // ─── LIBERAR LOCK Y DESPACHAR COLA PENDIENTE ───
+    // Sea cual sea el resultado (éxito o error), siempre liberamos el lock tenant-scoped.
+    processingLocks.delete(bufferKey);
+    console.log(`🔓 [Processing Lock] Lock liberado para ${bufferKey}.`);
 
-    const pending = pendingQueues.get(cleanJid);
+    const pending = pendingQueues.get(bufferKey);
     if (pending) {
-      pendingQueues.delete(cleanJid);
-      console.log(`ðŸ“¬ [Pending Queue] Despachando ${pending.text.length} caracteres encolados para +${pending.clientNumber} con nuevo buffer de 4000ms.`);
+      pendingQueues.delete(bufferKey);
+      console.log(`📬 [Pending Queue] Despachando ${pending.text.length} caracteres encolados para +${pending.clientNumber} con nuevo buffer de 4000ms.`);
       // Re-inyectar como nuevo buffer con debounce fresco
       const newBufferEntry = {
         ...pending,
         timer: setTimeout(() => {
-          processBufferedMessage(pending.remoteJid);
+          processBufferedMessage(bufferKey);
         }, 4000)
       };
-      messageBuffers.set(pending.remoteJid, newBufferEntry);
+      messageBuffers.set(bufferKey, newBufferEntry);
     }
   }
 }
