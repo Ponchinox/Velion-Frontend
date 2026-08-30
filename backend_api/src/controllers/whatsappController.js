@@ -1721,6 +1721,23 @@ Atributos/Tags: ${Array.isArray(product.tags) ? product.tags.join(', ') : ''}
                   delete updatedState.activeOrderId;
                }
              }
+          } else if (updatedState.currentStage === 'EXPLORING' && updatedState.activeOrderId) {
+             console.log(`⚠️ [FC] Orden cancelada por el usuario o la IA. Actualizando estado de la orden ${updatedState.activeOrderId} a CANCELED.`);
+             await prisma.order.update({
+               where: { id: updatedState.activeOrderId },
+               data: { status: 'CANCELED' }
+             });
+             
+             await prisma.alert.create({
+               data: {
+                 type: 'ORDER_CANCELED',
+                 severity: 'WARNING',
+                 message: `🚫 PEDIDO CANCELADO | Cliente: +${clientNumber} (${customer.name || 'Sin Nombre'})`,
+                 tenantId: tenant.id
+               }
+             });
+             
+             delete updatedState.activeOrderId;
           }
 
           // Guardar estado persistente JSON
