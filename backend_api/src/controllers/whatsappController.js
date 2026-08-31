@@ -2004,6 +2004,53 @@ Atributos/Tags: ${Array.isArray(product.tags) ? product.tags.join(', ') : ''}
     }
 
     if (!aiResponse || aiResponse === '...') {
+      // Fallback de contingencia ante caída o timeout de IA
+      const timeoutFallbackText = 'Estoy teniendo una pequeña demora en este momento. Escríbeme nuevamente en unos segundos, por favor 🙏';
+      try {
+        markMessageAsSentByAi(timeoutFallbackText);
+        const fbMsgId = await sendWhatsAppReply({
+          ...gatewayCtx,
+          to: finalCleanNumber,
+          text: timeoutFallbackText
+        });
+        if (fbMsgId) markMessageAsSentByAi(fbMsgId);
+
+        const fbNow = new Date();
+        const [savedFbMsg] = await prisma.$transaction([
+          prisma.message.create({
+            data: {
+              content: timeoutFallbackText,
+              senderRole: 'agent',
+              status: 'sent',
+              externalId: fbMsgId || null,
+              chatId: chat.id,
+              tenantId: tenant.id
+            }
+          }),
+          prisma.chat.update({ where: { id: chat.id }, data: { updatedAt: fbNow } })
+        ]);
+
+        const fbRoom = tenant?.id ? `tenant:${tenant.id}` : null;
+        if (reqIo && fbRoom) {
+          reqIo.to(fbRoom).emit('new_whatsapp_message', {
+            chatId: chat.id,
+            remoteJid: cleanJid,
+            text: timeoutFallbackText,
+            type: 'outgoing',
+            from: 'business',
+            senderRole: 'agent',
+            status: 'sent',
+            externalId: fbMsgId || null,
+            messageId: savedFbMsg.id,
+            createdAt: savedFbMsg.createdAt.toISOString(),
+            lastMessageAt: savedFbMsg.createdAt.toISOString(),
+            timestamp: savedFbMsg.createdAt
+          });
+        }
+        console.log(`📡 [Timeout/IA Fallback] Fallback corto enviado con éxito a +${finalCleanNumber}`);
+      } catch (fbSendErr) {
+        console.error('❌ Error enviando fallback por timeout/caída de IA:', fbSendErr.message);
+      }
       return;
     }
 

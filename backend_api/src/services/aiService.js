@@ -35,8 +35,11 @@ import { recordTenantAiUsage } from './aiUsageService.js';
 // CONSTANTES DE CONFIGURACIÓN
 // ─────────────────────────────────────────────────────────────────────────────
 
-/** Timeout máximo por petición individual a Gemini (ms) */
-const GEMINI_TIMEOUT_MS = 15_000; // 15s para soportar Function Calling sin abortar prematuramente
+/** Timeout base para el intento 1 a Gemini (ms) */
+const GEMINI_TIMEOUT_ATTEMPT_1_MS = 15_000;
+
+/** Timeout extendido para el intento 2 si el intento 1 falló por TIMEOUT (ms) */
+const GEMINI_TIMEOUT_ATTEMPT_2_TIMEOUT_MS = 25_000;
 
 /** Límite máximo de caracteres por mensaje del usuario (Fase 1: Protección Económica) */
 export const MAX_USER_MESSAGE_CHARS = 2000;
@@ -438,9 +441,16 @@ async function callGemini(systemPrompt, messages, mediaItems = [], tools = [], t
   }
 
   try {
+    let lastErrType = null;
+
     // Bucle de intentos desacoplado de las keys: exactamente máx 2 intentos
     for (let attempt = 1; attempt <= MAX_TOTAL_ATTEMPTS; attempt++) {
       const keyInfo = geminiKeyManager.getKeyForAttempt(attempt);
+
+      // Timeout adaptativo: Intento 1 = 15s. Si el intento previo falló por TIMEOUT, Intento 2 = 25s; si no, 15s.
+      const currentTimeoutMs = (attempt > 1 && lastErrType === ERR_TYPE.TIMEOUT)
+        ? GEMINI_TIMEOUT_ATTEMPT_2_TIMEOUT_MS
+        : GEMINI_TIMEOUT_ATTEMPT_1_MS;
 
       // ── 📊 DIAGNÓSTICO ESTRUCTURADO DE PAYLOAD ──────────
       const payloadJson    = JSON.stringify(contents);
@@ -450,12 +460,12 @@ async function callGemini(systemPrompt, messages, mediaItems = [], tools = [], t
       const estimatedTokens = Math.round(payloadBytes / 4);
 
       geminiLog('═'.repeat(60));
-      geminiLog(`Intento ${attempt}/${MAX_TOTAL_ATTEMPTS} | Modelo: ${modelSlug} | Key: ${keyInfo.name} (${keyInfo.masked}) | Timeout: ${GEMINI_TIMEOUT_MS / 1000}s`);
+      geminiLog(`Intento ${attempt}/${MAX_TOTAL_ATTEMPTS} | Modelo: ${modelSlug} | Key: ${keyInfo.name} (${keyInfo.masked}) | Timeout: ${currentTimeoutMs / 1000}s`);
       geminiLog(`📦 PAYLOAD: ${turnCount} turnos | ${payloadKb} KB | ~${estimatedTokens} tokens est. | maxOutputTokens: ${MAX_OUTPUT_TOKENS}`);
 
       const startTime = Date.now();
       const controller = new AbortController();
-      const timeoutHandle = setTimeout(() => controller.abort(), GEMINI_TIMEOUT_MS);
+      const timeoutHandle = setTimeout(() => controller.abort(), currentTimeoutMs);
 
       try {
         let response = await keyInfo.client.models.generateContent({
@@ -544,6 +554,7 @@ async function callGemini(systemPrompt, messages, mediaItems = [], tools = [], t
         lastErr = err;
         const latencyMs = Date.now() - startTime;
         const errType   = classifyError(err);
+        lastErrType     = errType;
         const errMsg    = (err?.message || String(err)).slice(0, 120);
 
         geminiError(`Intento ${attempt}/${MAX_TOTAL_ATTEMPTS} (${keyInfo.name}) falló: ${errType} (${(latencyMs / 1000).toFixed(2)}s) — ${errMsg}`);
