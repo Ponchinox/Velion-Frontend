@@ -4,6 +4,7 @@ node_modules
 .env
 .env.*
 *.env
+!.env.example
 
 # Archivos generados por Prisma
 /generated/prisma

@@ -36,6 +36,9 @@ model Tenant {
   updatedAt            DateTime                   @updatedAt
   aiEnabled            Boolean                    @default(true)
   sessionInactivityHours Int                      @default(6)
+  dailyTokenBudget     Int?                       @default(100000)
+  monthlyTokenBudget   Int?                       @default(2000000)
+  aiBudgetEnabled      Boolean                    @default(true)
   alerts               Alert[]
   automationFlows      AutomationFlow[]
   campaigns            Campaign[]
@@ -47,6 +50,7 @@ model Tenant {
   registeredNumbers    RegisteredWhatsAppNumber[]
   users                User[]
   orders               Order[]
+  aiUsages             TenantAIUsage[]
 }
 
 model User {
@@ -166,6 +170,8 @@ model Plan {
   hasAutomations       Boolean  @default(false)
   hasCampaigns         Boolean  @default(false)
   maxProducts          Int      @default(10)
+  dailyTokenBudget     Int?     @default(130000)
+  monthlyTokenBudget   Int?     @default(2000000)
 }
 
 model SystemConfig {
@@ -283,4 +289,22 @@ model OrderItem {
   
   order     Order    @relation(fields: [orderId], references: [id], onDelete: Cascade)
   product   Product? @relation(fields: [productId], references: [id], onDelete: SetNull)
+}
+
+model TenantAIUsage {
+  id           String   @id @default(uuid())
+  tenantId     String
+  date         String   // Formato YYYY-MM-DD
+  requestCount Int      @default(0)
+  inputTokens  Int      @default(0)
+  outputTokens Int      @default(0)
+  totalTokens  Int      @default(0)
+  toolCalls    Int      @default(0)
+  retryCount   Int      @default(0)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  tenant       Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, date])
 }

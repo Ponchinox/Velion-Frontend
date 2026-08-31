@@ -174,6 +174,8 @@ export async function assignPlan(req, res) {
         plan: selectedPlan.name,
         msgLimit: selectedPlan.msgLimit,
         connLimit: selectedPlan.connLimit,
+        dailyTokenBudget: selectedPlan.dailyTokenBudget ?? 130000,
+        monthlyTokenBudget: selectedPlan.monthlyTokenBudget ?? 2000000,
       }
     });
 
@@ -187,6 +189,8 @@ export async function assignPlan(req, res) {
         hasPlan: true,
         msgLimit: updatedTenant.msgLimit,
         connLimit: updatedTenant.connLimit,
+        dailyTokenBudget: updatedTenant.dailyTokenBudget,
+        monthlyTokenBudget: updatedTenant.monthlyTokenBudget,
       }
     });
   } catch (error) {

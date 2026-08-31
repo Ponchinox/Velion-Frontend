@@ -131,10 +131,22 @@ export async function updateTenantLimits(req, res) {
         updateData.planId = planDb.id;   // ← CRÍTICO: sincronizar planId para que el middleware de features funcione
         updateData.connLimit = planDb.connLimit;
         updateData.msgLimit = planDb.msgLimit;
+        updateData.dailyTokenBudget = planDb.dailyTokenBudget ?? 130000;
+        updateData.monthlyTokenBudget = planDb.monthlyTokenBudget ?? 2000000;
       } else {
         // Failsafe: Si es un plan legacy no encontrado en BD, solo actualizar el nombre
         updateData.plan = plan;
       }
+    }
+
+    if (req.body.dailyTokenBudget !== undefined) {
+      updateData.dailyTokenBudget = Number(req.body.dailyTokenBudget);
+    }
+    if (req.body.monthlyTokenBudget !== undefined) {
+      updateData.monthlyTokenBudget = Number(req.body.monthlyTokenBudget);
+    }
+    if (req.body.aiBudgetEnabled !== undefined) {
+      updateData.aiBudgetEnabled = Boolean(req.body.aiBudgetEnabled);
     }
 
     // Transacción para asegurar consistencia
@@ -202,6 +214,8 @@ export async function createTenant(req, res) {
 
     const finalMsgLimit  = Number(msgLimit)  || planDb?.msgLimit  || 1000;
     const finalConnLimit = Number(connLimit) || planDb?.connLimit || 1;
+    const finalDailyTokenBudget = Number(req.body.dailyTokenBudget) || planDb?.dailyTokenBudget || 130000;
+    const finalMonthlyTokenBudget = Number(req.body.monthlyTokenBudget) || planDb?.monthlyTokenBudget || 2000000;
     const planId         = planDb?.id        || null;
 
     // Contraseña por defecto para el nuevo inquilino: admin123
@@ -217,6 +231,8 @@ export async function createTenant(req, res) {
           planId: planId,
           msgLimit: finalMsgLimit,
           connLimit: finalConnLimit,
+          dailyTokenBudget: finalDailyTokenBudget,
+          monthlyTokenBudget: finalMonthlyTokenBudget,
           active: true,
         },
       });
@@ -389,6 +405,8 @@ export async function createPlan(req, res) {
         price:               Number(planData.price),
         connLimit:           Number(planData.connLimit  || 1),
         msgLimit:            Number(planData.msgLimit   || 1000),
+        dailyTokenBudget:    planData.dailyTokenBudget !== undefined ? Number(planData.dailyTokenBudget) : 130000,
+        monthlyTokenBudget:  planData.monthlyTokenBudget !== undefined ? Number(planData.monthlyTokenBudget) : 2000000,
         maxProducts:         Number(planData.maxProducts ?? 10),
         hasCampaigns:        Boolean(planData.hasCampaigns),
         hasAutomations:      Boolean(planData.hasAutomations),
@@ -422,6 +440,8 @@ export async function updatePlan(req, res) {
         price:               Number(planData.price),
         connLimit:           Number(planData.connLimit),
         msgLimit:            Number(planData.msgLimit),
+        dailyTokenBudget:    planData.dailyTokenBudget !== undefined ? Number(planData.dailyTokenBudget) : undefined,
+        monthlyTokenBudget:  planData.monthlyTokenBudget !== undefined ? Number(planData.monthlyTokenBudget) : undefined,
         maxProducts:         Number(planData.maxProducts ?? 10),
         hasCampaigns:        Boolean(planData.hasCampaigns),
         hasAutomations:      Boolean(planData.hasAutomations),
@@ -445,7 +465,9 @@ export async function updatePlan(req, res) {
           planId: id,
           plan: updated.name,
           msgLimit: Number(planData.msgLimit),
-          connLimit: Number(planData.connLimit)
+          connLimit: Number(planData.connLimit),
+          ...(planData.dailyTokenBudget !== undefined ? { dailyTokenBudget: Number(planData.dailyTokenBudget) } : {}),
+          ...(planData.monthlyTokenBudget !== undefined ? { monthlyTokenBudget: Number(planData.monthlyTokenBudget) } : {})
         }
       });
     } catch (syncErr) {

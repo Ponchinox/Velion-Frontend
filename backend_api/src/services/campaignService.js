@@ -3,6 +3,7 @@ import { generateAIResponse } from './aiService.js';
 import prisma from '../db.js';
 import axios from 'axios';
 import { sendText as gatewaySendText, sendMedia as gatewaySendMedia, resolveGatewayCtx } from './whatsappGateway.js';
+import { evaluateAiBudgetGuard } from './aiBudgetGuardService.js';
 
 let openaiClient = null;
 
@@ -52,7 +53,49 @@ export async function processCampaign(campaignId, targetContacts, instance) {
     const gatewayCtx = await resolveGatewayCtx(campaign.tenantId);
     console.log(`[Campaign Service] Proveedor activo para campana: ${gatewayCtx.provider}`);
 
-    for (const contact of targetContacts) {
+    // --- INTEGRACIÓN DE FASE 2B: BUDGET GUARD PARA LA CAMPAÑA COMPLETA ---
+    const sysPrompt = 'Eres un redactor de marketing persuasivo y experto en WhatsApp. Genera exactamente 3 variaciones naturales, frescas y atractivas del mensaje base proporcionado. Mantén la intención comercial intacta. Usa SIEMPRE la etiqueta [Nombre] donde iría el nombre del cliente. Separa las 3 variaciones usando exactamente esta cadena: "|||". NO agregues viñetas, números, ni saludos adicionales al inicio.';
+    const userPrompt = `Mensaje base a reescribir:\n${campaign.baseMessage}`;
+
+    let variations = [campaign.baseMessage]; // Fallback por defecto
+
+    if (tenant?.aiEnabled !== false && tenant?.aiBudgetEnabled !== false) {
+      const budgetGuard = await evaluateAiBudgetGuard({
+        tenantId: tenant.id,
+        tenant: tenant,
+        systemPrompt: sysPrompt,
+        chatContext: [{ role: 'user', content: userPrompt }],
+        hasTools: false
+      });
+
+      if (budgetGuard.allowed) {
+        try {
+          const aiResponse = await generateAIResponse(
+            sysPrompt,
+            [{ role: 'user', content: userPrompt }],
+            [], null, null, [], null, tenant.id
+          );
+          if (aiResponse && aiResponse.includes('|||')) {
+            const splitVars = aiResponse.split('|||').map(v => v.trim()).filter(v => v.length > 0);
+            if (splitVars.length > 0) {
+              variations = splitVars;
+              console.log(`✅ [Campaign Service] Se generaron ${variations.length} variaciones con IA para la campaña.`);
+            }
+          } else if (aiResponse) {
+             variations = [aiResponse.trim()];
+          }
+        } catch (aiError) {
+          console.error(`⚠️ [Campaign Service] Error generando variaciones con IA:`, aiError.message);
+        } finally {
+          if (budgetGuard.releaseReservation) budgetGuard.releaseReservation();
+        }
+      } else {
+        console.warn(`🛡️ [Campaign Service] Budget Guard bloqueó la IA para la campaña. Motivo: ${budgetGuard.reason}`);
+      }
+    }
+
+    for (let i = 0; i < targetContacts.length; i++) {
+      const contact = targetContacts[i];
       // Re-verificar si la campaña ha sido cancelada o si el status cambió
       const currentCampaign = await prisma.campaign.findUnique({
         where: { id: campaignId }
@@ -125,22 +168,14 @@ export async function processCampaign(campaignId, targetContacts, instance) {
 
       let personalizedMessage = campaign.baseMessage;
 
-      // Generar variación de texto personalizada con IA (Anti-Ban con Failover Cascade)
-      try {
-        const sysPrompt = 'Eres un redactor de marketing persuasivo y natural. Responde únicamente con el mensaje reescrito final, sin comentarios, saludos adicionales ni etiquetas.';
-        const userPrompt = `Reescribe este mensaje promocional de forma natural, manteniendo la intención exacta pero variando ligeramente el saludo y las palabras. Usa el nombre del cliente si es posible: ${contact.name}. Mensaje base: ${campaign.baseMessage}`;
-        
-        const rewrittenText = await generateAIResponse(sysPrompt, [{ role: 'user', content: userPrompt }]);
-        if (rewrittenText) {
-          personalizedMessage = rewrittenText;
-        }
-      } catch (aiError) {
-        console.error(`⚠️ [Campaign Service] Error reescribiendo mensaje con IA para +${contact.phone}:`, aiError.message);
-        // Fallback de personalización manual básica
-        personalizedMessage = campaign.baseMessage
-          .replace(/\[Nombre\]/gi, contact.name)
-          .replace(/\{Nombre\}/gi, contact.name);
-      }
+      // Seleccionar una variación usando round-robin
+      const variationIndex = i % variations.length;
+      let selectedVariation = variations[variationIndex];
+
+      // Reemplazar marcador [Nombre] por el nombre real del contacto
+      personalizedMessage = selectedVariation
+        .replace(/\[Nombre\]/gi, contact.name || 'amigo')
+        .replace(/\{Nombre\}/gi, contact.name || 'amigo');
 
       // ─── GATEWAY: Enviar por el proveedor activo del Tenant ───
       let success = false;

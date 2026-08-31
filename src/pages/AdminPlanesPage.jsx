@@ -69,6 +69,8 @@ export default function AdminPlanesPage() {
   const [formPrice, setFormPrice] = useState(0);
   const [formConnLimit, setFormConnLimit] = useState(1);
   const [formMsgLimit, setFormMsgLimit] = useState(1000);
+  const [formDailyTokenBudget, setFormDailyTokenBudget] = useState(130000);
+  const [formMonthlyTokenBudget, setFormMonthlyTokenBudget] = useState(2000000);
   const [formMaxProducts, setFormMaxProducts] = useState(10);
   const [formHasCampaigns, setFormHasCampaigns] = useState(false);
   const [formHasAutomations, setFormHasAutomations] = useState(false);
@@ -107,6 +109,8 @@ export default function AdminPlanesPage() {
     setFormPrice(plan.price);
     setFormConnLimit(plan.connLimit);
     setFormMsgLimit(plan.msgLimit);
+    setFormDailyTokenBudget(plan.dailyTokenBudget ?? 130000);
+    setFormMonthlyTokenBudget(plan.monthlyTokenBudget ?? 2000000);
     setFormMaxProducts(plan.maxProducts ?? 10);
     setFormHasCampaigns(plan.hasCampaigns ?? false);
     setFormHasAutomations(plan.hasAutomations ?? false);
@@ -131,6 +135,8 @@ export default function AdminPlanesPage() {
     setFormPrice(29);
     setFormConnLimit(1);
     setFormMsgLimit(1000);
+    setFormDailyTokenBudget(130000);
+    setFormMonthlyTokenBudget(2000000);
     setFormMaxProducts(10);
     setFormHasCampaigns(false);
     setFormHasAutomations(false);
@@ -151,6 +157,8 @@ export default function AdminPlanesPage() {
       price: Number(formPrice),
       connLimit: Number(formConnLimit),
       msgLimit: Number(formMsgLimit),
+      dailyTokenBudget: Number(formDailyTokenBudget),
+      monthlyTokenBudget: Number(formMonthlyTokenBudget),
       maxProducts: Number(formMaxProducts),
       hasCampaigns: formHasCampaigns,
       hasAutomations: formHasAutomations,
@@ -413,6 +421,38 @@ export default function AdminPlanesPage() {
                       onChange={(e) => setFormMsgLimit(e.target.value)}
                       placeholder="10000"
                       className="w-full pl-9 pr-3 py-2 rounded-md border border-line bg-card text-sm text-hi font-mono focus:outline-none focus:border-brand"
+                    />
+                  </div>
+                </div>
+
+                {/* Token Budgets (IA) */}
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div>
+                    <label htmlFor="plan-daily-tokens" className="block text-sm font-semibold text-hi mb-1">
+                      Límite Diario Tokens IA
+                    </label>
+                    <input
+                      id="plan-daily-tokens"
+                      type="number"
+                      required
+                      value={formDailyTokenBudget}
+                      onChange={(e) => setFormDailyTokenBudget(e.target.value)}
+                      placeholder="130000"
+                      className="w-full px-3 py-2 rounded-md border border-line bg-card text-sm text-hi font-mono focus:outline-none focus:border-brand"
+                    />
+                  </div>
+                  <div>
+                    <label htmlFor="plan-monthly-tokens" className="block text-sm font-semibold text-hi mb-1">
+                      Límite Mensual Tokens IA
+                    </label>
+                    <input
+                      id="plan-monthly-tokens"
+                      type="number"
+                      required
+                      value={formMonthlyTokenBudget}
+                      onChange={(e) => setFormMonthlyTokenBudget(e.target.value)}
+                      placeholder="2000000"
+                      className="w-full px-3 py-2 rounded-md border border-line bg-card text-sm text-hi font-mono focus:outline-none focus:border-brand"
                     />
                   </div>
                 </div>

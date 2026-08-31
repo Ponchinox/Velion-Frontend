@@ -29,44 +29,35 @@ import { GoogleGenAI, ThinkingLevel } from '@google/genai';
 import OpenAI from 'openai';
 import sharp from 'sharp';
 import prisma from '../db.js';
+import { recordTenantAiUsage } from './aiUsageService.js';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // CONSTANTES DE CONFIGURACIÓN
 // ─────────────────────────────────────────────────────────────────────────────
 
 /** Timeout máximo por petición individual a Gemini (ms) */
-const GEMINI_TIMEOUT_MS = 15_000; // ✅ Aumentado a 15s para soportar el encadenamiento de Function Calling sin abortar
+const GEMINI_TIMEOUT_MS = 15_000; // 15s para soportar Function Calling sin abortar prematuramente
 
-/** Tiempo de cooldown al recibir un rate limit 429 (ms) */
-const COOLDOWN_RATE_LIMIT_MS = 120_000; // 2 minutos
+/** Límite máximo de caracteres por mensaje del usuario (Fase 1: Protección Económica) */
+export const MAX_USER_MESSAGE_CHARS = 2000;
 
-/** Tiempo de cooldown al recibir un error de servidor 5xx o timeout (ms) */
-const COOLDOWN_SERVER_ERROR_MS = 60_000; // 1 minuto
+/** Tokens máximos de salida por petición (Fase 1: reducido de 1024 -> 400) */
+const MAX_OUTPUT_TOKENS = 400;
+
+/** Máximo de rondas de Function Calling por interacción (Fase 1: Protección contra loops) */
+const MAX_TOOL_ROUNDS = 3;
+
+/** Máximo de intentos totales por interacción (Intento 1 + máx 1 retry) (Fase 1) */
+const MAX_TOTAL_ATTEMPTS = 2;
 
 /**
  * ThinkingLevel.LOW = "LOW" — nivel textual nativo soportado por @google/genai v2.x
- * para gemini-3.7-flash. No usar "minimal" (no soportado por Gemini 3.7).
- * Referencia: ThinkingConfig.thinkingLevel enum en genai.d.ts del SDK oficial.
+ * para gemini-3.7-flash y modelos Gemini 3.x.
  */
 const THINKING_LEVEL = ThinkingLevel.LOW; // = "LOW"
 
-/** Tokens máximos de salida por petición */
-const MAX_OUTPUT_TOKENS = 1024;
-
-/** Tamaño máximo del historial por usuario (mensajes, no turnos) — limitado a últimos 8 */
-const MAX_HISTORIAL = 8; // ✅ Reducido de 10 → 8 mensajes (4 turnos user/model)
-
 /** Máx. ítems multimedia por petición */
 const MAX_MEDIA_ITEMS = 3;
-
-// Estados posibles de una API Key
-const KEY_STATUS = {
-  ACTIVE:       'active',
-  RATE_LIMITED: 'rate_limited',
-  AUTH_FAILED:  'auth_failed',
-  SERVER_ERROR: 'server_error',
-  DISABLED:     'disabled',
-};
 
 // Clasificación de tipos de error
 const ERR_TYPE = {
@@ -80,9 +71,8 @@ const ERR_TYPE = {
   UNKNOWN:       'UNKNOWN',
 };
 
-// Modelo principal y fallback
+// Modelo principal
 const MODELO_PRINCIPAL = 'gemini-3.6-flash';
-const MODELO_FALLBACK  = 'gemini-3.5-flash-lite';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // LOGGING ESTRUCTURADO
@@ -155,148 +145,74 @@ function classifyError(err) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// GEMINI KEY POOL — Pool de claves con estado independiente
+// ─────────────────────────────────────────────────────────────────────────────
+// GEMINI KEY MANAGER — Arquitectura Segura (Principal + Backup Opcional)
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * Pool de API Keys de Gemini con:
- *  - Estado independiente por key (active / rate_limited / auth_failed / disabled)
- *  - Cooldown automático por key
- *  - Rotación round-robin entre keys disponibles
- *  - Selección inteligente: solo usa keys disponibles
+ * Gestor de API Keys de Gemini (Fase 1: Protección Económica)
+ * - Principal: GEMINI_API_KEY (recibe el tráfico normal)
+ * - Backup: GEMINI_API_KEY_BACKUP (contingencia opcional en retry)
+ * - Desacoplado de GEMINI_KEY_1...15 (eliminado round-robin masivo)
  */
-class GeminiKeyPool {
+class GeminiKeyManager {
   constructor() {
-    /** @type {Array<{rawKey: string, client: GoogleGenAI, index: number, status: string, cooldownUntil: Date|null, failCount: number, lastUsedAt: Date|null}>} */
-    this.keys = [];
-    this._roundRobinIdx = 0;
+    this.primaryKey = null;
+    this.backupKey = null;
+    this.primaryClient = null;
+    this.backupClient = null;
     this._initialized = false;
   }
 
-  /**
-   * Inicializa el pool con las claves del entorno (lazy, solo una vez).
-   * Usa @google/genai (GoogleGenAI) — SDK oficial actual de Google.
-   * Fuentes: GEMINI_API_KEY (principal) + GEMINI_KEY_1…GEMINI_KEY_15 (respaldo)
-   */
+  /** Inicializa las keys del entorno (lazy, solo una vez) */
   init() {
     if (this._initialized) return;
     this._initialized = true;
 
-    const rawKeys = [];
-    const main = (process.env.GEMINI_API_KEY || '').trim();
-    if (main) rawKeys.push(main);
+    this.primaryKey = (process.env.GEMINI_API_KEY || '').trim();
+    this.backupKey = (process.env.GEMINI_API_KEY_BACKUP || '').trim();
 
-    for (let i = 1; i <= 15; i++) {
-      const k = (process.env[`GEMINI_KEY_${i}`] || '').trim();
-      if (k) rawKeys.push(k);
+    if (!this.primaryKey) {
+      throw new Error('[GEMINI] Falta GEMINI_API_KEY para inicializar el servicio de IA.');
     }
 
-    if (rawKeys.length === 0) {
-      throw new Error('[GEMINI] Falta GEMINI_API_KEY o GEMINI_KEY_N para inicializar el pool.');
+    this.primaryClient = new GoogleGenAI({ apiKey: this.primaryKey });
+
+    if (this.backupKey) {
+      this.backupClient = new GoogleGenAI({ apiKey: this.backupKey });
+      geminiLog(`Key Manager: Principal (activa) + Backup (contingencia configurada).`);
+    } else {
+      geminiLog(`Key Manager: Principal (activa, sin backup configurado).`);
     }
-
-    // GoogleGenAI = SDK @google/genai (nuevo SDK oficial)
-    this.keys = rawKeys.map((rawKey, idx) => ({
-      rawKey,
-      client: new GoogleGenAI({ apiKey: rawKey }),
-      index: idx + 1,
-      status: KEY_STATUS.ACTIVE,
-      cooldownUntil: null,
-      failCount: 0,
-      lastUsedAt: null,
-    }));
-
-    geminiLog(`Pool inicializado con ${this.keys.length} key(s). SDK: @google/genai v${_GENAI_SDK_VERSION}`);
-  }
-
-  /** Devuelve solo las keys actualmente disponibles (activas y sin cooldown vigente) */
-  getAvailableKeys() {
-    const now = Date.now();
-    return this.keys.filter(k => {
-      if (k.status === KEY_STATUS.AUTH_FAILED || k.status === KEY_STATUS.DISABLED) return false;
-      if (k.cooldownUntil && k.cooldownUntil.getTime() > now) return false;
-      // Si estaba en rate_limited/server_error pero el cooldown ya expiró, volver a active
-      if (k.status !== KEY_STATUS.ACTIVE && (!k.cooldownUntil || k.cooldownUntil.getTime() <= now)) {
-        k.status = KEY_STATUS.ACTIVE;
-      }
-      return true;
-    });
-  }
-
-  /** Selecciona la siguiente key disponible en orden round-robin */
-  selectNext() {
-    const available = this.getAvailableKeys();
-    if (available.length === 0) return null;
-
-    // Avanzar el índice round-robin entre las disponibles
-    const idx = this._roundRobinIdx % available.length;
-    this._roundRobinIdx = (this._roundRobinIdx + 1) % available.length;
-
-    return available[idx];
   }
 
   /**
-   * Aplica consecuencias a una key según el tipo de error que devolvió.
-   * @param {object} keyEntry - Entrada del pool
-   * @param {string} errType  - Tipo de error (ERR_TYPE)
+   * Obtiene la key y cliente a utilizar para un número de intento dado.
+   * Intento 1 -> Principal
+   * Intento 2 -> Backup (si existe) o Principal
+   * @param {number} attemptNumber - Número de intento (1 o 2)
    */
-  penalize(keyEntry, errType) {
-    keyEntry.failCount++;
-
-    switch (errType) {
-      case ERR_TYPE.TIMEOUT:
-      case ERR_TYPE.NETWORK:
-        keyEntry.status = KEY_STATUS.SERVER_ERROR;
-        keyEntry.cooldownUntil = new Date(Date.now() + COOLDOWN_SERVER_ERROR_MS);
-        geminiWarn(`Key #${keyEntry.index} (${maskKey(keyEntry.rawKey)}) → cooldown ${COOLDOWN_SERVER_ERROR_MS / 1000}s por ${errType}`);
-        break;
-
-      case ERR_TYPE.RATE_LIMIT:
-        keyEntry.status = KEY_STATUS.RATE_LIMITED;
-        keyEntry.cooldownUntil = new Date(Date.now() + COOLDOWN_RATE_LIMIT_MS);
-        geminiWarn(`Key #${keyEntry.index} (${maskKey(keyEntry.rawKey)}) → cooldown ${COOLDOWN_RATE_LIMIT_MS / 1000}s por RATE_LIMIT`);
-        break;
-
-      case ERR_TYPE.AUTH:
-        keyEntry.status = KEY_STATUS.AUTH_FAILED;
-        keyEntry.cooldownUntil = null;
-        geminiError(`Key #${keyEntry.index} (${maskKey(keyEntry.rawKey)}) → AUTH_FAILED — desactivada permanentemente`);
-        break;
-
-      case ERR_TYPE.SERVER_ERROR:
-        keyEntry.status = KEY_STATUS.SERVER_ERROR;
-        keyEntry.cooldownUntil = new Date(Date.now() + COOLDOWN_SERVER_ERROR_MS);
-        geminiWarn(`Key #${keyEntry.index} (${maskKey(keyEntry.rawKey)}) → cooldown ${COOLDOWN_SERVER_ERROR_MS / 1000}s por SERVER_ERROR`);
-        break;
-
-      case ERR_TYPE.BAD_REQUEST:
-        // No es culpa de la key — no penalizar
-        break;
-
-      default:
-        keyEntry.status = KEY_STATUS.SERVER_ERROR;
-        keyEntry.cooldownUntil = new Date(Date.now() + COOLDOWN_SERVER_ERROR_MS);
-        geminiWarn(`Key #${keyEntry.index} (${maskKey(keyEntry.rawKey)}) → cooldown ${COOLDOWN_SERVER_ERROR_MS / 1000}s por error desconocido`);
+  getKeyForAttempt(attemptNumber) {
+    this.init();
+    if (attemptNumber === 1 || !this.backupClient) {
+      return {
+        client: this.primaryClient,
+        isBackup: false,
+        name: 'Principal',
+        masked: maskKey(this.primaryKey),
+      };
     }
-  }
-
-  /** Registra uso exitoso de una key */
-  markSuccess(keyEntry) {
-    keyEntry.status = KEY_STATUS.ACTIVE;
-    keyEntry.failCount = 0;
-    keyEntry.cooldownUntil = null;
-    keyEntry.lastUsedAt = new Date();
-  }
-
-  /** Devuelve estadísticas resumidas para logs */
-  stats() {
-    const available = this.getAvailableKeys().length;
-    return `${available}/${this.keys.length} disponibles`;
+    return {
+      client: this.backupClient,
+      isBackup: true,
+      name: 'Backup',
+      masked: maskKey(this.backupKey),
+    };
   }
 }
 
-// Singleton del pool
-const geminiPool = new GeminiKeyPool();
+// Singleton del manager
+const geminiKeyManager = new GeminiKeyManager();
 
 // ─────────────────────────────────────────────────────────────────────────────
 // PROCESAMIENTO DE MULTIMEDIA
@@ -393,6 +309,13 @@ async function buildGeminiContents(messages, mediaItems = []) {
       textContent = textPart ? textPart.text : '';
     }
 
+    // Truncar contenido si es turno de usuario y excede MAX_USER_MESSAGE_CHARS (Fase 1: Protección Económica)
+    if (role === 'user' && textContent.length > MAX_USER_MESSAGE_CHARS) {
+      const origLen = textContent.length;
+      textContent = textContent.slice(0, MAX_USER_MESSAGE_CHARS) + '\n[... Mensaje truncado a 2000 caracteres por seguridad]';
+      geminiWarn(`Mensaje de usuario truncado para Gemini: ${origLen} chars → ${textContent.length} chars (límite: ${MAX_USER_MESSAGE_CHARS})`);
+    }
+
     const parts = [{ text: textContent || '.' }];
 
     // Adjuntar multimedia solo al último turno del usuario
@@ -453,114 +376,122 @@ const _GENAI_SDK_VERSION = '2.19.0';
  * @param {string[]} mediaItems   - Items multimedia en Base64
  * @returns {Promise<string>}
  */
-async function callGemini(systemPrompt, messages, mediaItems = [], tools = [], toolsHandler = null) {
-  geminiPool.init();
+/**
+ * Genera una respuesta usando Google Gemini con:
+ *  - SDK @google/genai (oficial actual de Google)
+ *  - ThinkingLevel.LOW nativo (string "LOW")
+ *  - Límite estricto de intentos: MAX_TOTAL_ATTEMPTS = 2 (Intento 1 + máx 1 retry)
+ *  - Clave principal + backup opcional (sin round-robin masivo)
+ *  - Límite duro de Function Calling: MAX_TOOL_ROUNDS = 3
+ *  - Límite de salida: MAX_OUTPUT_TOKENS = 400
+ *  - Timeout de 15s vía AbortSignal nativo
+ *  - Clasificación diferenciada de errores (400, 401, 403 no reintentan)
+ *
+ * @param {string}   systemPrompt - Instrucción del sistema
+ * @param {Array}    messages     - Historial de conversación [{role, content}]
+ * @param {string[]} mediaItems   - Items multimedia en Base64
+ * @returns {Promise<string>}
+ */
+async function callGemini(systemPrompt, messages, mediaItems = [], tools = [], toolsHandler = null, tenantId = null) {
+  geminiKeyManager.init();
 
-  const modelos = [MODELO_PRINCIPAL, MODELO_FALLBACK];
+  const modelSlug = MODELO_PRINCIPAL;
   let lastErr = null;
 
-  // Construir el historial una sola vez (operación async con Sharp)
+  // Objeto para acumular el uso real de toda esta interacción (incluye Function Calling y retries)
+  const sessionUsage = {
+    inputTokens: 0,
+    outputTokens: 0,
+    totalTokens: 0,
+    requestCount: 0,
+    toolCalls: 0,
+    retryCount: 0,
+  };
+
+  // Helper interno para acumular usageMetadata real de cada respuesta de Google
+  const accumulateUsage = (resp) => {
+    if (resp?.usageMetadata) {
+      const inTok = Number(resp.usageMetadata.promptTokenCount) || 0;
+      const outTok = Number(resp.usageMetadata.candidatesTokenCount) || 0;
+      const totTok = Number(resp.usageMetadata.totalTokenCount) || (inTok + outTok);
+      sessionUsage.inputTokens += inTok;
+      sessionUsage.outputTokens += outTok;
+      sessionUsage.totalTokens += totTok;
+      sessionUsage.requestCount += 1;
+    }
+  };
+
+  // Construir el historial una sola vez (operación async con Sharp y truncado a 2000 chars)
   const contents = await buildGeminiContents(messages, mediaItems);
 
-  for (const modelSlug of modelos) {
-    const isMainModel = modelSlug === MODELO_PRINCIPAL;
+  // Configuración base con maxOutputTokens = 400
+  const config = {
+    maxOutputTokens: MAX_OUTPUT_TOKENS,
+    systemInstruction: systemPrompt,
+    thinkingConfig: {
+      thinkingLevel: THINKING_LEVEL,
+    },
+  };
 
-    // Configuración base — sin temperature, topP, topK, candidateCount
-    const config = {
-      maxOutputTokens: MAX_OUTPUT_TOKENS,
-      systemInstruction: systemPrompt,
-    };
+  if (tools && tools.length > 0) {
+    config.tools = tools;
+  }
 
-    if (tools && tools.length > 0) {
-      config.tools = tools;
-    }
+  try {
+    // Bucle de intentos desacoplado de las keys: exactamente máx 2 intentos
+    for (let attempt = 1; attempt <= MAX_TOTAL_ATTEMPTS; attempt++) {
+      const keyInfo = geminiKeyManager.getKeyForAttempt(attempt);
 
-    // thinkingConfig con ThinkingLevel.LOW nativo — solo para modelos que lo soporten
-    // ThinkingLevel.LOW = "LOW" está definido en el enum del SDK @google/genai v2.x
-    // gemini-3.7-flash soporta thinkingLevel; gemini-2.5-flash usa thinkingBudget (legacy)
-    if (isMainModel) {
-      config.thinkingConfig = {
-        thinkingLevel: THINKING_LEVEL, // ThinkingLevel.LOW = "LOW"
-      };
-    } else {
-      // gemini-2.5-flash: usa thinkingBudget numérico (API anterior)
-      config.thinkingConfig = {
-        thinkingBudget: 1024,
-      };
-    }
-
-    // Intentar con cada key disponible para este modelo
-    let modelAttempts = 0;
-    const maxAttemptsPerModel = Math.max(geminiPool.keys.length, 1);
-
-    while (modelAttempts < maxAttemptsPerModel) {
-      modelAttempts++;
-
-      const keyEntry = geminiPool.selectNext();
-      if (!keyEntry) {
-        geminiError(`No hay keys disponibles para el modelo ${modelSlug}.`);
-        break;
-      }
-
-      const maskedKey = maskKey(keyEntry.rawKey);
-      const availableStats = geminiPool.stats();
-
-      // ── 📊 DIAGNÓSTICO DE PAYLOAD — verifica reducción de tokens ──────────
+      // ── 📊 DIAGNÓSTICO ESTRUCTURADO DE PAYLOAD ──────────
       const payloadJson    = JSON.stringify(contents);
       const payloadBytes   = Buffer.byteLength(payloadJson, 'utf8');
       const payloadKb      = (payloadBytes / 1024).toFixed(1);
       const turnCount      = contents.length;
-      // Estimación rápida de tokens (aprox 4 chars/token en español)
       const estimatedTokens = Math.round(payloadBytes / 4);
+
       geminiLog('═'.repeat(60));
-      geminiLog(`NUEVA PETICIÓN`);
-      geminiLog(`Modelo: ${modelSlug} | Thinking: ${isMainModel ? 'LOW (ThinkingLevel.LOW)' : 'budget=1024'} | Timeout: ${GEMINI_TIMEOUT_MS / 1000}s`);
-      geminiLog(`Keys disponibles: ${availableStats}`);
-      geminiLog(`📦 PAYLOAD: ${turnCount} turnos | ${payloadKb} KB | ~${estimatedTokens} tokens estimados`);
-      geminiLog(`Key #${keyEntry.index} (${maskedKey}) → iniciando petición`);
+      geminiLog(`Intento ${attempt}/${MAX_TOTAL_ATTEMPTS} | Modelo: ${modelSlug} | Key: ${keyInfo.name} (${keyInfo.masked}) | Timeout: ${GEMINI_TIMEOUT_MS / 1000}s`);
+      geminiLog(`📦 PAYLOAD: ${turnCount} turnos | ${payloadKb} KB | ~${estimatedTokens} tokens est. | maxOutputTokens: ${MAX_OUTPUT_TOKENS}`);
 
       const startTime = Date.now();
-
-      // AbortController para el timeout — el nuevo SDK soporta abortSignal en config
       const controller = new AbortController();
       const timeoutHandle = setTimeout(() => controller.abort(), GEMINI_TIMEOUT_MS);
 
       try {
-        // API del nuevo SDK: ai.models.generateContent({ model, contents, config })
-        // AbortSignal se pasa directamente en config.abortSignal
-        let response = await keyEntry.client.models.generateContent({
+        let response = await keyInfo.client.models.generateContent({
           model:    modelSlug,
           contents,
           config:   { ...config, abortSignal: controller.signal },
         });
 
-        // Revisar Function Calling (Uso de Herramientas) con bucle para encadenamiento
+        accumulateUsage(response);
+
+        // Function Calling con límite duro MAX_TOOL_ROUNDS (3)
+        let toolRounds = 0;
         while (response.functionCalls && response.functionCalls.length > 0 && toolsHandler) {
+          if (toolRounds >= MAX_TOOL_ROUNDS) {
+            geminiWarn(`⚠️ [FC] Límite de ${MAX_TOOL_ROUNDS} rondas de herramientas alcanzado. Deteniendo nuevas llamadas.`);
+            break;
+          }
+
+          toolRounds++;
+          sessionUsage.toolCalls++;
           const call = response.functionCalls[0];
-          geminiLog(`Herramienta invocada por la IA: ${call.name}`);
-          
+          geminiLog(`🛠️ [FC] Ronda ${toolRounds}/${MAX_TOOL_ROUNDS} - Herramienta: ${call.name}`);
+
           try {
             const apiResponse = await toolsHandler(call.name, call.args);
-            
-            // Adjuntar el content completo devuelto por el modelo. 
-            // Clonamos profundamente para asegurar que el SDK envíe todo intacto
-            // y limpiamos 'thought' que no debe enviarse, pero preservamos thought_signature.
+
             let modelContent = { role: 'model', parts: [{ functionCall: call }] };
             if (response.candidates && response.candidates.length > 0 && response.candidates[0].content) {
               const rawContent = JSON.parse(JSON.stringify(response.candidates[0].content));
               if (rawContent.parts) {
-                // Filtrar parts que sean exclusivamente de thought (si el SDK los incluye como parts separados)
                 rawContent.parts = rawContent.parts.filter(p => !p.thought);
               }
               modelContent = rawContent;
             }
-            
             contents.push(modelContent);
-            // CRÍTICO: el SDK @google/genai v2.x requiere que functionResponse incluya
-            // el campo 'id' que corresponde al id del functionCall original.
-            // Sin él, el SDK lanza FUNCTION_RESPONSE_REQUIRES_ID (400 BAD_REQUEST).
-            // call.id está disponible porque response.functionCalls[n] = part.functionCall,
-            // y part.functionCall incluye { id, name, args, thoughtSignature }.
+
             const funcResponsePart = {
               functionResponse: {
                 id:       call.id,
@@ -570,94 +501,86 @@ async function callGemini(systemPrompt, messages, mediaItems = [], tools = [], t
             };
             contents.push({ role: 'user', parts: [funcResponsePart] });
 
-            geminiLog(`Ejecución de herramienta completada. Generando respuesta final...`);
-            // Volver a llamar a Gemini con los resultados de la función
-            response = await keyEntry.client.models.generateContent({
+            geminiLog(`🛠️ [FC] Ronda ${toolRounds}/${MAX_TOOL_ROUNDS} completada. Generando siguiente paso...`);
+            response = await keyInfo.client.models.generateContent({
               model:    modelSlug,
               contents,
               config:   { ...config, abortSignal: controller.signal },
             });
+
+            accumulateUsage(response);
           } catch (funcErr) {
-            geminiWarn(`Error en toolsHandler o en el encadenamiento para ${call.name}: ${funcErr.message}`);
-            throw funcErr; // Lanza el error para que el bloque principal lo atrape y reintente si es Timeout
+            geminiWarn(`Error en toolsHandler o encadenamiento para ${call.name}: ${funcErr.message}`);
+            throw funcErr;
           }
         }
 
         clearTimeout(timeoutHandle);
-
         const latencyMs = Date.now() - startTime;
-
-        // En @google/genai, el texto está en response.text (getter)
         const rawText = response.text || '';
 
-        // Limpiar etiquetas de thinking si las hubiera en el texto de salida
         const aiText = rawText
           .replace(/<think>[\s\S]*?<\/think>/gi, '')
           .replace(/^\s*\.{3,}\s*/m, '')
           .trim();
 
         if (!aiText) {
-          geminiWarn(`Key #${keyEntry.index} → respuesta vacía. Intentando siguiente key.`);
-          continue;
+          geminiWarn(`Respuesta vacía en intento ${attempt}/${MAX_TOTAL_ATTEMPTS}.`);
+          if (attempt < MAX_TOTAL_ATTEMPTS) {
+            sessionUsage.retryCount++;
+            continue;
+          }
+          throw new Error('Respuesta vacía de Gemini tras agotar intentos.');
         }
 
-        // Log de éxito con métricas
-        const usageMeta    = response.usageMetadata || {};
-        const inputTokens  = usageMeta.promptTokenCount      || '?';
-        const outputTokens = usageMeta.candidatesTokenCount  || '?';
-        const totalTokens  = usageMeta.totalTokenCount       || '?';
         const finishReason = response.candidates?.[0]?.finishReason || 'STOP';
+        geminiLog(`✅ Intento ${attempt}/${MAX_TOTAL_ATTEMPTS} OK (${keyInfo.name})`);
+        geminiLog(`Latencia: ${(latencyMs / 1000).toFixed(2)}s | Sesión Total: requests=${sessionUsage.requestCount} inputTokens=${sessionUsage.inputTokens} outputTokens=${sessionUsage.outputTokens} totalTokens=${sessionUsage.totalTokens} toolCalls=${sessionUsage.toolCalls} | Finish: ${finishReason}`);
 
-        geminiLog(`Key #${keyEntry.index} → ✅ OK`);
-        geminiLog(`Latencia: ${(latencyMs / 1000).toFixed(2)}s | input=${inputTokens} output=${outputTokens} total=${totalTokens} | FinishReason: ${finishReason}`);
+        // Registrar métricas persistentes por tenant (no bloqueante)
+        if (tenantId) {
+          recordTenantAiUsage({ tenantId, ...sessionUsage }).catch(() => {});
+        }
 
-        geminiPool.markSuccess(keyEntry);
         return aiText;
 
       } catch (err) {
         clearTimeout(timeoutHandle);
         lastErr = err;
-
         const latencyMs = Date.now() - startTime;
         const errType   = classifyError(err);
         const errMsg    = (err?.message || String(err)).slice(0, 120);
 
-        if (errType === ERR_TYPE.TIMEOUT) {
-          geminiError(`Key #${keyEntry.index} → ⏱️ TIMEOUT CORTADO A ${GEMINI_TIMEOUT_MS / 1000}s (configurado) — rotando key`);
-        } else {
-          geminiError(`Key #${keyEntry.index} → ${errType} después de ${(latencyMs / 1000).toFixed(2)}s — ${errMsg}`);
-        }
+        geminiError(`Intento ${attempt}/${MAX_TOTAL_ATTEMPTS} (${keyInfo.name}) falló: ${errType} (${(latencyMs / 1000).toFixed(2)}s) — ${errMsg}`);
 
-        // ── REGLA CRÍTICA: BAD_REQUEST (400) no rota keys ──────────────────
-        // Un error 400 indica petición mal formada. Cambiar de key no lo soluciona.
-        // Abortar inmediatamente sin probar Key #2, Key #3, etc.
-        if (errType === ERR_TYPE.BAD_REQUEST) {
-          geminiError(`Error 400 BAD_REQUEST — Abortando sin rotar más keys. El problema es la petición.`);
+        // Si falló este intento, incrementamos el contador de reintentos
+        sessionUsage.retryCount++;
+
+        // NO REINTENTAR: Errores no recuperables (400 Bad Request, 401/403 Auth)
+        if (errType === ERR_TYPE.BAD_REQUEST || errType === ERR_TYPE.AUTH) {
+          geminiError(`Error ${errType} no es reintentable. Abortando inmediatamente.`);
           throw err;
         }
 
-        // NOT_FOUND (404): este modelo slug no existe → pasar al siguiente modelo
-        if (errType === ERR_TYPE.NOT_FOUND) {
-          geminiWarn(`Modelo '${modelSlug}' no encontrado (404). Pasando al modelo fallback.`);
-          break; // salir del while de keys y probar el siguiente modelo
-        }
-
-        // Todos los demás errores (AUTH, RATE_LIMIT, SERVER_ERROR, TIMEOUT, NETWORK):
-        // penalizar la key y pasar a la siguiente
-        geminiPool.penalize(keyEntry, errType);
-
-        if (geminiPool.getAvailableKeys().length === 0) {
-          geminiError(`Todas las keys fallaron para el modelo '${modelSlug}'.`);
+        // Si ya alcanzamos el intento máximo (2), salir del bucle
+        if (attempt >= MAX_TOTAL_ATTEMPTS) {
+          geminiError(`Se alcanzó el límite máximo de ${MAX_TOTAL_ATTEMPTS} intentos. Abortando.`);
           break;
         }
 
-        geminiLog(`Intentando siguiente key disponible...`);
+        geminiLog(`Reintentando con intento ${attempt + 1}/${MAX_TOTAL_ATTEMPTS}...`);
       }
     }
-  }
 
-  geminiError('Todas las API Keys y modelos de Google Gemini fallaron. Ejecutando fallback.');
-  throw lastErr || new Error('Todos los modelos y claves de Google Gemini fallaron.');
+    geminiError('Se agotaron los intentos permitidos para Gemini. Lanzando error.');
+    throw lastErr || new Error('Google Gemini falló tras reintentos permitidos.');
+
+  } finally {
+    // Si la interacción falló completamente pero acumuló intentos o retries, registramos métricas si se especificó tenantId
+    if (tenantId && (sessionUsage.requestCount > 0 || sessionUsage.retryCount > 0)) {
+      recordTenantAiUsage({ tenantId, ...sessionUsage }).catch(() => {});
+    }
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -704,13 +627,13 @@ async function handleAiError(error, providerName = 'Google Gemini') {
  * Cascada de resiliencia:
  *   #1 → Google Gemini (gemini-3.7-flash principal, gemini-2.5-flash fallback)
  */
-async function callAiProviderCascade(systemPrompt, messages, mediaItems = [], tools = [], toolsHandler = null) {
+async function callAiProviderCascade(systemPrompt, messages, mediaItems = [], tools = [], toolsHandler = null, tenantId = null) {
   let lastError = null;
 
   // ── Slot #1: Google Gemini ──────────────────────────────────────────────────
-  if (process.env.GEMINI_API_KEY || process.env.GEMINI_KEY_1) {
+  if (process.env.GEMINI_API_KEY) {
     try {
-      const text = await callGemini(systemPrompt, messages, mediaItems, tools, toolsHandler);
+      const text = await callGemini(systemPrompt, messages, mediaItems, tools, toolsHandler, tenantId);
       if (text) return text;
     } catch (err) {
       geminiWarn(`Gemini falló completamente (${err.message?.slice(0, 80)}).`);
@@ -776,7 +699,16 @@ const userQueues = new Map();
  * @param {string}   messageId   - ID único del mensaje para deduplicación
  * @returns {Promise<string>}
  */
-export async function generateAIResponse(prompt, context = [], mediaItems = [], userLockKey = null, messageId = null, tools = [], toolsHandler = null) {
+export async function generateAIResponse(
+  prompt,
+  context = [],
+  mediaItems = [],
+  userLockKey = null,
+  messageId = null,
+  tools = [],
+  toolsHandler = null,
+  tenantId = null
+) {
   // ── Deduplicación por messageId ────────────────────────────────────────────
   if (messageId) {
     if (processedMessageIds.has(messageId)) {
@@ -787,7 +719,7 @@ export async function generateAIResponse(prompt, context = [], mediaItems = [], 
   }
 
   if (!userLockKey) {
-    return _processAIRequest(prompt, context, mediaItems, tools, toolsHandler);
+    return _processAIRequest(prompt, context, mediaItems, tools, toolsHandler, tenantId);
   }
 
   // ── Cola de procesamiento secuencial por userLockKey ───────────────────────
@@ -795,7 +727,7 @@ export async function generateAIResponse(prompt, context = [], mediaItems = [], 
   
   const nextTask = (async () => {
     await prevTask.catch(() => {});
-    return _processAIRequest(prompt, context, mediaItems, tools, toolsHandler);
+    return _processAIRequest(prompt, context, mediaItems, tools, toolsHandler, tenantId);
   })();
 
   userQueues.set(userLockKey, nextTask);
@@ -813,14 +745,14 @@ export async function generateAIResponse(prompt, context = [], mediaItems = [], 
 /**
  * Función interna que ejecuta la petición real.
  */
-async function _processAIRequest(prompt, context, mediaItems, tools, toolsHandler) {
+async function _processAIRequest(prompt, context, mediaItems, tools, toolsHandler, tenantId = null) {
   try {
     // La memoria en RAM ha sido completamente eliminada en FASE 2.
     // 'context' ya contiene todo el historial recuperado de PostgreSQL.
     const fullContext = [...context];
 
     // ── Llamada a la cascada ────────────────────────────────────────────────
-    const aiText = await callAiProviderCascade(prompt, fullContext, mediaItems, tools, toolsHandler);
+    const aiText = await callAiProviderCascade(prompt, fullContext, mediaItems, tools, toolsHandler, tenantId);
 
     return aiText;
   } catch (error) {
@@ -837,24 +769,34 @@ async function _processAIRequest(prompt, context, mediaItems, tools, toolsHandle
  * Lista de modelos Gemini en uso.
  * Exportado para compatibilidad con cualquier código que lo importe.
  */
-export const MODELOS_GEMINI = [MODELO_PRINCIPAL, MODELO_FALLBACK];
+export const MODELOS_GEMINI = [MODELO_PRINCIPAL];
 
 /**
- * Expone el estado del pool de keys para diagnóstico / dashboard.
- * @returns {Array<{index: number, maskedKey: string, status: string, cooldownUntil: Date|null, failCount: number}>}
+ * Expone el estado de las API keys para diagnóstico / dashboard.
+ * @returns {Array<{index: number, name: string, maskedKey: string, status: string}>}
  */
 export function getGeminiPoolStatus() {
   try {
-    geminiPool.init();
+    geminiKeyManager.init();
+    const status = [];
+    if (geminiKeyManager.primaryKey) {
+      status.push({
+        index: 1,
+        name: 'Principal',
+        maskedKey: maskKey(geminiKeyManager.primaryKey),
+        status: 'active',
+      });
+    }
+    if (geminiKeyManager.backupKey) {
+      status.push({
+        index: 2,
+        name: 'Backup',
+        maskedKey: maskKey(geminiKeyManager.backupKey),
+        status: 'standby',
+      });
+    }
+    return status;
   } catch {
     return [];
   }
-  return geminiPool.keys.map(k => ({
-    index:        k.index,
-    maskedKey:    maskKey(k.rawKey),
-    status:       k.status,
-    cooldownUntil: k.cooldownUntil,
-    failCount:    k.failCount,
-    lastUsedAt:   k.lastUsedAt,
-  }));
 }

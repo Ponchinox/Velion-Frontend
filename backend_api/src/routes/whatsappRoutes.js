@@ -6,9 +6,12 @@ const router = express.Router();
 
 // ─── GATEWAY: Webhook unificado (Evolution API POST + Meta Cloud API POST) ───
 router.post('/webhook', receiveWebhook);
+router.post('/meta/webhook', receiveWebhook); // Alias por compatibilidad
 
 // ─── GATEWAY: Verificación de webhook de Meta Cloud API (GET handshake) ───
 router.get('/webhook', receiveMetaVerification);
+router.get('/meta/webhook', receiveMetaVerification); // Alias por compatibilidad
+
 
 // Proteger todas las rutas de WhatsApp
 router.use(authMiddleware);

@@ -121,12 +121,13 @@ export async function createMetaInstance(req, res) {
     // ── Payload exacto que se envía a Evolution API ───────────────────────
     const evolutionPayload = {
       instanceName,
-      integration: 'WHATSAPP-BUSINESS',
-      token:       '',                // Evolution usa accessToken, no token interno
-      number:      phoneNumber.replace(/\D/g, ''), // Solo dígitos (ej. 51987654321)
-      businessId:  metaWabaId,
-      accessToken: metaAccessToken,
-      qrcode:      false,
+      integration:   'WHATSAPP-BUSINESS',
+      token:         '',                // Evolution usa accessToken, no token interno
+      number:        phoneNumber.replace(/\D/g, ''), // Solo dígitos (ej. 51987654321)
+      businessId:    metaWabaId,
+      phoneNumberId: metaPhoneNumberId,
+      accessToken:   metaAccessToken,
+      qrcode:        false,
       webhook: {
         enabled:         true,
         url:             webhookUrl,

@@ -10,6 +10,7 @@ import {
   downloadMetaMedia,
 } from '../services/whatsappGateway.js';
 import { getCompactCatalogIndex } from '../services/catalogCacheService.js';
+import { evaluateAiBudgetGuard } from '../services/aiBudgetGuardService.js';
 
 /**
  * Helper para generar los headers de autenticación del Evolution API
@@ -472,7 +473,6 @@ export async function sendMessage(req, res) {
 
     if (msgId) markMessageAsSentByAi(msgId);
     markMessageAsSentByAi(message);
-
     console.log(`📤 [sendMessage API | ${ctx.provider}] Mensaje enviado a +${cleanNumber}`);
 
     return res.json({ success: true, provider: ctx.provider });
@@ -491,22 +491,23 @@ export async function sendMessage(req, res) {
  * Debemos responder con el hub.challenge si el token coincide.
  */
 export function receiveMetaVerification(req, res) {
-  const VERIFY_TOKEN = process.env.META_WEBHOOK_VERIFY_TOKEN || 'velion_meta_verify_2024';
+  const VERIFY_TOKEN = (process.env.META_WEBHOOK_VERIFY_TOKEN || process.env.VERIFY_TOKEN || 'velion_meta_verify_2024').trim();
   const mode = req.query['hub.mode'];
-  const token = req.query['hub.verify_token'];
+  const token = (req.query['hub.verify_token'] || '').trim();
   const challenge = req.query['hub.challenge'];
 
   if (mode === 'subscribe' && token === VERIFY_TOKEN) {
     console.log('✅ [Meta Gateway] Webhook verificado correctamente por Meta.');
     return res.status(200).send(challenge);
   }
-  console.error('âŒ [Meta Gateway] Verificación de webhook fallida. Token incorrecto.');
+  console.error('❌ [Meta Gateway] Verificación de webhook fallida. Token incorrecto.');
   return res.status(403).json({ error: 'Forbidden' });
 }
 
 /**
  * ─── GATEWAY: Normaliza el payload de Meta Cloud API ───
- * Extrae remitente, texto, audios, imágenes, statuses y phoneNumberId.
+ * Extrae remitente, texto, audios, imágenes, statuses, echoes y phoneNumberId.
+ * Soporta eventos de Coexistence (smb_message_echoes, history, smb_app_state_sync).
  *
  * @param {object} body - req.body del webhook de Meta
  * @returns {object|null}
@@ -515,22 +516,68 @@ function normalizeMeta(body) {
   try {
     const entry = body?.entry?.[0];
     const change = entry?.changes?.[0];
+    const field = change?.field;
     const value = change?.value;
 
-    // 1. Detección de Eventos de Estado (sent, delivered, read, failed)
+    const metaPhoneNumberId = value?.metadata?.phone_number_id || '';
+
+    // 1. Detección de Eventos Informativos / Sincronización de Coexistence (history, sync, etc.)
+    if (field === 'history' || field === 'smb_app_state_sync' || field === 'account_update') {
+      return {
+        isCoexSyncEvent: true,
+        field,
+        metaPhoneNumberId
+      };
+    }
+
+    // 2. Detección de Eventos de Estado (sent, delivered, read, failed)
     if (value?.statuses?.[0]) {
       return {
         isStatusEvent: true,
         statusObj: value.statuses[0],
-        metaPhoneNumberId: value?.metadata?.phone_number_id || ''
+        metaPhoneNumberId
       };
     }
 
-    // 2. Detección de Mensajes Entrantes
+    // 3. Detección de Coexistence: Mensajes Enviados Manualmente desde la App Móvil (smb_message_echoes)
+    const echoMsg = value?.message_echoes?.[0] || 
+                    (field === 'smb_message_echoes' ? value?.messages?.[0] : null) || 
+                    (value?.messages?.[0]?.is_echo ? value?.messages?.[0] : null);
+
+    if (echoMsg) {
+      const recipient = echoMsg.to || echoMsg.recipient_id || '';
+      const msgId = echoMsg.id || null;
+      let text = '';
+      if (echoMsg.type === 'text') {
+        text = echoMsg.text?.body || '';
+      } else if (echoMsg.type === 'image') {
+        text = echoMsg.image?.caption || '[Imagen enviada desde WhatsApp Business]';
+      } else if (echoMsg.type === 'audio') {
+        text = '[Nota de voz enviada desde WhatsApp Business]';
+      } else {
+        text = '[Mensaje enviado desde WhatsApp Business]';
+      }
+
+      return {
+        sender: recipient, // El destinatario es el cliente (para asociar al chat)
+        text,
+        metaPhoneNumberId,
+        pushName: null,
+        msgId,
+        audioId: null,
+        audioMime: null,
+        imageId: null,
+        fromMe: true, // Marcado como propio / agente para pausar bot y reflejar en Live Chat
+        isMessageEcho: true,
+        isStatusEvent: false,
+        isCoexSyncEvent: false
+      };
+    }
+
+    // 4. Detección de Mensajes Entrantes Normales (Cliente -> Negocio)
     const msg = value?.messages?.[0];
     if (!msg) return null;
 
-    const metaPhoneNumberId = value?.metadata?.phone_number_id || '';
     const sender = msg.from || ''; // número del remitente, solo dígitos
     const msgId = msg.id || null;
 
@@ -557,9 +604,21 @@ function normalizeMeta(body) {
 
     const pushName = value?.contacts?.[0]?.profile?.name || null;
 
-    return { sender, text, metaPhoneNumberId, pushName, msgId, audioId, audioMime, imageId, isStatusEvent: false };
+    return { 
+      sender, 
+      text, 
+      metaPhoneNumberId, 
+      pushName, 
+      msgId, 
+      audioId, 
+      audioMime, 
+      imageId, 
+      fromMe: false, 
+      isStatusEvent: false,
+      isCoexSyncEvent: false 
+    };
   } catch (e) {
-    console.error('âŒ [Meta Gateway] Error normalizando payload de Meta:', e.message);
+    console.error('❌ [Meta Gateway] Error normalizando payload de Meta:', e.message);
     return null;
   }
 }
@@ -612,10 +671,13 @@ async function normalizeEvolution(body, requestApiKey) {
         { message: data },
         getEvoHeaders(requestApiKey)
       );
-      const imgBase64 = typeof mediaRes.data === 'string' ? mediaRes.data : (mediaRes.data?.base64 || null);
-      if (imgBase64) mediaItems.push(imgBase64);
+      const imageBase64 = typeof mediaRes.data === 'string' ? mediaRes.data : (mediaRes.data?.base64 || null);
+      if (imageBase64) {
+        const mimeType = data.message.imageMessage.mimetype || 'image/jpeg';
+        mediaItems.push(`data:${mimeType};base64,${imageBase64}`);
+      }
     } catch (e) {
-      console.error('âŒ [Evolution] Error descargando imagen:', e.message);
+      console.error('❌ [Evolution] Error descargando imagen:', e.message);
     }
   } else if (data.message?.audioMessage) {
     try {
@@ -630,7 +692,7 @@ async function normalizeEvolution(body, requestApiKey) {
         mediaItems.push(`data:${mimeType};base64,${audioBase64}`);
       }
     } catch (e) {
-      console.error('âŒ [Evolution] Error descargando audio:', e.message);
+      console.error('❌ [Evolution] Error descargando audio:', e.message);
     }
     text = '[Nota de voz de WhatsApp] Escucha este audio y respóndeme o ejecuta mi solicitud.';
   } else if (data.message?.videoMessage) {
@@ -680,6 +742,12 @@ export async function receiveWebhook(req, res) {
       return;
     }
 
+    // Eventos informativos de Coexistence (history, sync, etc.)
+    if (normalized.isCoexSyncEvent) {
+      console.log(`ℹ️ [Meta Coexistence] Evento informativo ignorado de forma segura (${normalized.field})`);
+      return;
+    }
+
     // Procesar evento de Status (sent, delivered, read, failed)
     if (normalized.isStatusEvent && normalized.statusObj) {
       const { id: statusId, status: statusName, recipient_id: recipientPhone } = normalized.statusObj;
@@ -709,12 +777,12 @@ export async function receiveWebhook(req, res) {
           }
         }
       } catch (statusErr) {
-        console.error('âŒ [Meta Status] Error actualizando estado de mensaje:', statusErr.message);
+        console.error('❌ [Meta Status] Error actualizando estado de mensaje:', statusErr.message);
       }
       return;
     }
 
-    console.log(`[📱 META] 📥 De: +${normalized.sender} | Texto: "${normalized.text}" (msgId: ${normalized.msgId || 'N/A'})`);
+    console.log(`[📱 META] 📥 ${normalized.fromMe ? '📤 Echo (Saliente App):' : 'De:'} +${normalized.sender} | Texto: "${normalized.text}" (msgId: ${normalized.msgId || 'N/A'})`);
   } else {
     // ── 3B. EVOLUTION API ──
     requestApiKey = (req.query?.apikey || req.headers?.apikey || req.body?.apikey || req.headers?.['x-api-key'] || '').trim();
@@ -773,7 +841,7 @@ export async function receiveWebhook(req, res) {
   const remoteJid = isMeta ? clientNumber : (normalized.remoteJid || clientNumber);
   const cleanJid = remoteJid.replace(/^\+/, '');
   let mediaItems = normalized.mediaItems || [];
-  const fromMe = isMeta ? false : (normalized.fromMe || false);
+  const fromMe = Boolean(normalized.fromMe);
 
   // Bloquear grupos (@g.us)
   if (!isMeta) {
@@ -1284,13 +1352,19 @@ async function processBufferedMessage(bufferKey) {
     });
     rawMessages.reverse();
 
+    const MAX_USER_MESSAGE_CHARS = 2000;
     const chatContext = [];
     for (const msg of rawMessages) {
       const role = msg.senderRole === 'contact' ? 'user' : 'model';
+      let content = msg.content || '';
+      if (role === 'user' && content.length > MAX_USER_MESSAGE_CHARS) {
+        console.warn(`🛡️ [Cost Guard] Truncando mensaje de usuario para Gemini: ${content.length} chars → ${MAX_USER_MESSAGE_CHARS} chars.`);
+        content = content.slice(0, MAX_USER_MESSAGE_CHARS) + '\n[... Mensaje truncado a 2000 caracteres por seguridad]';
+      }
       if (chatContext.length > 0 && chatContext[chatContext.length - 1].role === role) {
-        chatContext[chatContext.length - 1].content += '\n' + msg.content;
+        chatContext[chatContext.length - 1].content += '\n' + content;
       } else {
-        chatContext.push({ role, content: msg.content });
+        chatContext.push({ role, content });
       }
     }
 
@@ -1776,15 +1850,48 @@ Atributos/Tags: ${Array.isArray(product.tags) ? product.tags.join(', ') : ''}
 
     const userLockKey = `${tenant.id}:${cleanJid}`;
 
-    const aiResponse = await generateAIResponse(
-      systemPrompt, 
+    // ── 🛡️ ESCUDO DE PRESUPUESTO IA (FASE 2B: BUDGET GUARD) ──
+    const budgetGuard = await evaluateAiBudgetGuard({
+      tenantId: tenant.id,
+      tenant: tenantDetails,
+      systemPrompt,
       chatContext,
-      mediaItems,
-      userLockKey,
-      null, // msgId deduplication happens at db layer
-      tools,
-      toolsHandler
-    );
+      hasTools: tools.length > 0
+    });
+
+    if (!budgetGuard.allowed) {
+      console.warn(`🛡️ [AI Budget Guard Block] Petición bloqueada para tenant '${tenant.name}' (${tenant.id.slice(0, 8)}). Motivo: ${budgetGuard.reason}`);
+      try {
+        const fallbackText = budgetGuard.fallbackText || 'En este momento no puedo responder automáticamente. Un asesor comercial continuará con tu atención a la brevedad.';
+        await sendWhatsAppReply({
+          ...gatewayCtx,
+          to: finalCleanNumber,
+          text: fallbackText
+        });
+      } catch (sendErr) {
+        console.error('Error enviando fallback de presupuesto excedido:', sendErr.message);
+      }
+      return; // 0 llamadas a Gemini, 0 retries, 0 tools
+    }
+
+    let aiResponse = '';
+    try {
+      aiResponse = await generateAIResponse(
+        systemPrompt, 
+        chatContext,
+        mediaItems,
+        userLockKey,
+        null, // msgId deduplication happens at db layer
+        tools,
+        toolsHandler,
+        tenant.id // <- tenantId para medición persistente de consumo de IA
+      );
+    } finally {
+      // Liberar reserva de tokens en vuelo
+      if (budgetGuard.releaseReservation) {
+        budgetGuard.releaseReservation();
+      }
+    }
 
     if (!aiResponse || aiResponse === '...') {
       return;

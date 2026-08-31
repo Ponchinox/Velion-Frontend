@@ -25,4 +25,5 @@ dist-ssr
 *.dump
 .env
 .env.*
+!.env.example
 

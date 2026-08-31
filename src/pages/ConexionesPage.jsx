@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import * as connectionService from '../services/connectionService';
@@ -20,6 +20,8 @@ import {
   Key,
   FloppyDisk,
   ShieldCheck,
+  Warning,
+  CaretDown,
 } from '@phosphor-icons/react';
 
 // ─── Sub-componente: Selector de Proveedor ─────────────────────────────────
@@ -149,12 +151,20 @@ export default function ConexionesPage() {
   const [qrBase64, setQrBase64] = useState('');
   const [isGeneratingQr, setIsGeneratingQr] = useState(false);
 
-  // Formulario Meta
+  // Formulario Meta (legacy fallback)
   const [metaPhoneNumberId, setMetaPhoneNumberId] = useState('');
   const [metaWabaId, setMetaWabaId] = useState('');
   const [metaAccessToken, setMetaAccessToken] = useState('');
   const [metaPhoneNumber, setMetaPhoneNumber] = useState('');
   const [isSavingMeta, setIsSavingMeta] = useState(false);
+
+  // Meta Embedded Signup (nuevo flujo)
+  const [metaOnboardingStatus, setMetaOnboardingStatus] = useState('idle'); // 'idle'|'loading_sdk'|'waiting'|'exchanging'|'success'|'error'
+  const [metaOnboardingError, setMetaOnboardingError] = useState(null);
+  const [metaAppId, setMetaAppId] = useState(null);
+  const [metaConfigId, setMetaConfigId] = useState(null);
+  const [showLegacyMeta, setShowLegacyMeta] = useState(false);
+  const [metaConfigured, setMetaConfigured] = useState(true); // optimistic, se corrige al cargar
 
   // Toast
   const [toast, setToast] = useState(null);
@@ -337,7 +347,7 @@ export default function ConexionesPage() {
     }
   };
 
-  // ── Crear instancia Meta en Evolution API ────────────────────────────────
+  // ── [LEGACY] Crear instancia Meta manualmente ────────────────────────────
   const handleSaveMeta = async () => {
     if (!metaPhoneNumberId.trim() || !metaWabaId.trim() || !metaAccessToken.trim() || !metaPhoneNumber.trim()) {
       showToast('Completa los 4 campos requeridos de Meta.', 'error');
@@ -347,25 +357,197 @@ export default function ConexionesPage() {
     try {
       localStorage.setItem('sa_connection_name', connectionName || 'Meta API');
       setSavedName(connectionName || 'Meta API');
-      await connectionService.createMetaConnection({
+      await connectionService.metaLegacyConnect({
         metaPhoneNumberId: metaPhoneNumberId.trim(),
         metaWabaId:        metaWabaId.trim(),
         metaAccessToken:   metaAccessToken.trim(),
         phoneNumber:       metaPhoneNumber.trim(),
-        connectionName:    connectionName.trim() || 'Meta API',
       });
       setActiveProvider('META');
       setMetaPhoneNumberIdSaved(metaPhoneNumberId.trim());
       setStatus('CONNECTED');
       setShowNewConnectionModal(false);
-      showToast('✅ Instancia Meta creada en Evolution y registrada correctamente.');
+      showToast('✅ Conexión Meta configurada manualmente.');
       await loadProvider();
     } catch (err) {
-      showToast(err.message || 'Error al crear la instancia Meta.', 'error');
+      showToast(err.message || 'Error al crear la conexión Meta.', 'error');
     } finally {
       setIsSavingMeta(false);
     }
   };
+
+  // ── Meta Embedded Signup: Carga config del backend ──────────────────────
+  const loadMetaConfig = useCallback(async () => {
+    try {
+      const cfg = await connectionService.getMetaOnboardingConfig();
+      if (cfg.configured) {
+        setMetaAppId(cfg.appId);
+        setMetaConfigId(cfg.configId);
+        setMetaConfigured(true);
+      } else {
+        setMetaConfigured(false);
+      }
+    } catch {
+      setMetaConfigured(false);
+    }
+  }, []);
+
+  // Ref para capturar eventos de sesión de Meta Embedded Signup (FINISH_WHATSAPP_BUSINESS_APP_ONBOARDING)
+  const metaSessionInfoRef = useRef({ wabaId: null, phoneNumberId: null });
+
+  // ── Meta Embedded Signup: Iniciar flujo con FB SDK ───────────────────────
+  const handleMetaEmbeddedSignup = useCallback(() => {
+    if (!window.FB) {
+      setMetaOnboardingError('El SDK de Facebook no está disponible. Verifica tu conexión y recarga la página.');
+      return;
+    }
+    if (!metaAppId || !metaConfigId) {
+      setMetaOnboardingError('La integración con Meta no está configurada en el servidor. Contacta al administrador.');
+      return;
+    }
+
+    setMetaOnboardingStatus('waiting');
+    setMetaOnboardingError(null);
+    metaSessionInfoRef.current = { wabaId: null, phoneNumberId: null };
+
+    window.FB.login(
+      async (response) => {
+        if (!response?.authResponse?.code) {
+          // Usuario canceló o no autorizó completamente
+          setMetaOnboardingStatus('idle');
+          if (response?.status === 'unknown') {
+            setMetaOnboardingError('Vinculación cancelada. Si fue accidental, vuelve a intentarlo.');
+          }
+          return;
+        }
+
+        const { code } = response.authResponse;
+        // Priorizar datos de FINISH_WHATSAPP_BUSINESS_APP_ONBOARDING capturados via message event,
+        // o fallback a authResponse si estuvieran presentes
+        const wabaId = response.authResponse?.waba_id || metaSessionInfoRef.current?.wabaId || null;
+        const phoneNumberId = response.authResponse?.phone_number_id || metaSessionInfoRef.current?.phoneNumberId || null;
+
+        console.log(`📡 [Meta Coexistence] Enviando callback al backend (wabaId: ${wabaId || 'auto-descubrir'}, phoneNumberId: ${phoneNumberId || 'auto-descubrir'})...`);
+
+        setMetaOnboardingStatus('exchanging');
+        try {
+          const result = await connectionService.metaOnboardingCallback({
+            code,
+            wabaId,
+            phoneNumberId,
+          });
+          if (result.success) {
+            setMetaOnboardingStatus('success');
+            setActiveProvider('META');
+            setMetaPhoneNumberIdSaved(result.metaPhoneNumberId);
+            setStatus('CONNECTED');
+            showToast(`✅ WhatsApp Business conectado: +${result.phoneNumber}`);
+            setShowNewConnectionModal(false);
+            await loadProvider();
+          } else {
+            throw new Error(result.error || 'Respuesta inesperada del servidor.');
+          }
+        } catch (err) {
+          setMetaOnboardingStatus('error');
+          setMetaOnboardingError(err.message || 'Error al completar la vinculación con Meta.');
+        }
+      },
+      {
+        config_id:                    metaConfigId,
+        response_type:                'code',
+        override_default_response_type: true,
+        extras: {
+          setup:               {},
+          version:             'v4',
+          featureType:         'whatsapp_business_app_onboarding',
+          sessionInfoVersion:  '3',
+          coex:                true,  // Activa el flujo Coexistence
+        },
+      }
+    );
+  }, [metaAppId, metaConfigId, loadProvider]);
+
+  // Listener para capturar eventos de sesión de Meta Embedded Signup (FINISH_WHATSAPP_BUSINESS_APP_ONBOARDING)
+  useEffect(() => {
+    const handleMetaMessageEvent = (event) => {
+      // Ignorar mensajes sin origen seguro o sin datos
+      if (!event.data) return;
+
+      try {
+        const rawData = typeof event.data === 'string' ? JSON.parse(event.data) : event.data;
+
+        if (rawData?.type === 'WA_EMBEDDED_SIGNUP') {
+          console.log(`📩 [Meta Embedded Signup Event] Evento: ${rawData.event}`, rawData.data);
+
+          if (
+            rawData.event === 'FINISH_WHATSAPP_BUSINESS_APP_ONBOARDING' ||
+            rawData.event === 'FINISH'
+          ) {
+            const wabaId = rawData.data?.waba_id || rawData.data?.wabaId || null;
+            const phoneNumberId = rawData.data?.phone_number_id || rawData.data?.phoneNumberId || null;
+            metaSessionInfoRef.current = { wabaId, phoneNumberId };
+            console.log(`✅ [Meta Coexistence] Datos de sesión capturados: WABA=${wabaId}, PhoneID=${phoneNumberId}`);
+          } else if (rawData.event === 'CANCEL') {
+            console.log('⚠️ [Meta Embedded Signup] Usuario canceló el flujo.');
+          } else if (rawData.event === 'ERROR') {
+            console.error('❌ [Meta Embedded Signup] Error en el flujo:', rawData.data);
+            setMetaOnboardingError(rawData.data?.error_message || 'Error en el registro de Meta.');
+          }
+        }
+      } catch {
+        // Ignorar mensajes que no sean JSON
+      }
+    };
+
+    window.addEventListener('message', handleMetaMessageEvent);
+    return () => {
+      window.removeEventListener('message', handleMetaMessageEvent);
+    };
+  }, []);
+
+  // Cargar config Meta cuando el usuario selecciona la opción META
+  useEffect(() => {
+    if (selectedProvider === 'META' && showNewConnectionModal) {
+      setMetaOnboardingStatus('loading_sdk');
+      setMetaOnboardingError(null);
+
+      // Cargar config del backend
+      loadMetaConfig().then(() => {
+        // Cargar el SDK de Facebook si aún no está cargado
+        if (!window.FB) {
+          const existingScript = document.getElementById('facebook-jssdk');
+          if (!existingScript) {
+            const script = document.createElement('script');
+            script.id  = 'facebook-jssdk';
+            script.src = 'https://connect.facebook.net/en_US/sdk.js';
+            script.async = true;
+            script.onload = () => {
+              window.FB.init({
+                appId:   metaAppId || '',
+                cookie:  true,
+                xfbml:   true,
+                version: 'v20.0',
+              });
+              setMetaOnboardingStatus('idle');
+            };
+            script.onerror = () => {
+              setMetaOnboardingStatus('error');
+              setMetaOnboardingError('No se pudo cargar el SDK de Facebook. Verifica tu conexión a internet.');
+            };
+            document.body.appendChild(script);
+          } else {
+            setMetaOnboardingStatus('idle');
+          }
+        } else {
+          // Re-inicializar con el App ID correcto
+          if (metaAppId) {
+            window.FB.init({ appId: metaAppId, cookie: true, xfbml: true, version: 'v20.0' });
+          }
+          setMetaOnboardingStatus('idle');
+        }
+      });
+    }
+  }, [selectedProvider, showNewConnectionModal, loadMetaConfig, metaAppId]);
 
   // ── Desconectar ──────────────────────────────────────────────────────────
   const executeDisconnect = async () => {
@@ -452,79 +634,171 @@ export default function ConexionesPage() {
           )}
         </div>
       ) : (
-        /* ── Meta Cloud API vía Evolution: Formulario ── */
+        /* ── Meta Cloud API: Embedded Signup (nuevo flujo oficial) ── */
         <div className="space-y-4">
-          {/* Info box */}
-          <div className="flex items-start gap-3 p-3.5 rounded-xl bg-blue-500/8 border border-blue-500/20">
-            <ShieldCheck size={18} weight="duotone" className="text-blue-500 mt-0.5 flex-shrink-0" />
-            <p className="text-xs text-blue-700 dark:text-blue-400 leading-relaxed">
-              Obtén estos datos desde el{' '}
-              <a href="https://developers.facebook.com/apps" target="_blank" rel="noopener noreferrer"
-                className="font-bold underline underline-offset-2">
-                Panel de Desarrolladores de Meta
-              </a>
-              {' '}→ Tu App → WhatsApp → Configuración de API.
-            </p>
-          </div>
 
-          <FormField
-            id="meta-phone-number"
-            label="Número de teléfono WhatsApp Business"
-            placeholder="+51987654321"
-            value={metaPhoneNumber}
-            onChange={setMetaPhoneNumber}
-            required
-            helpText="Número de teléfono real de tu cuenta WhatsApp Business (con código de país)."
-            icon={<DeviceMobile size={14} />}
-          />
+          {/* ── Panel principal: Botón "Continuar con Facebook" ── */}
+          {!showLegacyMeta && (
+            <div className="space-y-4">
 
-          <FormField
-            id="meta-phone-id"
-            label="Phone Number ID"
-            placeholder=""
-            value={metaPhoneNumberId}
-            onChange={setMetaPhoneNumberId}
-            required
-            helpText="ID numérico del número en Meta Developers → Tu App → WhatsApp → Configuración de API."
-            icon={<IdentificationBadge size={14} />}
-          />
+              {/* Info Banner */}
+              <div className="flex items-start gap-3 p-3.5 rounded-xl bg-blue-500/8 border border-blue-500/20">
+                <ShieldCheck size={18} weight="duotone" className="text-blue-500 mt-0.5 flex-shrink-0" />
+                <div className="text-xs text-blue-700 dark:text-blue-400 leading-relaxed space-y-1">
+                  <p className="font-semibold">Conecta tu WhatsApp Business existente.</p>
+                  <p>Con <strong>Coexistence</strong> podrás seguir usando la app de WhatsApp Business en tu teléfono mientras el bot de IA responde automáticamente a través de la API oficial de Meta.</p>
+                </div>
+              </div>
 
-          <FormField
-            id="meta-waba-id"
-            label="WABA ID (WhatsApp Business Account ID)"
-            placeholder=""
-            value={metaWabaId}
-            onChange={setMetaWabaId}
-            required
-            helpText="ID de tu cuenta de WhatsApp Business en Meta Business Manager."
-            icon={<WhatsappLogo size={14} />}
-          />
+              {/* Estado: No configurado en servidor */}
+              {!metaConfigured && metaOnboardingStatus !== 'loading_sdk' && (
+                <div className="flex items-start gap-2 p-3 rounded-xl bg-amber-500/10 border border-amber-500/20">
+                  <Warning size={16} className="text-amber-500 mt-0.5 flex-shrink-0" />
+                  <p className="text-xs text-amber-700 dark:text-amber-400">
+                    La integración con Meta no está configurada en este servidor. Contacta al administrador para configurar <code className="font-mono">META_APP_ID</code> y <code className="font-mono">META_EMBEDDED_SIGNUP_CONFIG_ID</code>.
+                  </p>
+                </div>
+              )}
 
-          <FormField
-            id="meta-access-token"
-            label="Access Token Permanente"
-            placeholder=""
-            value={metaAccessToken}
-            onChange={setMetaAccessToken}
-            type="password"
-            required
-            helpText="Token de acceso permanente (System User) con permiso whatsapp_business_messaging."
-            icon={<Key size={14} />}
-          />
+              {/* Estado: Error del proceso */}
+              {metaOnboardingError && (
+                <div className="flex items-start gap-2 p-3 rounded-xl bg-red-500/10 border border-red-500/20">
+                  <Warning size={16} className="text-red-500 mt-0.5 flex-shrink-0" />
+                  <p className="text-xs text-red-700 dark:text-red-400">{metaOnboardingError}</p>
+                </div>
+              )}
 
-          <button
-            onClick={handleSaveMeta}
-            disabled={isSavingMeta || !metaPhoneNumberId.trim() || !metaWabaId.trim() || !metaAccessToken.trim() || !metaPhoneNumber.trim()}
-            className="w-full py-2.5 rounded-lg bg-blue-600 hover:bg-blue-700 text-white font-bold text-sm
-              flex items-center justify-center gap-2 shadow-md transition-all cursor-pointer
-              disabled:opacity-50 disabled:cursor-not-allowed mt-1"
-          >
-            {isSavingMeta ? (
-              <><CircleNotch size={18} className="animate-spin" /><span>Creando instancia...</span></>
-            ) : (
-              <><FloppyDisk size={18} weight="bold" /><span>Conectar con Meta Cloud API</span></>
-            )}
-          </button>
+              {/* Botón principal */}
+              <button
+                id="meta-embedded-signup-btn"
+                onClick={handleMetaEmbeddedSignup}
+                disabled={
+                  !metaConfigured ||
+                  metaOnboardingStatus === 'loading_sdk' ||
+                  metaOnboardingStatus === 'waiting' ||
+                  metaOnboardingStatus === 'exchanging'
+                }
+                className="w-full py-3 rounded-xl font-bold text-sm flex items-center justify-center gap-2.5
+                  shadow-md transition-all cursor-pointer
+                  bg-[#1877F2] hover:bg-[#166fe5] active:bg-[#1464d8] text-white
+                  disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {metaOnboardingStatus === 'loading_sdk' && (
+                  <><CircleNotch size={18} className="animate-spin" /><span>Cargando...</span></>
+                )}
+                {metaOnboardingStatus === 'waiting' && (
+                  <><CircleNotch size={18} className="animate-spin" /><span>Abriendo ventana de Meta...</span></>
+                )}
+                {metaOnboardingStatus === 'exchanging' && (
+                  <><CircleNotch size={18} className="animate-spin" /><span>Completando vinculación...</span></>
+                )}
+                {(metaOnboardingStatus === 'idle' || metaOnboardingStatus === 'error') && (
+                  <><MetaLogo size={18} weight="bold" /><span>Continuar con Facebook</span></>
+                )}
+              </button>
+
+              {/* Nota de Coexistence */}
+              <p className="text-2xs text-lo text-center leading-relaxed">
+                Se abrirá una ventana de Meta para autorizar el acceso. Tu número continuará
+                funcionando en la app de WhatsApp Business <span className="font-semibold text-blue-500">simultáneamente</span>.
+              </p>
+
+              {/* Botón fallback: mostrar formulario manual */}
+              <div className="border-t border-line pt-3">
+                <button
+                  id="meta-show-legacy-form-btn"
+                  onClick={() => setShowLegacyMeta(true)}
+                  className="flex items-center gap-1 text-2xs text-muted hover:text-hi transition-colors cursor-pointer mx-auto"
+                >
+                  <CaretDown size={12} />
+                  <span>¿Problemas? Conectar manualmente con credenciales</span>
+                </button>
+              </div>
+            </div>
+          )}
+
+          {/* ── Panel legado: Formulario manual (oculto por defecto) ── */}
+          {showLegacyMeta && (
+            <div className="space-y-4">
+              <div className="flex items-center justify-between">
+                <p className="text-xs font-semibold text-hi">Configuración manual de credenciales Meta</p>
+                <button
+                  onClick={() => setShowLegacyMeta(false)}
+                  className="text-2xs text-muted hover:text-hi cursor-pointer transition-colors"
+                >
+                  ← Volver al flujo oficial
+                </button>
+              </div>
+
+              <div className="flex items-start gap-3 p-3.5 rounded-xl bg-amber-500/8 border border-amber-500/20">
+                <Warning size={16} weight="duotone" className="text-amber-500 mt-0.5 flex-shrink-0" />
+                <p className="text-xs text-amber-700 dark:text-amber-400 leading-relaxed">
+                  Modo avanzado. Requiere obtener manualmente los datos desde{' '}
+                  <a href="https://developers.facebook.com/apps" target="_blank" rel="noopener noreferrer"
+                    className="font-bold underline underline-offset-2">Meta Developers</a>.
+                </p>
+              </div>
+
+              <FormField
+                id="meta-phone-number"
+                label="Número de teléfono WhatsApp Business"
+                placeholder="+51987654321"
+                value={metaPhoneNumber}
+                onChange={setMetaPhoneNumber}
+                required
+                helpText="Número de teléfono real de tu cuenta WhatsApp Business (con código de país)."
+                icon={<DeviceMobile size={14} />}
+              />
+
+              <FormField
+                id="meta-phone-id"
+                label="Phone Number ID"
+                placeholder=""
+                value={metaPhoneNumberId}
+                onChange={setMetaPhoneNumberId}
+                required
+                helpText="ID numérico en Meta Developers → Tu App → WhatsApp → Configuración de API."
+                icon={<IdentificationBadge size={14} />}
+              />
+
+              <FormField
+                id="meta-waba-id"
+                label="WABA ID (WhatsApp Business Account ID)"
+                placeholder=""
+                value={metaWabaId}
+                onChange={setMetaWabaId}
+                required
+                helpText="ID de tu cuenta de WhatsApp Business en Meta Business Manager."
+                icon={<WhatsappLogo size={14} />}
+              />
+
+              <FormField
+                id="meta-access-token"
+                label="Access Token Permanente"
+                placeholder=""
+                value={metaAccessToken}
+                onChange={setMetaAccessToken}
+                type="password"
+                required
+                helpText="Token de acceso permanente (System User) con permiso whatsapp_business_messaging."
+                icon={<Key size={14} />}
+              />
+
+              <button
+                onClick={handleSaveMeta}
+                disabled={isSavingMeta || !metaPhoneNumberId.trim() || !metaWabaId.trim() || !metaAccessToken.trim() || !metaPhoneNumber.trim()}
+                className="w-full py-2.5 rounded-lg bg-blue-600 hover:bg-blue-700 text-white font-bold text-sm
+                  flex items-center justify-center gap-2 shadow-md transition-all cursor-pointer
+                  disabled:opacity-50 disabled:cursor-not-allowed mt-1"
+              >
+                {isSavingMeta ? (
+                  <><CircleNotch size={18} className="animate-spin" /><span>Guardando...</span></>
+                ) : (
+                  <><FloppyDisk size={18} weight="bold" /><span>Guardar credenciales Meta</span></>
+                )}
+              </button>
+            </div>
+          )}
         </div>
       )}
     </div>
