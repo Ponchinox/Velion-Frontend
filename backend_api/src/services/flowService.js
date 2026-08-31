@@ -6,7 +6,7 @@ import { sendText as gatewaySendText, sendMedia as gatewaySendMedia } from './wh
  * Guarda el mensaje saliente del flujo en la base de datos y lo transmite por WebSockets en tiempo real
  */
 async function saveAndEmitOutgoingMessage(customer, text, instance) {
-  const cleanPhone = clientNumber.replace(/\D/g, '') || clientNumber;
+  const cleanPhone = (customer.phone || '').replace(/\D/g, '');
 
   try {
     let contact = await prisma.contact.findFirst({
@@ -25,23 +25,35 @@ async function saveAndEmitOutgoingMessage(customer, text, instance) {
       });
 
       if (chat) {
-        await prisma.message.create({
-          data: {
-            content: text,
-            senderRole: 'agent',
-            chatId: chat.id,
-            tenantId: customer.tenantId
-          }
-        });
+        const now = new Date();
+        const [savedMsg] = await prisma.$transaction([
+          prisma.message.create({
+            data: {
+              content: text,
+              senderRole: 'agent',
+              chatId: chat.id,
+              tenantId: customer.tenantId
+            }
+          }),
+          prisma.chat.update({
+            where: { id: chat.id },
+            data: { updatedAt: now }
+          })
+        ]);
 
-        if (global.io) {
-          global.io.emit('new_whatsapp_message', {
+        if (global.io && customer.tenantId) {
+          const payload = {
             chatId: chat.id,
             remoteJid: customer.phone,
             text: text,
             type: 'outgoing',
-            timestamp: new Date()
-          });
+            from: 'business',
+            senderRole: 'agent',
+            createdAt: savedMsg.createdAt.toISOString(),
+            lastMessageAt: savedMsg.createdAt.toISOString(),
+            timestamp: savedMsg.createdAt
+          };
+          global.io.to(`tenant:${customer.tenantId}`).emit('new_whatsapp_message', payload);
         }
       }
     }
@@ -62,6 +74,8 @@ async function sendFlowMessage(customer, text, instance) {
       tenantId: customer.tenantId, // El gateway resuelve proveedor desde la BD
       to: clientNumber,
       text,
+      isAutomated: true,
+      origin: 'flow'
     });
     console.log(`✉️ [Flow Service] Texto enviado a +${clientNumber}: "${text}"`);
     await saveAndEmitOutgoingMessage(customer, text, instance);
@@ -87,6 +101,8 @@ async function sendFlowMedia(customer, mediaUrl, caption, instance) {
       to: clientNumber,
       url: mediaUrl,
       caption: caption || '',
+      isAutomated: true,
+      origin: 'flow'
     });
     console.log(`🖼️ [Flow Service] Multimedia enviado a +${clientNumber} (Caption: "${caption}")`);
     await saveAndEmitOutgoingMessage(customer, caption || '[Imagen Adjunta]', instance);

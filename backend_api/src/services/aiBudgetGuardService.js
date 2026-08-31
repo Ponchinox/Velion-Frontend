@@ -77,8 +77,8 @@ export function estimateRequestTokens(systemPrompt = '', chatContext = [], hasTo
 // DEDUPLICACIÓN DE ALERTAS
 // ─────────────────────────────────────────────────────────────────────────────
 
-async function emitBudgetAlert({ tenantId, reason, currentUsed, budget, period }) {
-  const alertKey = `${tenantId || 'GLOBAL'}:${reason}`;
+async function emitBudgetAlert({ reason, currentUsed, budget, period }) {
+  const alertKey = `GLOBAL:${reason}`;
   const now = Date.now();
   const lastAlertTime = alertCooldownCache.get(alertKey) || 0;
 
@@ -89,12 +89,11 @@ async function emitBudgetAlert({ tenantId, reason, currentUsed, budget, period }
   alertCooldownCache.set(alertKey, now);
 
   const periodLabel = period === 'DAILY' ? 'diario' : 'mensual';
-  const scopeLabel = tenantId ? 'Tenant' : 'GLOBAL';
   const severity = period === 'DAILY' ? 'WARNING' : 'CRITICAL';
   
-  const message = `🚨 LÍMITE DE TOKENS IA ALCANZADO [${scopeLabel} - ${periodLabel.toUpperCase()}]: ` +
-    `Consumo: ${currentUsed.toLocaleString()} / Presupuesto: ${budget.toLocaleString()} tokens. ` +
-    `Las respuestas automáticas de IA han sido pausadas para evitar sobrecostos.`;
+  const message = `🚨 LÍMITE GLOBAL DE TOKENS IA ALCANZADO [${periodLabel.toUpperCase()}]: ` +
+    `Consumo de la plataforma: ${currentUsed.toLocaleString()} / Presupuesto: ${budget.toLocaleString()} tokens. ` +
+    `Las respuestas automáticas de IA han sido pausadas como fusible de emergencia.`;
 
   try {
     await prisma.alert.create({
@@ -102,14 +101,15 @@ async function emitBudgetAlert({ tenantId, reason, currentUsed, budget, period }
         type: 'AI_BUDGET_EXCEEDED',
         severity,
         message,
-        tenantId: tenantId || null,
+        tenantId: null, // Alerta exclusivamente global
       }
     });
-    console.warn(`📢 [Budget Guard Alert] Alerta registrada: ${message}`);
+    console.warn(`📢 [Budget Guard Alert] Alerta global registrada: ${message}`);
   } catch (err) {
-    console.error('⚠️ [Budget Guard Alert] Error registrando alerta:', err.message);
+    console.error('⚠️ [Budget Guard Alert] Error registrando alerta global:', err.message);
   }
 }
+
 
 // ─────────────────────────────────────────────────────────────────────────────
 // CONSULTAS DE CONSUMO PERSISTENTE (UTC)
@@ -272,7 +272,6 @@ export async function evaluateAiBudgetGuard({
 
     if (effectiveGlobalDaily > globalConfig.dailyBudget) {
       await emitBudgetAlert({
-        tenantId: null,
         reason: 'GLOBAL_DAILY_LIMIT',
         currentUsed: globalUsage.dailyTokens,
         budget: globalConfig.dailyBudget,
@@ -287,7 +286,6 @@ export async function evaluateAiBudgetGuard({
 
     if (effectiveGlobalMonthly > globalConfig.monthlyBudget) {
       await emitBudgetAlert({
-        tenantId: null,
         reason: 'GLOBAL_MONTHLY_LIMIT',
         currentUsed: globalUsage.monthlyTokens,
         budget: globalConfig.monthlyBudget,
@@ -301,42 +299,13 @@ export async function evaluateAiBudgetGuard({
     }
   }
 
-  // 4. Revisar Límites Individuales del Tenant
-  const isTenantBudgetEnabled = tenantData?.aiBudgetEnabled !== false;
-  if (isTenantBudgetEnabled) {
-    const dailyBudget = tenantData?.dailyTokenBudget ?? DEFAULT_TENANT_DAILY_BUDGET;
-    const monthlyBudget = tenantData?.monthlyTokenBudget ?? DEFAULT_TENANT_MONTHLY_BUDGET;
+  // 4. Presupuestos Individuales del Tenant (Telemetría / No Bloqueante)
+  // Según la arquitectura comercial de Velion:
+  // - El límite comercial real de cada tienda es Tenant.msgLimit (mensajes/mes).
+  // - Tenant.dailyTokenBudget y monthlyTokenBudget NO bloquean llamadas a Gemini.
+  // - NO se generan AdminAlert para presupuestos de tenant (evita alertas ruidosas).
+  // - TenantAIUsage sigue registrando y acumulando todo el consumo real de tokens para métricas.
 
-    const tenantUsage = await getTenantAiUsageSummary(tenantId);
-    const tenantInFlight = inFlightReservations.get(tenantId) || 0;
-
-    const effectiveTenantDaily = tenantUsage.dailyTokens + tenantInFlight + estimatedTokens;
-    const effectiveTenantMonthly = tenantUsage.monthlyTokens + tenantInFlight + estimatedTokens;
-
-    // Verificar límite diario (Solo Alerta Informativa, NO bloquea)
-    if (dailyBudget > 0 && effectiveTenantDaily > dailyBudget) {
-      await emitBudgetAlert({
-        tenantId,
-        reason: 'TENANT_DAILY_LIMIT',
-        currentUsed: tenantUsage.dailyTokens,
-        budget: dailyBudget,
-        period: 'DAILY'
-      });
-      // Ya NO bloqueamos el servicio por superar el dailyTokenBudget
-    }
-
-    // Verificar límite mensual (Solo Alerta Informativa, NO bloquea)
-    if (monthlyBudget > 0 && effectiveTenantMonthly > monthlyBudget) {
-      await emitBudgetAlert({
-        tenantId,
-        reason: 'TENANT_MONTHLY_LIMIT',
-        currentUsed: tenantUsage.monthlyTokens,
-        budget: monthlyBudget,
-        period: 'MONTHLY'
-      });
-      // Ya NO bloqueamos el servicio por superar el monthlyTokenBudget
-    }
-  }
 
   // 5. Reserva de Tokens en Vuelo (Prevención de Race Conditions)
   const currentReserved = inFlightReservations.get(tenantId) || 0;

@@ -67,11 +67,14 @@ export async function getChats(req, res) {
 
     const formatted = chats.map((c) => {
       const lastMessage = c.messages[0];
-      const cleanPhone = c.contact.phone.replace(/\D/g, '');
+      const cleanPhone = (c.contact?.phone || '').replace(/\D/g, '');
       const matchingCustomer = customers.find((cust) => {
-        const custPhone = cust.phone.replace(/\D/g, '');
+        const custPhone = (cust.phone || '').replace(/\D/g, '');
         return custPhone.endsWith(cleanPhone) || cleanPhone.endsWith(custPhone);
       });
+
+      // Fuente unificada de verdad para el estado de pausa del bot
+      const isEffectivePaused = Boolean(c.botPaused || c.contact?.botPaused || matchingCustomer?.isBotPaused);
 
       // Cálculo de ventana de 24h para Meta
       const lastCustomerMsgAt = incomingMap.get(c.id) || null;
@@ -90,16 +93,23 @@ export async function getChats(req, res) {
         }
       }
 
+      const lastMessageAt = lastMessage
+        ? lastMessage.createdAt.toISOString()
+        : c.updatedAt.toISOString();
+
       return {
         id: c.id,
-        name: c.contact.name,
-        phone: c.contact.phone,
+        contactId: c.contactId,
+        name: c.contact?.name || 'Cliente',
+        phone: c.contact?.phone || '',
         lastMsg: lastMessage ? lastMessage.content : 'Sin mensajes',
         time: lastMessage
           ? lastMessage.createdAt.toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' })
           : '',
+        lastMessageAt,
         unread: 0,
-        isBotPaused: matchingCustomer ? matchingCustomer.isBotPaused : false,
+        isBotPaused: isEffectivePaused,
+        botPaused: isEffectivePaused,
         customerId: matchingCustomer ? matchingCustomer.id : null,
         provider,
         isWindowOpen,
@@ -109,12 +119,16 @@ export async function getChats(req, res) {
       };
     });
 
+    // Ordenar de forma descendente por la fecha REAL del último mensaje
+    formatted.sort((a, b) => new Date(b.lastMessageAt).getTime() - new Date(a.lastMessageAt).getTime());
+
     return res.json(formatted);
   } catch (error) {
     console.error('Error en getChats:', error);
     return res.status(500).json({ error: 'Error al obtener los chats.' });
   }
 }
+
 
 /**
  * Obtiene el historial de mensajes de un chat específico con status y externalId
@@ -211,38 +225,52 @@ export async function sendMessage(req, res) {
         tenantId,
         to: cleanNumber,
         text,
+        isAutomated: false,
       });
       console.log(`📤 [Live Chat] Mensaje enviado a WhatsApp +${remoteJid} vía Gateway (msgId: ${msgId})`);
     } catch (sendError) {
       console.error('❌ [Live Chat] Error al despachar mensaje vía Gateway:', sendError.response?.data || sendError.message);
     }
 
-    // 1. Guardar mensaje enviado por el agente en base de datos
-    const message = await prisma.message.create({
-      data: {
-        content: text,
-        senderRole: 'agent',
-        status: 'sent',
-        externalId: msgId || null,
-        chatId,
-        tenantId,
-      },
-    });
+    // 1. Guardar mensaje enviado por el agente y actualizar Chat.updatedAt de forma atómica
+    const now = new Date();
+    const [message] = await prisma.$transaction([
+      prisma.message.create({
+        data: {
+          content: text,
+          senderRole: 'agent',
+          status: 'sent',
+          externalId: msgId || null,
+          chatId,
+          tenantId,
+        },
+      }),
+      prisma.chat.update({
+        where: { id: chatId },
+        data: { updatedAt: now }
+      })
+    ]);
 
-    // Emitir por WebSocket en tiempo real para actualizar otros clientes conectados
-    if (req.io || global.io) {
-      const ioInstance = req.io || global.io;
-      ioInstance.emit('new_whatsapp_message', {
+    // Emitir por WebSocket en tiempo real a la sala privada del tenant
+    const ioInstance = req.io || global.io;
+    if (ioInstance && tenantId) {
+      const payload = {
         chatId,
         remoteJid,
         text,
         type: 'outgoing',
+        from: 'business',
+        senderRole: 'agent',
         status: 'sent',
         externalId: msgId || null,
         messageId: message.id,
-        timestamp: new Date()
-      });
+        createdAt: message.createdAt.toISOString(),
+        lastMessageAt: message.createdAt.toISOString(),
+        timestamp: message.createdAt
+      };
+      ioInstance.to(`tenant:${tenantId}`).emit('new_whatsapp_message', payload);
     }
+
 
     return res.status(201).json({
       id: message.id,
@@ -334,6 +362,7 @@ export async function sendDirectMessage(req, res) {
           tenantId,
           to: cleanNumber,
           text,
+          isAutomated: false,
         });
         console.log(`📤 [Live Chat Direct] Mensaje enviado vía Gateway a +${cleanNumber} (msgId: ${msgId})`);
       } catch (gatewayErr) {
@@ -341,31 +370,44 @@ export async function sendDirectMessage(req, res) {
       }
     }
 
-    const message = await prisma.message.create({
-      data: {
-        content: messageContent,
-        senderRole: 'agent',
-        status: 'sent',
-        externalId: msgId || null,
-        chatId: chat.id,
-        tenantId,
-      },
-    });
+    const now = new Date();
+    const [message] = await prisma.$transaction([
+      prisma.message.create({
+        data: {
+          content: messageContent,
+          senderRole: 'agent',
+          status: 'sent',
+          externalId: msgId || null,
+          chatId: chat.id,
+          tenantId,
+        },
+      }),
+      prisma.chat.update({
+        where: { id: chat.id },
+        data: { updatedAt: now }
+      })
+    ]);
 
-    if (req.io || global.io) {
-      const ioInstance = req.io || global.io;
-      ioInstance.emit('new_whatsapp_message', {
+    const ioInstance = req.io || global.io;
+    if (ioInstance && tenantId) {
+      const payload = {
         chatId: chat.id,
         remoteJid: number,
         text: messageContent,
         type: 'outgoing',
+        from: 'business',
+        senderRole: 'agent',
         mediaType: media ? media.type : undefined,
         status: 'sent',
         externalId: msgId || null,
         messageId: message.id,
-        timestamp: new Date()
-      });
+        createdAt: message.createdAt.toISOString(),
+        lastMessageAt: message.createdAt.toISOString(),
+        timestamp: message.createdAt
+      };
+      ioInstance.to(`tenant:${tenantId}`).emit('new_whatsapp_message', payload);
     }
+
 
     return res.status(201).json({
       id: message.id,
@@ -383,6 +425,7 @@ export async function sendDirectMessage(req, res) {
 
 /**
  * Reactiva el bot de chat para un cliente específico (isBotPaused: false)
+ * Limpia de forma atómica y consistente el estado de pausa en Customer, Contact y Chat.
  */
 export async function resumeBot(req, res) {
   try {
@@ -404,33 +447,76 @@ export async function resumeBot(req, res) {
       return res.status(404).json({ error: 'Cliente no encontrado.' });
     }
 
-    await prisma.customer.update({
-      where: { id: customer.id },
-      data: { isBotPaused: false }
+    const cleanPhone = (customer.phone || '').replace(/\D/g, '');
+
+    await prisma.$transaction(async (tx) => {
+      // 1. Despausar Customer por ID
+      await tx.customer.update({
+        where: { id: customer.id },
+        data: { isBotPaused: false }
+      });
+
+      // Si existen otros registros de Customer para el mismo tenant con variaciones del teléfono
+      if (cleanPhone) {
+        await tx.customer.updateMany({
+          where: {
+            tenantId,
+            phone: { contains: cleanPhone }
+          },
+          data: { isBotPaused: false }
+        });
+      }
+
+      // 2. Buscar contactos asociados por teléfono exacto o limpio
+      const contacts = await tx.contact.findMany({
+        where: {
+          tenantId,
+          OR: [
+            { phone: customer.phone },
+            ...(cleanPhone ? [{ phone: { contains: cleanPhone } }] : [])
+          ]
+        },
+        select: { id: true, phone: true }
+      });
+
+      if (contacts.length > 0) {
+        const contactIds = contacts.map(c => c.id);
+
+        // Despausar Contactos
+        await tx.contact.updateMany({
+          where: { id: { in: contactIds } },
+          data: { botPaused: false }
+        });
+
+        // 3. Despausar Chats asociados usando contactId (relación real existente)
+        await tx.chat.updateMany({
+          where: {
+            tenantId,
+            contactId: { in: contactIds }
+          },
+          data: { botPaused: false }
+        });
+      }
     });
 
-    // Actualizar también los modelos Contact y Chat asociados al número de teléfono
-    await prisma.contact.updateMany({
-      where: { tenantId, phone: customer.phone },
-      data: { botPaused: false }
-    });
-
-    await prisma.chat.updateMany({
-      where: { tenantId, phone: customer.phone },
-      data: { botPaused: false }
-    });
-
-    // Emitir eventos en tiempo real para actualizar la interfaz
-    if (req.io) {
-      req.io.emit('bot_status_changed', { phone: customer.phone, botPaused: false });
-      req.io.emit('contact_updated', { phone: customer.phone, botPaused: false, reason: 'MANUAL_RESUME' });
+    // Emitir eventos en tiempo real para actualizar la interfaz del dashboard solo al tenant propietario
+    if ((req.io || global.io) && tenantId) {
+      const ioInstance = req.io || global.io;
+      if (typeof ioInstance.to === 'function') {
+        ioInstance.to(`tenant:${tenantId}`).emit('bot_status_changed', { phone: customer.phone, botPaused: false, isBotPaused: false });
+        ioInstance.to(`tenant:${tenantId}`).emit('contact_updated', { phone: customer.phone, botPaused: false, reason: 'MANUAL_RESUME' });
+      } else {
+        ioInstance.emit('bot_status_changed', { phone: customer.phone, botPaused: false, isBotPaused: false });
+        ioInstance.emit('contact_updated', { phone: customer.phone, botPaused: false, reason: 'MANUAL_RESUME' });
+      }
     }
 
-    console.log(`✅ [Resume Bot] Reactivado chatbot para el cliente +${customer.phone}`);
-  
-    return res.status(200).json({ message: 'Bot reactivado exitosamente.' });
+    console.log(`✅ [Resume Bot] Bot reactivado exitosamente en base de datos para +${customer.phone}`);
+
+    return res.status(200).json({ success: true, message: 'Bot reactivado exitosamente.', isBotPaused: false });
   } catch (error) {
     console.error('Error en resumeBot:', error);
-    return res.status(500).json({ error: 'Error al reactivar el bot para el cliente.' });
+    return res.status(500).json({ error: 'Error al reactivar el bot para el cliente: ' + error.message });
   }
 }
+

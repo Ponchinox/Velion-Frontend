@@ -5,6 +5,7 @@ import helmet from 'helmet';
 import rateLimit from 'express-rate-limit';
 import { createServer } from 'http';
 import { Server } from 'socket.io';
+import jwt from 'jsonwebtoken';
 import prisma from './src/db.js';
 import authRoutes from './src/routes/authRoutes.js';
 import contactRoutes from './src/routes/contactRoutes.js';
@@ -150,13 +151,73 @@ app.get('/api/health', async (req, res) => {
   }
 });
 
-// Socket connection monitor
+// ── Socket.IO Authentication & Tenant Isolation Middleware ───────────────
+// REQUISITO ESTRICTO DE SEGURIDAD:
+//   A. Sin token   → conexión RECHAZADA
+//   B. JWT inválido → conexión RECHAZADA
+//   C. JWT expirado → conexión RECHAZADA
+//   D. Tenant válido → sala de su tenant (tenantId del JWT, NO del cliente)
+//   E. Usuario normal intentando otro tenant → ignorado/rechazado
+//   F. SuperAdmin autorizado → puede impersonar mediante mecanismo validado
+io.use(async (socket, next) => {
+  try {
+    const token = socket.handshake.auth?.token || 
+                  socket.handshake.headers?.authorization?.replace('Bearer ', '') || 
+                  socket.handshake.query?.token;
+
+    // A. Sin token → rechazado estrictamente
+    if (!token) {
+      console.warn('🚫 [Socket.IO] Conexión rechazada: sin token JWT.');
+      return next(new Error('Authentication error'));
+    }
+
+    if (!process.env.JWT_SECRET) {
+      // Sin JWT_SECRET configurado en el entorno → rechazamos por seguridad
+      console.error('🚫 [Socket.IO] JWT_SECRET no configurado. Rechazando conexión.');
+      return next(new Error('Authentication error'));
+    }
+
+    // B/C. Token inválido o expirado → jwt.verify lanza excepción → catch rechaza
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    socket.user = decoded;
+
+    // D. TenantId proviene del JWT validado, NUNCA del cliente sin firmar
+    let effectiveTenantId = decoded.tenantId;
+
+    // F. Impersonación de SuperAdmin: solo válida si el JWT tiene role 'superadmin'
+    // E. Un usuario normal NO puede cambiar su tenant a otro
+    const impersonatedTenantId = socket.handshake.auth?.impersonatedTenantId || 
+                                 socket.handshake.query?.impersonatedTenantId;
+
+    if (impersonatedTenantId && decoded.role === 'superadmin') {
+      effectiveTenantId = impersonatedTenantId;
+      console.log(`🔑 [Socket.IO] SuperAdmin ${decoded.email || decoded.id} impersonando tenant: ${effectiveTenantId}`);
+    }
+
+    socket.tenantId = effectiveTenantId;
+    next();
+  } catch (err) {
+    // B/C. JWT inválido o expirado
+    console.warn('🚫 [Socket.IO] Conexión rechazada por JWT inválido/expirado:', err.message);
+    return next(new Error('Authentication error'));
+  }
+});
+
+// Socket connection monitor & room assignment
 io.on('connection', (socket) => {
-  console.log(`🔌 [Socket.IO] Cliente conectado: ${socket.id}`);
+  if (socket.tenantId) {
+    const roomName = `tenant:${socket.tenantId}`;
+    socket.join(roomName);
+    console.log(`🔌 [Socket.IO] Cliente ${socket.id} autenticado y unido a sala ${roomName} (User: ${socket.user?.email || 'N/A'})`);
+  } else {
+    console.log(`🔌 [Socket.IO] Cliente conectado sin tenant verificado: ${socket.id}`);
+  }
+
   socket.on('disconnect', () => {
     console.log(`🔌 [Socket.IO] Cliente desconectado: ${socket.id}`);
   });
 });
+
 
 // Levantar servidor
 httpServer.listen(PORT, () => {

@@ -39,20 +39,33 @@ function getAvatarStyle(name = '', index = 0) {
   return { initials, colorCls };
 }
 
-/* ─── Utilidad: parsear hora para ordenar ─── */
+/* ─── Utilidad: parsear hora para ordenar (fallback) ─── */
 function parseTimeForSort(timeStr = '') {
-  // El campo time viene como "HH:MM" o timestamp ISO
   if (!timeStr) return 0;
-  // Si es ISO
   if (timeStr.includes('T') || timeStr.includes('-')) {
     return new Date(timeStr).getTime() || 0;
   }
-  // Si es "HH:MM" de hoy
   const [h, m] = timeStr.split(':').map(Number);
   if (isNaN(h) || isNaN(m)) return 0;
   const d = new Date();
   d.setHours(h, m, 0, 0);
   return d.getTime();
+}
+
+/* ─── Utilidad: timestamp confiable para ordenar chats ─── */
+function getChatTimestamp(chat) {
+  if (!chat) return 0;
+  if (chat.lastMessageAt) {
+    const t = new Date(chat.lastMessageAt).getTime();
+    if (!isNaN(t) && t > 0) return t;
+  }
+  if (chat.updatedAt) {
+    const t = new Date(chat.updatedAt).getTime();
+    if (!isNaN(t) && t > 0) return t;
+  }
+  if (chat._sortTs) return chat._sortTs;
+  if (chat.time) return parseTimeForSort(chat.time);
+  return 0;
 }
 
 /* ─── Icono de Estado de Mensaje (Ticks) ─── */
@@ -515,22 +528,30 @@ export default function ChatPage() {
   const activeChatIndex = chats.findIndex(c => c.id === activeChatId);
 
   /* ─── Ordenar chats: más reciente primero ─── */
-  const sortedChats = [...chats].sort((a, b) => parseTimeForSort(b.time) - parseTimeForSort(a.time));
+  const sortedChats = [...chats].sort((a, b) => getChatTimestamp(b) - getChatTimestamp(a));
 
-  const loadChats = async () => {
-    setIsLoadingChats(true);
+  const loadChats = async (silent = false) => {
+    if (!silent) setIsLoadingChats(true);
     setChatsError('');
     try {
       const data = await chatService.getChats();
       // Ordenar inmediatamente al recibir datos: más reciente arriba
-      const sorted = (data || []).sort((a, b) => parseTimeForSort(b.time) - parseTimeForSort(a.time));
+      const sorted = (data || []).sort((a, b) => getChatTimestamp(b) - getChatTimestamp(a));
       setChats(sorted);
     } catch {
-      setChatsError('No se pudieron cargar los chats.');
+      if (!silent) setChatsError('No se pudieron cargar los chats.');
     } finally {
-      setIsLoadingChats(false);
+      if (!silent) setIsLoadingChats(false);
     }
   };
+
+  const reloadTimeoutRef = useRef(null);
+  const debouncedReloadChats = useCallback(() => {
+    if (reloadTimeoutRef.current) clearTimeout(reloadTimeoutRef.current);
+    reloadTimeoutRef.current = setTimeout(() => {
+      loadChats(true);
+    }, 400);
+  }, []);
 
   const loadMessages = async (chatId) => {
     setIsLoadingMessages(true);
@@ -557,7 +578,24 @@ export default function ChatPage() {
   useEffect(() => {
     loadChats();
 
-    const socket = io(API_BASE_URL);
+    const token = localStorage.getItem('sa_token');
+    const impersonatedTenantId = localStorage.getItem('impersonatedTenantId');
+
+    const socket = io(API_BASE_URL, {
+      auth: {
+        token,
+        impersonatedTenantId,
+      },
+      query: {
+        token,
+        impersonatedTenantId,
+      },
+      extraHeaders: {
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        ...(impersonatedTenantId ? { 'x-tenant-id': impersonatedTenantId } : {}),
+      },
+      transports: ['websocket', 'polling'],
+    });
 
     socket.on('connect', () => {
       console.log('🔌 [Socket.IO] Conectado al servidor de WebSocket en tiempo real.');
@@ -565,7 +603,7 @@ export default function ChatPage() {
 
     socket.on('new_whatsapp_message', (msg) => {
       console.log('📩 [Socket.IO] Evento de mensaje recibido:', msg);
-      const isIncoming = msg.type === 'incoming';
+      const isIncoming = msg.type === 'incoming' || msg.from === 'client';
 
       if (msg.chatId === activeChatIdRef.current) {
         const formattedMsg = {
@@ -575,7 +613,7 @@ export default function ChatPage() {
           from: isIncoming ? 'client' : 'business',
           text: msg.mediaType === 'image' ? '' : msg.text,
           image: msg.mediaType === 'image' ? msg.text : undefined,
-          time: new Date(msg.timestamp || Date.now()).toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' }),
+          time: new Date(msg.createdAt || msg.timestamp || Date.now()).toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' }),
         };
 
         setActiveChatMessages(prev => {
@@ -590,13 +628,23 @@ export default function ChatPage() {
 
       /* Actualizar sidebar Y reordenar para que el chat con actividad nueva suba al tope */
       setChats(prev => {
+        const chatExists = prev.some(c => c.id === msg.chatId);
+        if (!chatExists) {
+          debouncedReloadChats();
+          return prev;
+        }
+
+        const newIso = msg.createdAt || msg.lastMessageAt || (msg.timestamp ? new Date(msg.timestamp).toISOString() : new Date().toISOString());
+        const newTime = new Date(msg.timestamp || msg.createdAt || Date.now()).toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' });
+
         const updated = prev.map(c => {
           if (c.id === msg.chatId) {
             return {
               ...c,
               lastMsg: msg.mediaType === 'image' ? '📸 Imagen' : (msg.text || ''),
-              time: new Date(msg.timestamp || Date.now()).toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' }),
-              _sortTs: Date.now(), // timestamp numérico para orden confiable
+              time: newTime,
+              lastMessageAt: newIso,
+              _sortTs: Date.now(),
               unread: c.id === activeChatIdRef.current ? 0 : (c.unread || 0) + 1,
               isWindowOpen: isIncoming ? true : c.isWindowOpen,
               windowRemainingMinutes: isIncoming ? 1440 : c.windowRemainingMinutes,
@@ -605,8 +653,28 @@ export default function ChatPage() {
           return c;
         });
         // Re-ordenar: más reciente arriba
-        return updated.sort((a, b) => (b._sortTs || 0) - (a._sortTs || parseTimeForSort(b.time)));
+        return updated.sort((a, b) => getChatTimestamp(b) - getChatTimestamp(a));
       });
+    });
+
+    socket.on('contact_updated', (data) => {
+      console.log('🔄 [Socket.IO] Contact updated:', data);
+      setChats(prev => prev.map(c => {
+        if (c.id === data.contactId || (data.phone && c.phone && c.phone.includes(data.phone.replace(/\D/g, '')))) {
+          return { ...c, isBotPaused: data.botPaused !== undefined ? data.botPaused : c.isBotPaused };
+        }
+        return c;
+      }));
+    });
+
+    socket.on('bot_status_changed', (data) => {
+      console.log('🔄 [Socket.IO] Bot status changed:', data);
+      setChats(prev => prev.map(c => {
+        if (c.id === data.contactId || (data.phone && c.phone && c.phone.includes(data.phone.replace(/\D/g, '')))) {
+          return { ...c, isBotPaused: data.botPaused !== undefined ? data.botPaused : c.isBotPaused };
+        }
+        return c;
+      }));
     });
 
     socket.on('message_status_updated', (data) => {
@@ -621,10 +689,11 @@ export default function ChatPage() {
     });
 
     return () => {
+      if (reloadTimeoutRef.current) clearTimeout(reloadTimeoutRef.current);
       socket.disconnect();
       console.log('🔌 [Socket.IO] Conexión WebSocket desconectada.');
     };
-  }, []);
+  }, [debouncedReloadChats]);
 
   const handleSelectChat = (chat) => {
     setActiveChatId(chat.id);
@@ -639,6 +708,7 @@ export default function ChatPage() {
 
     const now = new Date();
     const timeStr = now.toLocaleTimeString('es', { hour: '2-digit', minute: '2-digit' });
+    const nowIso = now.toISOString();
 
     const tempMsg = {
       id: `temp-${Date.now()}`,
@@ -659,11 +729,12 @@ export default function ChatPage() {
               ...c,
               lastMsg: attachment ? (attachment.type === 'image' ? '📸 Imagen' : '📄 Documento') : text,
               time: timeStr,
+              lastMessageAt: nowIso,
               _sortTs: now.getTime(),
             }
           : c
       );
-      return updated.sort((a, b) => (b._sortTs || 0) - (a._sortTs || parseTimeForSort(b.time)));
+      return updated.sort((a, b) => getChatTimestamp(b) - getChatTimestamp(a));
     });
 
     try {
@@ -686,15 +757,19 @@ export default function ChatPage() {
         await chatService.resumeBot(activeChat.customerId);
       } else if (activeChat?.contactId) {
         await contactService.toggleBotPause(activeChat.contactId, false);
+      } else {
+        throw new Error('No se encontró el identificador del contacto o cliente.');
       }
-      // Actualizar estado siempre por chatId — fiable independiente del campo disponible
+      // Actualizar estado SOLO tras confirmación exitosa del backend
       setChats(prev => prev.map(c =>
-        c.id === activeChatId ? { ...c, isBotPaused: false } : c
+        c.id === activeChatId ? { ...c, isBotPaused: false, botPaused: false } : c
       ));
     } catch (error) {
       console.error('Error al reactivar el bot:', error);
+      alert('Error al reactivar el bot: ' + (error.response?.data?.error || error.message || 'Intente nuevamente.'));
     }
   };
+
 
   /* Filtro de búsqueda aplicado DESPUÉS de ordenar por reciente */
   const filteredChats = sortedChats.filter(c =>

@@ -5,6 +5,7 @@
  */
 import axios from 'axios';
 import prisma from '../db.js';
+import { markMessageAsSentByAi } from './aiMessageTracker.js';
 
 function getEvoHeaders(apiKey) {
   const key = (apiKey || process.env.EVOLUTION_API_KEY || '').trim();
@@ -87,7 +88,7 @@ export async function downloadMetaMedia(mediaId, token) {
  * @returns {Promise<string|null>} msgId (Evolution / Meta wamid) o null
  */
 export async function sendText(opts) {
-  let { tenantId, provider, instance, apiKey, metaPhoneNumberId, metaAccessToken, to, text } = opts;
+  let { tenantId, provider, instance, apiKey, metaPhoneNumberId, metaAccessToken, to, text, isAutomated, origin } = opts;
 
   if (!provider && tenantId) {
     const ctx = await resolveGatewayCtx(tenantId);
@@ -114,6 +115,10 @@ export async function sendText(opts) {
         { headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' } }
       );
       const msgId = res.data?.messages?.[0]?.id || null;
+      if (isAutomated) {
+        if (msgId) markMessageAsSentByAi(msgId, { tenantId, origin: origin || 'ai' });
+        if (text) markMessageAsSentByAi(text, { tenantId, origin: origin || 'ai' });
+      }
       console.log(`[WA Gateway META] Texto enviado a ${cleanTo} (msgId: ${msgId})`);
       return msgId;
     } catch (err) {
@@ -137,6 +142,10 @@ export async function sendText(opts) {
         getEvoHeaders(apiKey)
       );
       const msgId = res.data?.key?.id || null;
+      if (isAutomated) {
+        if (msgId) markMessageAsSentByAi(msgId, { tenantId, origin: origin || 'ai' });
+        if (text) markMessageAsSentByAi(text, { tenantId, origin: origin || 'ai' });
+      }
       console.log(`[WA Gateway EVOLUTION] Texto enviado a ${cleanTo} (msgId: ${msgId})`);
       return msgId;
     } catch (err) {
@@ -163,7 +172,7 @@ export async function sendText(opts) {
  * Detecta automáticamente si es video por extensión o parámetro mediaType.
  */
 export async function sendMedia(opts) {
-  let { tenantId, provider, instance, apiKey, metaPhoneNumberId, metaAccessToken, to, url, caption, mediaType } = opts;
+  let { tenantId, provider, instance, apiKey, metaPhoneNumberId, metaAccessToken, to, url, caption, mediaType, isAutomated, origin } = opts;
 
   if (!url) {
     console.warn('[WA Gateway] sendMedia: URL no válida. Abortando.');
@@ -203,6 +212,10 @@ export async function sendMedia(opts) {
         { headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' } }
       );
       const msgId = res.data?.messages?.[0]?.id || null;
+      if (isAutomated) {
+        if (msgId) markMessageAsSentByAi(msgId, { tenantId, origin: origin || 'ai' });
+        if (caption) markMessageAsSentByAi(caption, { tenantId, origin: origin || 'ai' });
+      }
       console.log(`[WA Gateway META] ${isVideo ? 'Video' : 'Imagen'} enviado a ${cleanTo} (msgId: ${msgId})`);
       return msgId;
     } catch (err) {
@@ -225,6 +238,10 @@ export async function sendMedia(opts) {
       getEvoHeaders(apiKey)
     );
     const msgId = res.data?.key?.id || null;
+    if (isAutomated) {
+      if (msgId) markMessageAsSentByAi(msgId, { tenantId, origin: origin || 'ai' });
+      if (caption) markMessageAsSentByAi(caption, { tenantId, origin: origin || 'ai' });
+    }
     console.log(`[WA Gateway EVOLUTION] ${isVideo ? 'Video' : 'Imagen'} enviado a ${cleanTo} (msgId: ${msgId})`);
     return msgId;
   } catch (err) {

@@ -11,6 +11,14 @@ import {
 } from '../services/whatsappGateway.js';
 import { getCompactCatalogIndex } from '../services/catalogCacheService.js';
 import { evaluateAiBudgetGuard } from '../services/aiBudgetGuardService.js';
+import {
+  markMessageAsSentByAi as _trackerMarkAi,
+  isAutomatedMessage,
+} from '../services/aiMessageTracker.js';
+
+// ── HUMAN HANDOFF: ventana de pausa manual (30 minutos) ──────────────────────
+export const HUMAN_HANDOFF_MINUTES = 30;
+export const HUMAN_HANDOFF_MS = HUMAN_HANDOFF_MINUTES * 60 * 1000;
 
 /**
  * Helper para generar los headers de autenticación del Evolution API
@@ -164,22 +172,14 @@ const iaRateLimitCache = new Map();
 const processingLocks = new Set();
 const pendingQueues = new Map();
 
-// Cache en memoria para rastrear mensajes enviados por el sistema (IA / Flujos / Panel)
-// Permite distinguir intervención humana manual desde el celular/WhatsApp Web
-const sentByAiCache = new Set();
+// ── aiMessageTracker: delegamos al servicio de dos capas (RAM + PostgreSQL) ──
+// markMessageAsSentByAi es exportada para compatibilidad con importaciones externas
+export function markMessageAsSentByAi(textOrId) {
+  _trackerMarkAi(textOrId);
+}
 
 // Cache para deduplicación de webhooks entrantes (5 minutos de TTL)
 const processedWebhooksCache = new Map();
-
-export function markMessageAsSentByAi(textOrId) {
-  if (!textOrId) return;
-  const clean = typeof textOrId === 'string' ? textOrId.trim() : '';
-  if (clean) {
-    sentByAiCache.add(clean);
-    // Auto-expirar en 60 segundos por seguridad
-    setTimeout(() => sentByAiCache.delete(clean), 60000);
-  }
-}
 
 /**
  * Obtiene el estado real de la conexión de la instancia desde Evolution API
@@ -766,8 +766,9 @@ export async function receiveWebhook(req, res) {
           });
 
           const ioInstance = req.io || global.io;
-          if (ioInstance) {
-            ioInstance.emit('message_status_updated', {
+          const statusTenantId = existingMsg.tenantId || existingMsg.chat?.tenantId;
+          if (ioInstance && statusTenantId) {
+            ioInstance.to(`tenant:${statusTenantId}`).emit('message_status_updated', {
               messageId: existingMsg.id,
               chatId: existingMsg.chatId,
               externalId: statusId,
@@ -966,66 +967,107 @@ export async function receiveWebhook(req, res) {
     if (fromMe) {
       const key = normalized.key || {};
       const msgId = key.id;
-      const isAiMessage = (msgId && sentByAiCache.has(msgId)) ||
-                          (userMessageText && sentByAiCache.has(userMessageText.trim()));
+
+      // Usa aiMessageTracker (RAM + PostgreSQL) en lugar del sentByAiCache local de 60s
+      const isAiMessage = await isAutomatedMessage({
+        tenantId: tenant.id,
+        chatId: chat.id,
+        msgId,
+        text: userMessageText,
+        phone: cleanPhone
+      });
 
       if (isAiMessage) {
-        if (msgId) sentByAiCache.delete(msgId);
-        if (userMessageText) sentByAiCache.delete(userMessageText.trim());
         console.log(`🤖 [Webhook Evolution] Mensaje saliente de IA verificado para +${clientNumber}.`);
       } else {
-        console.log(`👤 [Auto-Pausa Human Handoff] Intervención humana detectada en +${clientNumber}. Pausando bot...`);
-        if (contact && !contact.botPaused) await prisma.contact.update({ where: { id: contact.id }, data: { botPaused: true } });
-        if (chat && !chat.botPaused) await prisma.chat.update({ where: { id: chat.id }, data: { botPaused: true } });
-        await prisma.customer.updateMany({
-          where: { tenantId: tenant.id, phone: { contains: cleanPhone } },
-          data: { isBotPaused: true }
-        });
+        // Intervención humana real del comerciante desde WhatsApp
+        console.log(`👤 [Human Handoff] Intervención humana detectada en +${clientNumber}. Pausando bot 30 min...`);
+        const pauseNow = new Date();
+        await prisma.$transaction([
+          prisma.contact.update({ where: { id: contact.id }, data: { botPaused: true, updatedAt: pauseNow } }),
+          prisma.chat.update({ where: { id: chat.id }, data: { botPaused: true, updatedAt: pauseNow } }),
+          prisma.customer.updateMany({
+            where: { tenantId: tenant.id, phone: { contains: cleanPhone } },
+            data: { isBotPaused: true }
+          })
+        ]);
+        // Limpiar buffer pendiente del cliente
         const bufferKey = `${tenant.id}:${cleanJid}`;
         if (messageBuffers.has(bufferKey)) {
           const buf = messageBuffers.get(bufferKey);
           if (buf?.timer) clearTimeout(buf.timer);
           messageBuffers.delete(bufferKey);
         }
-        if (req.io) {
-          req.io.emit('contact_updated', { contactId: contact?.id, phone: cleanPhone, botPaused: true, reason: 'HUMAN_INTERVENTION' });
-          req.io.emit('bot_status_changed', { contactId: contact?.id, phone: cleanPhone, botPaused: true });
+        // Emitir eventos solo al tenant propietario
+        const ioRoom = tenant?.id ? `tenant:${tenant.id}` : null;
+        if (req.io && ioRoom) {
+          req.io.to(ioRoom).emit('contact_updated', { contactId: contact?.id, phone: cleanPhone, botPaused: true, reason: 'HUMAN_INTERVENTION' });
+          req.io.to(ioRoom).emit('bot_status_changed', { contactId: contact?.id, phone: cleanPhone, botPaused: true });
         }
       }
 
+      // Persiste el mensaje saliente + actualiza Chat.updatedAt atómicamente
       const existingMessage = await prisma.message.findFirst({
         where: { chatId: chat.id, content: userMessageText, senderRole: 'agent' }
       });
       if (!existingMessage) {
-        await prisma.message.create({
-          data: { content: userMessageText, senderRole: 'agent', chatId: chat.id, tenantId: tenant.id }
-        });
+        const outNow = new Date();
+        const [savedOutMsg] = await prisma.$transaction([
+          prisma.message.create({
+            data: { content: userMessageText, senderRole: 'agent', chatId: chat.id, tenantId: tenant.id }
+          }),
+          prisma.chat.update({ where: { id: chat.id }, data: { updatedAt: outNow } })
+        ]);
+        const ioRoom = tenant?.id ? `tenant:${tenant.id}` : null;
+        if (req.io && ioRoom) {
+          req.io.to(ioRoom).emit('new_whatsapp_message', {
+            chatId: chat.id,
+            remoteJid,
+            text: userMessageText,
+            type: 'outgoing',
+            from: 'business',
+            senderRole: 'agent',
+            createdAt: savedOutMsg.createdAt.toISOString(),
+            lastMessageAt: savedOutMsg.createdAt.toISOString(),
+            timestamp: savedOutMsg.createdAt
+          });
+        }
       }
-      if (req.io) req.io.emit('new_whatsapp_message', { chatId: chat.id, remoteJid, text: userMessageText, type: 'outgoing', timestamp: new Date() });
       console.log(`📤 [Webhook Evolution] Mensaje saliente propio de +${clientNumber} guardado.`);
       return;
     }
 
     // ── 7. REGISTRO DEL MENSAJE ENTRANTE EN CRM ────────────────────────────────
-    await prisma.message.create({
-      data: {
-        content: userMessageText,
-        senderRole: 'contact',
-        status: 'delivered',
-        externalId: normalized.msgId || null,
+    const incomingNow = new Date();
+    const [incomingMsg] = await prisma.$transaction([
+      prisma.message.create({
+        data: {
+          content: userMessageText,
+          senderRole: 'contact',
+          status: 'delivered',
+          externalId: normalized.msgId || null,
+          chatId: chat.id,
+          tenantId: tenant.id
+        }
+      }),
+      prisma.chat.update({ where: { id: chat.id }, data: { updatedAt: incomingNow } })
+    ]);
+    const incomingIoRoom = tenant?.id ? `tenant:${tenant.id}` : null;
+    if (req.io && incomingIoRoom) {
+      req.io.to(incomingIoRoom).emit('new_whatsapp_message', {
         chatId: chat.id,
-        tenantId: tenant.id
-      }
-    });
-    if (req.io) req.io.emit('new_whatsapp_message', {
-      chatId: chat.id,
-      remoteJid,
-      text: userMessageText,
-      type: 'incoming',
-      externalId: normalized.msgId || null,
-      status: 'delivered',
-      timestamp: new Date()
-    });
+        remoteJid,
+        text: userMessageText,
+        type: 'incoming',
+        from: 'client',
+        senderRole: 'contact',
+        externalId: normalized.msgId || null,
+        status: 'delivered',
+        createdAt: incomingMsg.createdAt.toISOString(),
+        lastMessageAt: incomingMsg.createdAt.toISOString(),
+        timestamp: incomingMsg.createdAt
+      });
+    }
 
     // ── 8. AUTO-PAUSA Y AUTO-REACTIVACIÓN 24H ─────────────────────────────────
     const existingCustomerForCheck = await prisma.customer.findUnique({
@@ -1048,56 +1090,52 @@ export async function receiveWebhook(req, res) {
         || new Date(0);
 
       const timeDiffMs = Date.now() - new Date(lastActivityDate).getTime();
-      const TWENTY_FOUR_HOURS_MS = 24 * 60 * 60 * 1000; // 86,400,000 milisegundos
 
-      if (timeDiffMs >= TWENTY_FOUR_HOURS_MS) {
-        const hoursPassed = Math.round(timeDiffMs / (1000 * 60 * 60));
-        console.log(`🔄 [Auto-Reactivación 24h] Han pasado ${hoursPassed}h desde la última interacción con +${clientNumber}. Reactivando Bot automáticamente...`);
+      // Human Handoff dura HUMAN_HANDOFF_MINUTES (30 min), NO 24 horas.
+      // La ventana de 24h es EXCLUSIVA de Meta Cloud API (sesiones de conversación).
+      if (timeDiffMs >= HUMAN_HANDOFF_MS) {
+        const minPassed = Math.round(timeDiffMs / (1000 * 60));
+        console.log(`🔄 [Auto-Reactivación Human Handoff] Han pasado ${minPassed} min para +${clientNumber}. Reactivando Bot...`);
 
-        // 1. Despausar en PostgreSQL (Contact, Chat, Customer)
+        // Despausar en PostgreSQL (Contact, Chat, Customer) — operación atómica
+        const reactivateOps = [
+          prisma.chat.update({ where: { id: chat.id }, data: { botPaused: false } })
+        ];
         if (contact) {
-          await prisma.contact.update({
-            where: { id: contact.id },
-            data: { botPaused: false }
-          });
-          contact.botPaused = false;
+          reactivateOps.push(prisma.contact.update({ where: { id: contact.id }, data: { botPaused: false } }));
         }
-        if (chat) {
-          await prisma.chat.update({
-            where: { id: chat.id },
-            data: { botPaused: false }
-          });
-        }
-
         if (cleanPhone) {
-          await prisma.customer.updateMany({
+          reactivateOps.push(prisma.customer.updateMany({
             where: { tenantId: tenant.id, phone: { contains: cleanPhone } },
             data: { isBotPaused: false }
-          });
+          }));
         }
+        await prisma.$transaction(reactivateOps);
 
-        // 2. Emitir eventos por WebSocket en tiempo real para el Dashboard
-        if (req.io) {
-          req.io.emit('contact_updated', {
+        if (contact) contact.botPaused = false;
+
+        // Emitir eventos solo al tenant propietario
+        const ioRoomReact = tenant?.id ? `tenant:${tenant.id}` : null;
+        if (req.io && ioRoomReact) {
+          req.io.to(ioRoomReact).emit('contact_updated', {
             contactId: contact?.id,
             phone: cleanPhone,
             botPaused: false,
-            reason: 'AUTO_REACTIVATION_24H'
+            reason: 'AUTO_REACTIVATION_30MIN'
           });
-          req.io.emit('bot_status_changed', {
+          req.io.to(ioRoomReact).emit('bot_status_changed', {
             contactId: contact?.id,
             phone: cleanPhone,
             botPaused: false
           });
         }
 
-        // Desactivar bandera para permitir respuesta normal de la IA
         isPaused = false;
       }
     }
 
     if (isPaused) {
-      console.log(`👥 [Auto-Pausa Human Handoff] Bot pausado para +${clientNumber} (< 24h desde la última interacción).`);
+      console.log(`👥 [Human Handoff] Bot pausado para +${clientNumber} (< ${HUMAN_HANDOFF_MINUTES} min desde última interacción).`);
       return; // Respuesta 200 ya enviada al inicio del webhook.
     }
 
@@ -1908,9 +1946,10 @@ Atributos/Tags: ${Array.isArray(product.tags) ? product.tags.join(', ') : ''}
       if (customer && !customer.isBotPaused) {
         await prisma.customer.update({ where: { id: customer.id }, data: { isBotPaused: true } });
       }
-      if (reqIo) {
-        reqIo.emit('contact_updated', { contactId: contact?.id, phone: clientNumber, botPaused: true, reason: 'PROFANITY' });
-        reqIo.emit('bot_status_changed', { contactId: contact?.id, phone: clientNumber, botPaused: true });
+      const profanityIoRoom = tenant?.id ? `tenant:${tenant.id}` : null;
+      if (reqIo && profanityIoRoom) {
+        reqIo.to(profanityIoRoom).emit('contact_updated', { contactId: contact?.id, phone: clientNumber, botPaused: true, reason: 'PROFANITY' });
+        reqIo.to(profanityIoRoom).emit('bot_status_changed', { contactId: contact?.id, phone: clientNumber, botPaused: true });
       }
       return;
     }
@@ -1940,10 +1979,11 @@ Atributos/Tags: ${Array.isArray(product.tags) ? product.tags.join(', ') : ''}
         await prisma.customer.update({ where: { id: customer.id }, data: { isBotPaused: true } });
       }
 
-      // 2. Emitir eventos por WebSocket en tiempo real para el Dashboard (Live Chat CRM)
-      if (reqIo) {
-        reqIo.emit('contact_updated', { contactId: contact?.id, phone: clientNumber, botPaused: true, reason: 'HUMAN_HANDOFF' });
-        reqIo.emit('bot_status_changed', { contactId: contact?.id, phone: clientNumber, botPaused: true });
+      // 2. Emitir eventos por WebSocket en tiempo real para el Dashboard (Live Chat CRM) — solo al tenant
+      const handoffIoRoom = tenant?.id ? `tenant:${tenant.id}` : null;
+      if (reqIo && handoffIoRoom) {
+        reqIo.to(handoffIoRoom).emit('contact_updated', { contactId: contact?.id, phone: clientNumber, botPaused: true, reason: 'HUMAN_HANDOFF' });
+        reqIo.to(handoffIoRoom).emit('bot_status_changed', { contactId: contact?.id, phone: clientNumber, botPaused: true });
       }
 
       // 3. Enviar notificación por WhatsApp si el tenant tiene configurado teléfono de alertas
@@ -2069,7 +2109,7 @@ Atributos/Tags: ${Array.isArray(product.tags) ? product.tags.join(', ') : ''}
         dispatchSequence.push({ type: 'text', content: textBuffer.trim() });
       }
 
-      // ─── LÍMITE DURO DE FRAGMENTOS (MÁXIMO 3 TEXTOS) ───
+                   // ─── LÍMITE DURO DE FRAGMENTOS (MÁXIMO 3 TEXTOS) ───
       let textCount = 0;
       let limitedSequence = [];
       for (const item of dispatchSequence) {
@@ -2131,27 +2171,38 @@ Atributos/Tags: ${Array.isArray(product.tags) ? product.tags.join(', ') : ''}
             if (msgId) markMessageAsSentByAi(msgId);
             console.log(`✅ [${provider} Gateway] Texto enviado (msgId: ${msgId}).`);
 
-            const savedMsg = await prisma.message.create({
-              data: {
-                content: item.content,
+            const aiTextNow = new Date();
+            const [savedMsg] = await prisma.$transaction([
+              prisma.message.create({
+                data: {
+                  content: item.content,
+                  senderRole: 'agent',
+                  status: 'sent',
+                  externalId: msgId || null,
+                  chatId: chat.id,
+                  tenantId: tenant.id
+                }
+              }),
+              prisma.chat.update({ where: { id: chat.id }, data: { updatedAt: aiTextNow } })
+            ]);
+
+            const aiTextRoom = tenant?.id ? `tenant:${tenant.id}` : null;
+            if (reqIo && aiTextRoom) {
+              reqIo.to(aiTextRoom).emit('new_whatsapp_message', {
+                chatId: chat.id,
+                remoteJid: cleanJid,
+                text: item.content,
+                type: 'outgoing',
+                from: 'business',
                 senderRole: 'agent',
                 status: 'sent',
                 externalId: msgId || null,
-                chatId: chat.id,
-                tenantId: tenant.id
-              }
-            });
-
-            if (reqIo) reqIo.emit('new_whatsapp_message', {
-              chatId: chat.id,
-              remoteJid: cleanJid,
-              text: item.content,
-              type: 'outgoing',
-              status: 'sent',
-              externalId: msgId || null,
-              messageId: savedMsg.id,
-              timestamp: new Date()
-            });
+                messageId: savedMsg.id,
+                createdAt: savedMsg.createdAt.toISOString(),
+                lastMessageAt: savedMsg.createdAt.toISOString(),
+                timestamp: savedMsg.createdAt
+              });
+            }
           } catch (sendErr) {
             console.error(`❌ [${provider} Gateway] Error al enviar texto:`, sendErr.message);
           }
@@ -2160,34 +2211,44 @@ Atributos/Tags: ${Array.isArray(product.tags) ? product.tags.join(', ') : ''}
             const mediaMsgId = await sendWhatsAppMedia({ ...gatewayCtx, to: finalCleanNumber, url: item.url, mediaType: item.type });
             console.log(`✅ [${provider} Gateway] Multimedia (${item.type}) enviado a ${finalCleanNumber} (msgId: ${mediaMsgId})`);
 
-            const savedMediaMsg = await prisma.message.create({
-              data: {
-                content: `[${item.type === 'video' ? 'Video' : 'Imagen'}]: ${item.url}`,
-                senderRole: 'agent',
-                status: 'sent',
-                externalId: mediaMsgId || null,
-                chatId: chat.id,
-                tenantId: tenant.id
-              }
-            });
+            const aiMediaNow = new Date();
+            const [savedMediaMsg] = await prisma.$transaction([
+              prisma.message.create({
+                data: {
+                  content: `[${item.type === 'video' ? 'Video' : 'Imagen'}]: ${item.url}`,
+                  senderRole: 'agent',
+                  status: 'sent',
+                  externalId: mediaMsgId || null,
+                  chatId: chat.id,
+                  tenantId: tenant.id
+                }
+              }),
+              prisma.chat.update({ where: { id: chat.id }, data: { updatedAt: aiMediaNow } })
+            ]);
 
-            if (reqIo) {
-              reqIo.emit('new_whatsapp_message', {
+            const aiMediaRoom = tenant?.id ? `tenant:${tenant.id}` : null;
+            if (reqIo && aiMediaRoom) {
+              reqIo.to(aiMediaRoom).emit('new_whatsapp_message', {
                 chatId: chat.id,
                 remoteJid: cleanJid,
                 text: item.url,
                 type: 'outgoing',
+                from: 'business',
+                senderRole: 'agent',
                 mediaType: item.type,
                 status: 'sent',
                 externalId: mediaMsgId || null,
                 messageId: savedMediaMsg.id,
-                timestamp: new Date()
+                createdAt: savedMediaMsg.createdAt.toISOString(),
+                lastMessageAt: savedMediaMsg.createdAt.toISOString(),
+                timestamp: savedMediaMsg.createdAt
               });
             }
           } catch (mediaSendError) {
-            console.error(`âŒ [${provider} Gateway] Error al enviar multimedia:`, mediaSendError.message);
+            console.error(`❌ [${provider} Gateway] Error al enviar multimedia:`, mediaSendError.message);
           }
         }
+
 
       }
     }

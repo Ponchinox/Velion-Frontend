@@ -189,12 +189,16 @@ export async function processCampaign(campaignId, targetContacts, instance) {
             to: cleanPhone,
             url: campaign.media,
             caption: personalizedMessage,
+            isAutomated: true,
+            origin: 'campaign'
           });
         } else {
           await gatewaySendText({
             ...gatewayCtx,
             to: cleanPhone,
             text: personalizedMessage,
+            isAutomated: true,
+            origin: 'campaign'
           });
         }
         success = true;

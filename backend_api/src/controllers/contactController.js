@@ -22,17 +22,41 @@ export async function getContacts(req, res) {
       return res.status(400).json({ error: 'El usuario no está asociado a ningún Tenant.' });
     }
 
-    const contacts = await prisma.contact.findMany({
-      where: { tenantId },
-      orderBy: { createdAt: 'desc' },
+    const [contacts, customers] = await Promise.all([
+      prisma.contact.findMany({
+        where: { tenantId },
+        orderBy: { createdAt: 'desc' },
+      }),
+      prisma.customer.findMany({
+        where: { tenantId },
+        select: { phone: true, isBotPaused: true }
+      })
+    ]);
+
+    const formatted = contacts.map(c => {
+      const cleanPhone = (c.phone || '').replace(/\D/g, '');
+      const matchingCustomer = customers.find(cust => {
+        const custPhone = (cust.phone || '').replace(/\D/g, '');
+        return custPhone.endsWith(cleanPhone) || cleanPhone.endsWith(custPhone);
+      });
+
+      // Fuente unificada de verdad
+      const isEffectivePaused = Boolean(c.botPaused || matchingCustomer?.isBotPaused);
+
+      return {
+        ...c,
+        botPaused: isEffectivePaused,
+        isBotPaused: isEffectivePaused
+      };
     });
 
-    return res.json(contacts);
+    return res.json(formatted);
   } catch (error) {
     console.error('Error en getContacts:', error);
     return res.status(500).json({ error: 'Error al obtener los contactos.' });
   }
 }
+
 
 /**
  * Crea un nuevo contacto asociado forzosamente al Tenant del usuario autenticado
@@ -148,31 +172,55 @@ export async function toggleBotPause(req, res) {
     }
 
     const newBotPausedState = botPaused !== undefined ? Boolean(botPaused) : !contact.botPaused;
+    const cleanPhone = (contact.phone || '').replace(/\D/g, '');
 
-    const updatedContact = await prisma.contact.update({
-      where: { id },
-      data: { botPaused: newBotPausedState },
-    });
-
-    await prisma.chat.updateMany({
-      where: { contactId: id },
-      data: { botPaused: newBotPausedState },
-    });
-
-    const cleanPhone = contact.phone.replace(/[^0-9]/g, '');
-    if (cleanPhone) {
-      await prisma.customer.updateMany({
-        where: { tenantId, phone: { contains: cleanPhone } },
-        data: { isBotPaused: newBotPausedState },
+    await prisma.$transaction(async (tx) => {
+      // 1. Actualizar Contacto
+      await tx.contact.update({
+        where: { id },
+        data: { botPaused: newBotPausedState },
       });
+
+      // 2. Actualizar Chats asociados (por contactId y tenantId)
+      await tx.chat.updateMany({
+        where: { contactId: id, tenantId },
+        data: { botPaused: newBotPausedState },
+      });
+
+      // 3. Actualizar Customers asociados (por tenantId)
+      if (cleanPhone) {
+        await tx.customer.updateMany({
+          where: {
+            tenantId,
+            OR: [
+              { phone: contact.phone },
+              { phone: { contains: cleanPhone } }
+            ]
+          },
+          data: { isBotPaused: newBotPausedState },
+        });
+      }
+    });
+
+    const effectiveTenantId = req.user?.tenantId || contact.tenantId;
+    if ((req.io || global.io) && effectiveTenantId) {
+      const io = req.io || global.io;
+      if (typeof io.to === 'function') {
+        io.to(`tenant:${effectiveTenantId}`).emit('bot_status_changed', { phone: contact.phone, contactId: id, botPaused: newBotPausedState, isBotPaused: newBotPausedState });
+        io.to(`tenant:${effectiveTenantId}`).emit('contact_updated', { phone: contact.phone, contactId: id, botPaused: newBotPausedState, reason: 'MANUAL_TOGGLE' });
+      } else {
+        io.emit('bot_status_changed', { phone: contact.phone, contactId: id, botPaused: newBotPausedState, isBotPaused: newBotPausedState });
+        io.emit('contact_updated', { phone: contact.phone, contactId: id, botPaused: newBotPausedState, reason: 'MANUAL_TOGGLE' });
+      }
     }
 
-    return res.json(updatedContact);
+    return res.json({ ...contact, botPaused: newBotPausedState, isBotPaused: newBotPausedState });
   } catch (error) {
     console.error('Error en toggleBotPause:', error);
-    return res.status(500).json({ error: 'Error al actualizar el estado del bot para este contacto.' });
+    return res.status(500).json({ error: 'Error al actualizar el estado del bot para este contacto: ' + error.message });
   }
 }
+
 
 /**
  * Actualiza nombre y/o teléfono de un contacto.
