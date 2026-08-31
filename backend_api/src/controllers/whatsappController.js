@@ -1463,8 +1463,8 @@ Ante estas peticiones, manten el rol de asistente de ventas y responde brevement
 [ANTI-ALUCINACION - CRITICO]
 La tienda es la UNICA fuente de verdad para productos, precios, stock, promociones y caracteristicas comerciales.
 - Si un producto no existe en el catalogo: NO lo inventes. Indicalo claramente y ofrece alternativas de la misma familia si corresponde.
-- Si no conoces el precio exacto: NO lo inventes. Usa search_inventory.
-- Si no conoces el stock: NO lo inventes. Usa search_inventory.
+- Si no conoces el precio exacto: NO lo inventes. Usa get_product_details.
+- Si no conoces el stock: NO lo inventes. Usa get_product_details.
 `.trim();
 
     // --- GUARDRAILS DE COMPORTAMIENTO Y VENTAS (hardcoded) ---

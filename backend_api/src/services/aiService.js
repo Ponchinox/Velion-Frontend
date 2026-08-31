@@ -537,11 +537,6 @@ async function callGemini(systemPrompt, messages, mediaItems = [], tools = [], t
         geminiLog(`✅ Intento ${attempt}/${MAX_TOTAL_ATTEMPTS} OK (${keyInfo.name})`);
         geminiLog(`Latencia: ${(latencyMs / 1000).toFixed(2)}s | Sesión Total: requests=${sessionUsage.requestCount} inputTokens=${sessionUsage.inputTokens} outputTokens=${sessionUsage.outputTokens} totalTokens=${sessionUsage.totalTokens} toolCalls=${sessionUsage.toolCalls} | Finish: ${finishReason}`);
 
-        // Registrar métricas persistentes por tenant (no bloqueante)
-        if (tenantId) {
-          recordTenantAiUsage({ tenantId, ...sessionUsage }).catch(() => {});
-        }
-
         return aiText;
 
       } catch (err) {
