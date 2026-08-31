@@ -1492,13 +1492,17 @@ La tienda es la UNICA fuente de verdad para productos, precios, stock, promocion
 
 [FLUJO DE ATENCION Y VENTAS]
 - CONSULTA: Responde directo, destaca 1 beneficio y el precio. Cierra con 1 pregunta amigable. NO presiones ni hables de pagos.
+- CONSULTAS NO SON COMPRAS: Que el cliente pregunte por precios, características, envíos, tiempos de entrega, cobertura de ciudad o medios de pago NO es una confirmación de compra.
+- CONFIRMACIÓN EXPLÍCITA (customerConfirmed): SOLO pasa customerConfirmed: true a update_commercial_state cuando el cliente exprese clara y explícitamente su decisión de comprar (ej. "quiero uno", "lo compro", "dame dos", "quiero pedirlo", "confirmo el pedido"). NUNCA marques customerConfirmed: true si el cliente solo está preguntando información.
+- CANTIDAD: NUNCA asumas quantity=1 por defecto. Si el cliente no indicó cuántas unidades desea, pregúntale amablemente "¿Cuántas unidades deseas llevar?".
 - LIMITES DE CATALOGO: Solo ofrece alternativas de la MISMA familia semantica. No ofrezcas categorias no relacionadas. NUNCA dispares imagenes no solicitadas.
-- CIERRE PASO A PASO: No pidas datos de golpe. 1. Variantes, 2. Envio, 3. Metodo de pago (ofrece solo los de INFO EMPRESA). Si no hay configurados, di que un asesor los dara. 4. Datos de pago: solo envialos si el cliente confirmo el metodo o pidio pagar. NO preguntes lo que el cliente ya te dijo.
+- CIERRE PASO A PASO: No pidas datos de golpe. 1. Variantes y Cantidad, 2. Envio, 3. Metodo de pago (ofrece solo los de INFO EMPRESA). Si no hay configurados, di que un asesor los dara. 4. Datos de pago: solo envialos si el cliente confirmo el metodo o pidio pagar. NO preguntes lo que el cliente ya te dijo.
+- NO INVENTAR: No inventes productos, ciudades, métodos de pago ni cantidades no expresadas por el cliente.
 
 [PAGOS Y AUDITORIA - CRITICO]
-- METODOS PERMITIDOS: El UNICO medio de pago digital aceptado es Yape (o efectivo en contraentrega con adelanto por Shalom). Esta estrictamente PROHIBIDO ofrecer, aceptar o mencionar Plin, transferencias bancarias o tarjetas. Si el cliente los pide, dile amablemente que solo operamos con Yape o contraentrega.
-
-`.trim()
+- VERIFICACIÓN DE PAGO: Que el cliente diga "ya pagué", "te envié el Yape" o adjunte comprobante NO significa que el pago esté verificado. La IA solo puede registrar PAYMENT_VERIFIED (revisión humana requerida). La IA NUNCA marca pagos como PAID ni pedidos como COMPLETED.
+- METODOS PERMITIDOS: El UNICO medio de pago digital aceptado es Yape (o efectivo en contraentrega con adelanto por Shalom si es provincia). Esta estrictamente PROHIBIDO ofrecer, aceptar o mencionar Plin, transferencias bancarias o tarjetas. Si el cliente los pide, dile amablemente que solo operamos con Yape o contraentrega.
+`.trim();
 
 
     // ─── CAPA 2: CAPA DEL SISTEMA (Reglas Duras de Plataforma e Inventario PostgreSQL) ───
@@ -1613,7 +1617,7 @@ ${catalogIndexCsv}
               currentStage: {
                 type: 'STRING',
                 enum: ['EXPLORING', 'PRODUCT_SELECTED', 'DETAILS_PROVIDED', 'SHIPPING_COORDINATED', 'PAYMENT_PENDING', 'PAYMENT_VERIFIED', 'COMPLETED'],
-                description: 'Etapa actual del proceso de compra'
+                description: 'Etapa actual del proceso de compra. Nota: PAYMENT_VERIFIED significa que el cliente afirma haber pagado (pendiente de verificación humana). COMPLETED es cierre conversacional y NO autoriza a marcar el pago como PAID en la BD.'
               },
               intent: {
                 type: 'STRING',
@@ -1629,6 +1633,10 @@ ${catalogIndexCsv}
               shippingCity: { type: 'STRING', description: 'Ciudad o provincia de entrega' },
               shippingAddress: { type: 'STRING', description: 'Dirección física exacta si la proporcionó' },
               paymentMethod: { type: 'STRING', description: 'Método de pago preferido (Yape, Contraentrega)' },
+              customerConfirmed: {
+                type: 'BOOLEAN',
+                description: 'true ÚNICAMENTE si el cliente ha confirmado de forma explícita que desea comprar/ordenar el producto (ej. "quiero uno", "lo compro", "dame dos", "confirmo el pedido"). false si solo está consultando precio, stock, envíos, cobertura o características.'
+              },
               missingFields: {
                 type: 'ARRAY',
                 items: { type: 'STRING' },
@@ -1725,83 +1733,133 @@ Atributos/Tags: ${Array.isArray(product.tags) ? product.tags.join(', ') : ''}
           let updatedState = { ...currentCommercialState, ...args };
           
           // --- FASE 4: MÁQUINA DE ESTADOS COMERCIALES Y PEDIDOS ESTRUCTURADOS ---
-          const triggerStages = ['SHIPPING_COORDINATED', 'PAYMENT_PENDING', 'PAYMENT_VERIFIED', 'COMPLETED'];
+          // SHIPPING_COORDINATED es etapa de coordinación logística, NO crea Order.
+          const triggerStages = ['PAYMENT_PENDING', 'PAYMENT_VERIFIED', 'COMPLETED'];
           if (triggerStages.includes(updatedState.currentStage)) {
              const orderId = updatedState.activeOrderId;
              
+             // ─── VALIDACIONES DETERMINISTAS ANTES DE CREAR ORDER NUEVO ───
+             const rawQty = updatedState.quantity;
+             const parsedQty = parseInt(rawQty, 10);
+             const isQtyValid = Number.isInteger(parsedQty) && parsedQty >= 1;
+
+             // Verificar que el producto exista y pertenezca a este tenant
              let productPrice = parseFloat(updatedState.budget) || 0;
+             let verifiedProduct = null;
              if (updatedState.productId) {
-               const p = await prisma.product.findFirst({
+               verifiedProduct = await prisma.product.findFirst({
                  where: { 
                    id: updatedState.productId,
                    user: { tenantId: tenant.id }
                  },
-                 select: { price: true, promotionalPrice: true }
+                 select: { id: true, name: true, price: true, promotionalPrice: true }
                });
-               if (p) {
-                 productPrice = (p.promotionalPrice && p.promotionalPrice > 0) ? p.promotionalPrice : p.price;
+               if (verifiedProduct) {
+                 productPrice = (verifiedProduct.promotionalPrice && verifiedProduct.promotionalPrice > 0) 
+                   ? verifiedProduct.promotionalPrice 
+                   : verifiedProduct.price;
                }
              }
-             
-             const quantity = parseInt(updatedState.quantity, 10) || 1;
-             const total = quantity * productPrice;
-             
+
+             // Validar requisitos mínimos deterministas para crear un Order real
+             const isConfirmed = Boolean(updatedState.customerConfirmed === true);
+             const hasValidProduct = Boolean(verifiedProduct);
+             const hasShippingDestination = Boolean(updatedState.shippingCity || updatedState.shippingAddress);
+             const hasPaymentMethod = Boolean(updatedState.paymentMethod);
+             const hasLogistics = hasShippingDestination && hasPaymentMethod;
+             const canCreateOrder = isConfirmed && isQtyValid && hasValidProduct && hasLogistics;
+
+             // ─── ESTADOS SEGUROS PARA ÓRDENES CREADAS POR IA ───
+             // Una orden creada por IA NUNCA puede nacer como PAID ni COMPLETED
              let orderStatus = 'PENDING';
              let payStatus = 'UNPAID';
-             if (updatedState.currentStage === 'PAYMENT_VERIFIED') payStatus = 'VERIFYING';
-             if (updatedState.currentStage === 'COMPLETED') { orderStatus = 'COMPLETED'; payStatus = 'PAID'; }
+             if (updatedState.currentStage === 'PAYMENT_VERIFIED' || updatedState.currentStage === 'COMPLETED') {
+               payStatus = 'VERIFYING';
+             }
 
              if (!orderId) {
-               // 1. Crear nuevo Order estructurado
-               const newOrder = await prisma.order.create({
-                 data: {
-                   tenantId: tenant.id,
-                   customerId: customer.id,
-                   status: orderStatus,
-                   paymentStatus: payStatus,
-                   paymentMethod: updatedState.paymentMethod || null,
-                   shippingCity: updatedState.shippingCity || null,
-                   shippingAddress: updatedState.shippingAddress || null,
-                   customerNeeds: updatedState.customerNeeds || null,
-                   totalAmount: total,
-                   items: {
-                     create: [{
-                       productId: updatedState.productId || null,
-                       name: updatedState.productName || 'Producto sin nombre',
-                       quantity: quantity,
-                       price: productPrice,
-                       variant: updatedState.variant || null
-                     }]
+               // Si no cumple todos los requisitos deterministas, NO crear Order todavía.
+               // El borrador se preserva en updatedState (Customer.commercialState)
+               if (canCreateOrder) {
+                 const quantity = parsedQty;
+                 const total = quantity * productPrice;
+
+                 // 1. Crear nuevo Order estructurado
+                 const newOrder = await prisma.order.create({
+                   data: {
+                     tenantId: tenant.id,
+                     customerId: customer.id,
+                     status: orderStatus,
+                     paymentStatus: payStatus,
+                     paymentMethod: updatedState.paymentMethod || null,
+                     shippingCity: updatedState.shippingCity || null,
+                     shippingAddress: updatedState.shippingAddress || null,
+                     customerNeeds: updatedState.customerNeeds || null,
+                     totalAmount: total,
+                     items: {
+                       create: [{
+                         productId: verifiedProduct?.id || updatedState.productId || null,
+                         name: verifiedProduct?.name || updatedState.productName || 'Producto sin nombre',
+                         quantity: quantity,
+                         price: productPrice,
+                         variant: updatedState.variant || null
+                       }]
+                     }
+                   }
+                 });
+                 updatedState.activeOrderId = newOrder.id; // Vincular al perfil del cliente
+
+                 // 2. Alerta y Notificación Nativas ÚNICAMENTE tras creación exitosa
+                 await prisma.alert.create({
+                   data: {
+                     type: 'NEW_ORDER',
+                     severity: 'INFO',
+                     message: `📦 PEDIDO CREADO | Cliente: +${clientNumber} (${customer.name || 'Sin Nombre'}) | ${updatedState.productName || verifiedProduct?.name || 'Producto'} x${quantity}`,
+                     tenantId: tenant.id
+                   }
+                 });
+
+                 if (tenantDetails?.notifySalesWhatsApp === true) {
+                   const rawDestPhone = await resolveNotificationPhone(tenant.id, tenantDetails);
+                   const destPhone = sanitizePhoneForEvo(rawDestPhone);
+                   if (destPhone) {
+                     const txt = `🚨 *NUEVO PEDIDO CREADO por IA*\n\n📱 *Cliente:* +${clientNumber} (${customer.name || 'Sin Nombre'})\n📦 *Producto:* ${updatedState.productName || verifiedProduct?.name || 'Producto'} x${quantity}\n💰 *Monto aprox:* S/. ${total}\n📍 *Envío:* ${updatedState.shippingCity || '-'} / ${updatedState.shippingAddress || '-'}\n\n⚡ _Velion Agent Auto-Notification_`;
+                     gatewaySendText({ tenantId: tenant.id, to: destPhone, text: txt }).catch(() => {});
                    }
                  }
-               });
-               updatedState.activeOrderId = newOrder.id; // Vincular al perfil del cliente
-               
-               // 2. Alerta y Notificación Nativas
-               await prisma.alert.create({
-                 data: {
-                   type: 'NEW_ORDER',
-                   severity: 'INFO',
-                   message: `📦 PEDIDO CREADO | Cliente: +${clientNumber} (${customer.name || 'Sin Nombre'}) | ${updatedState.productName || 'Producto'} x${quantity}`,
-                   tenantId: tenant.id
-                 }
-               });
-               
-               if (tenantDetails?.notifySalesWhatsApp === true) {
-                 const rawDestPhone = await resolveNotificationPhone(tenant.id, tenantDetails);
-                 const destPhone = sanitizePhoneForEvo(rawDestPhone);
-                 if (destPhone) {
-                   const txt = `🚨 *NUEVO PEDIDO CREADO por IA*\n\n📱 *Cliente:* +${clientNumber} (${customer.name || 'Sin Nombre'})\n📦 *Producto:* ${updatedState.productName || 'Producto'} x${quantity}\n💰 *Monto aprox:* S/. ${total}\n📍 *Envío:* ${updatedState.shippingCity || '-'} / ${updatedState.shippingAddress || '-'}\n\n⚡ _Velion Agent Auto-Notification_`;
-                   gatewaySendText({ tenantId: tenant.id, to: destPhone, text: txt }).catch(() => {});
-                 }
+               } else {
+                 console.log(`ℹ️ [FC update_commercial_state] Draft comercial en memoria (Requisitos Order: confirmed=${isConfirmed}, qty=${isQtyValid}, prod=${hasValidProduct}, dest=${hasShippingDestination}, pay=${hasPaymentMethod}).`);
                }
              } else {
-               // 1. Actualizar Order existente (Sin duplicar)
+               // 1. Actualizar Order existente de forma segura (Sin duplicar)
+               const quantity = isQtyValid ? parsedQty : 1;
+               const total = quantity * productPrice;
+
+               // Preservar estados fijados por acción humana/autorizada previa
+               const existingOrder = await prisma.order.findUnique({
+                 where: { id: orderId },
+                 select: { status: true, paymentStatus: true }
+               });
+
+               let updateOrderStatus = existingOrder?.status || 'PENDING';
+               let updatePayStatus = existingOrder?.paymentStatus || 'UNPAID';
+
+               // Si el pago no está PAID por humano, permitir pasar a VERIFYING si el cliente afirma haber pagado
+               if (updatePayStatus !== 'PAID') {
+                 if (updatedState.currentStage === 'PAYMENT_VERIFIED' || updatedState.currentStage === 'COMPLETED') {
+                   updatePayStatus = 'VERIFYING';
+                 }
+               }
+               // La IA nunca puede cambiar status a COMPLETED directamente
+               if (updateOrderStatus !== 'COMPLETED' && updateOrderStatus !== 'CANCELED') {
+                 updateOrderStatus = 'PENDING';
+               }
+
                await prisma.order.update({
                  where: { id: orderId },
                  data: {
-                   status: orderStatus,
-                   paymentStatus: payStatus,
+                   status: updateOrderStatus,
+                   paymentStatus: updatePayStatus,
                    paymentMethod: updatedState.paymentMethod || null,
                    shippingCity: updatedState.shippingCity || null,
                    shippingAddress: updatedState.shippingAddress || null,
@@ -1814,8 +1872,8 @@ Atributos/Tags: ${Array.isArray(product.tags) ? product.tags.join(', ') : ''}
                await prisma.orderItem.create({
                  data: {
                    orderId: orderId,
-                   productId: updatedState.productId || null,
-                   name: updatedState.productName || 'Producto sin nombre',
+                   productId: verifiedProduct?.id || updatedState.productId || null,
+                   name: verifiedProduct?.name || updatedState.productName || 'Producto sin nombre',
                    quantity: quantity,
                    price: productPrice,
                    variant: updatedState.variant || null
@@ -1836,12 +1894,12 @@ Atributos/Tags: ${Array.isArray(product.tags) ? product.tags.join(', ') : ''}
                    const rawDestPhone = await resolveNotificationPhone(tenant.id, tenantDetails);
                    const destPhone = sanitizePhoneForEvo(rawDestPhone);
                    if (destPhone) {
-                     const txt = `💳 *VERIFICACIÓN DE PAGO REQUERIDA*\n\n📱 *Cliente:* +${clientNumber} (${customer.name || 'Sin Nombre'})\n📦 *Producto:* ${updatedState.productName || 'Producto'} x${quantity}\n\n⚠️ Verifica el comprobante y confirma en el Dashboard.\n\n⚡ _Velion Agent Auto-Notification_`;
+                     const txt = `💳 *VERIFICACIÓN DE PAGO REQUERIDA*\n\n📱 *Cliente:* +${clientNumber} (${customer.name || 'Sin Nombre'})\n📦 *Producto:* ${updatedState.productName || verifiedProduct?.name || 'Producto'} x${quantity}\n\n⚠️ Verifica el comprobante y confirma en el Dashboard.\n\n⚡ _Velion Agent Auto-Notification_`;
                      gatewaySendText({ tenantId: tenant.id, to: destPhone, text: txt }).catch(() => {});
                    }
                  }
                }
-               
+
                // Cierre de ciclo: liberar la memoria para una nueva compra a futuro
                if (updatedState.currentStage === 'COMPLETED') {
                   delete updatedState.activeOrderId;
