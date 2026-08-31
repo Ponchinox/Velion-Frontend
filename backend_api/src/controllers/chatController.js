@@ -5,6 +5,7 @@ import {
   sendMedia as gatewaySendMedia,
   resolveGatewayCtx
 } from '../services/whatsappGateway.js';
+import { activateHumanHandoff } from '../services/humanHandoffService.js';
 
 /**
  * Obtiene la lista de chats activos del tenant desde la base de datos real
@@ -220,6 +221,7 @@ export async function sendMessage(req, res) {
 
     // ─── GATEWAY: Enviar por el proveedor activo del Tenant ───
     let msgId = null;
+    let gatewaySuccess = false;
     try {
       msgId = await gatewaySendText({
         tenantId,
@@ -227,6 +229,7 @@ export async function sendMessage(req, res) {
         text,
         isAutomated: false,
       });
+      gatewaySuccess = true;
       console.log(`📤 [Live Chat] Mensaje enviado a WhatsApp +${remoteJid} vía Gateway (msgId: ${msgId})`);
     } catch (sendError) {
       console.error('❌ [Live Chat] Error al despachar mensaje vía Gateway:', sendError.response?.data || sendError.message);
@@ -250,6 +253,18 @@ export async function sendMessage(req, res) {
         data: { updatedAt: now }
       })
     ]);
+
+    // 2. Activar Human Handoff ÚNICAMENTE si el Gateway confirmó éxito
+    if (gatewaySuccess) {
+      await activateHumanHandoff({
+        tenantId,
+        contactId: chat.contactId,
+        chatId: chat.id,
+        phone: cleanNumber || remoteJid,
+        io: req.io || global.io,
+        reason: 'HUMAN_INTERVENTION_LIVECHAT'
+      });
+    }
 
     // Emitir por WebSocket en tiempo real a la sala privada del tenant
     const ioInstance = req.io || global.io;
@@ -338,6 +353,7 @@ export async function sendDirectMessage(req, res) {
 
     let messageContent = text;
     let msgId = null;
+    let gatewaySuccess = false;
 
     if (media && media.base64) {
       // Enviar multimedia a través del Gateway
@@ -347,8 +363,10 @@ export async function sendDirectMessage(req, res) {
           to: cleanNumber,
           url: media.base64,
           caption: text || undefined,
-          mediaType: media.type === 'image' ? 'image' : 'document'
+          mediaType: media.type === 'image' ? 'image' : 'document',
+          isAutomated: false
         });
+        gatewaySuccess = true;
         console.log(`📤 [Live Chat Direct] Archivo multimedia enviado vía Gateway a +${cleanNumber} (msgId: ${msgId})`);
       } catch (gatewayErr) {
         console.error('❌ [Live Chat Direct] Error enviando media vía Gateway:', gatewayErr.message);
@@ -364,6 +382,7 @@ export async function sendDirectMessage(req, res) {
           text,
           isAutomated: false,
         });
+        gatewaySuccess = true;
         console.log(`📤 [Live Chat Direct] Mensaje enviado vía Gateway a +${cleanNumber} (msgId: ${msgId})`);
       } catch (gatewayErr) {
         console.error('❌ [Live Chat Direct] Error enviando texto vía Gateway:', gatewayErr.message);
@@ -387,6 +406,18 @@ export async function sendDirectMessage(req, res) {
         data: { updatedAt: now }
       })
     ]);
+
+    // Activar Human Handoff ÚNICAMENTE si el Gateway confirmó éxito
+    if (gatewaySuccess) {
+      await activateHumanHandoff({
+        tenantId,
+        contactId: chat.contactId,
+        chatId: chat.id,
+        phone: cleanNumber || number,
+        io: req.io || global.io,
+        reason: 'HUMAN_INTERVENTION_LIVECHAT'
+      });
+    }
 
     const ioInstance = req.io || global.io;
     if (ioInstance && tenantId) {

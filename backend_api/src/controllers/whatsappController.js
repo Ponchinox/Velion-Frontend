@@ -15,6 +15,7 @@ import {
   markMessageAsSentByAi as _trackerMarkAi,
   isAutomatedMessage,
 } from '../services/aiMessageTracker.js';
+import { activateHumanHandoff } from '../services/humanHandoffService.js';
 
 // ── HUMAN HANDOFF: ventana de pausa manual (30 minutos) ──────────────────────
 export const HUMAN_HANDOFF_MINUTES = 30;
@@ -982,15 +983,58 @@ export async function receiveWebhook(req, res) {
       } else {
         // Intervención humana real del comerciante desde WhatsApp
         console.log(`👤 [Human Handoff] Intervención humana detectada en +${clientNumber}. Pausando bot 30 min...`);
-        const pauseNow = new Date();
-        await prisma.$transaction([
-          prisma.contact.update({ where: { id: contact.id }, data: { botPaused: true, updatedAt: pauseNow } }),
-          prisma.chat.update({ where: { id: chat.id }, data: { botPaused: true, updatedAt: pauseNow } }),
-          prisma.customer.updateMany({
-            where: { tenantId: tenant.id, phone: { contains: cleanPhone } },
-            data: { isBotPaused: true }
-          })
-        ]);
+
+        // Comprobar si este mensaje ya fue persistido previamente (ej. eco de Live Chat)
+        const existingMessage = await prisma.message.findFirst({
+          where: {
+            chatId: chat.id,
+            senderRole: 'agent',
+            OR: [
+              ...(msgId ? [{ externalId: msgId }] : []),
+              { content: userMessageText }
+            ]
+          }
+        });
+
+        if (!existingMessage) {
+          // Intervención humana NUEVA desde WhatsApp (App móvil / Web)
+          await activateHumanHandoff({
+            tenantId: tenant.id,
+            contactId: contact?.id,
+            chatId: chat?.id,
+            phone: cleanPhone,
+            io: req.io,
+            reason: 'HUMAN_INTERVENTION'
+          });
+
+          // Persiste el mensaje saliente + actualiza Chat.updatedAt atómicamente
+          const outNow = new Date();
+          const [savedOutMsg] = await prisma.$transaction([
+            prisma.message.create({
+              data: { content: userMessageText, senderRole: 'agent', chatId: chat.id, tenantId: tenant.id, externalId: msgId || null }
+            }),
+            prisma.chat.update({ where: { id: chat.id }, data: { updatedAt: outNow } })
+          ]);
+
+          const ioRoom = tenant?.id ? `tenant:${tenant.id}` : null;
+          if (req.io && ioRoom) {
+            req.io.to(ioRoom).emit('new_whatsapp_message', {
+              chatId: chat.id,
+              remoteJid,
+              text: userMessageText,
+              type: 'outgoing',
+              from: 'business',
+              senderRole: 'agent',
+              externalId: msgId || null,
+              createdAt: savedOutMsg.createdAt.toISOString(),
+              lastMessageAt: savedOutMsg.createdAt.toISOString(),
+              timestamp: savedOutMsg.createdAt
+            });
+          }
+        } else {
+          console.log(`♻️ [Webhook Evolution fromMe Echo] Mensaje ya registrado previamente para +${clientNumber}. Se preserva el timestamp original.`);
+        }
+
         // Limpiar buffer pendiente del cliente
         const bufferKey = `${tenant.id}:${cleanJid}`;
         if (messageBuffers.has(bufferKey)) {
@@ -998,42 +1042,7 @@ export async function receiveWebhook(req, res) {
           if (buf?.timer) clearTimeout(buf.timer);
           messageBuffers.delete(bufferKey);
         }
-        // Emitir eventos solo al tenant propietario
-        const ioRoom = tenant?.id ? `tenant:${tenant.id}` : null;
-        if (req.io && ioRoom) {
-          req.io.to(ioRoom).emit('contact_updated', { contactId: contact?.id, phone: cleanPhone, botPaused: true, reason: 'HUMAN_INTERVENTION' });
-          req.io.to(ioRoom).emit('bot_status_changed', { contactId: contact?.id, phone: cleanPhone, botPaused: true });
-        }
       }
-
-      // Persiste el mensaje saliente + actualiza Chat.updatedAt atómicamente
-      const existingMessage = await prisma.message.findFirst({
-        where: { chatId: chat.id, content: userMessageText, senderRole: 'agent' }
-      });
-      if (!existingMessage) {
-        const outNow = new Date();
-        const [savedOutMsg] = await prisma.$transaction([
-          prisma.message.create({
-            data: { content: userMessageText, senderRole: 'agent', chatId: chat.id, tenantId: tenant.id }
-          }),
-          prisma.chat.update({ where: { id: chat.id }, data: { updatedAt: outNow } })
-        ]);
-        const ioRoom = tenant?.id ? `tenant:${tenant.id}` : null;
-        if (req.io && ioRoom) {
-          req.io.to(ioRoom).emit('new_whatsapp_message', {
-            chatId: chat.id,
-            remoteJid,
-            text: userMessageText,
-            type: 'outgoing',
-            from: 'business',
-            senderRole: 'agent',
-            createdAt: savedOutMsg.createdAt.toISOString(),
-            lastMessageAt: savedOutMsg.createdAt.toISOString(),
-            timestamp: savedOutMsg.createdAt
-          });
-        }
-      }
-      console.log(`📤 [Webhook Evolution] Mensaje saliente propio de +${clientNumber} guardado.`);
       return;
     }
 
@@ -1077,17 +1086,22 @@ export async function receiveWebhook(req, res) {
     let isPaused = Boolean(contact?.botPaused || existingCustomerForCheck?.isBotPaused);
 
     if (isPaused) {
-      // Buscar la interacción previa en el chat (saltando el mensaje entrante recién guardado)
-      const previousMessage = await prisma.message.findFirst({
-        where: { chatId: chat.id },
-        orderBy: { createdAt: 'desc' },
-        skip: 1
-      });
+      // ─── FUENTE TEMPORAL DE HUMAN HANDOFF: persistentProfile.lastHumanInterventionAt ───
+      const lastInterventionIso = (typeof existingCustomerForCheck?.persistentProfile === 'object' && existingCustomerForCheck?.persistentProfile !== null)
+        ? existingCustomerForCheck.persistentProfile.lastHumanInterventionAt
+        : null;
 
-      const lastActivityDate = previousMessage?.createdAt 
-        || chat?.updatedAt 
-        || contact?.updatedAt 
-        || new Date(0);
+      let lastActivityDate = null;
+      if (lastInterventionIso) {
+        lastActivityDate = new Date(lastInterventionIso);
+      } else {
+        // Fallback de compatibilidad exclusivamente para registros legacy pausados sin timestamp
+        const legacyAgentMsg = await prisma.message.findFirst({
+          where: { chatId: chat.id, senderRole: 'agent' },
+          orderBy: { createdAt: 'desc' }
+        });
+        lastActivityDate = legacyAgentMsg?.createdAt || contact?.updatedAt || new Date(0);
+      }
 
       const timeDiffMs = Date.now() - new Date(lastActivityDate).getTime();
 
@@ -1095,7 +1109,7 @@ export async function receiveWebhook(req, res) {
       // La ventana de 24h es EXCLUSIVA de Meta Cloud API (sesiones de conversación).
       if (timeDiffMs >= HUMAN_HANDOFF_MS) {
         const minPassed = Math.round(timeDiffMs / (1000 * 60));
-        console.log(`🔄 [Auto-Reactivación Human Handoff] Han pasado ${minPassed} min para +${clientNumber}. Reactivando Bot...`);
+        console.log(`🔄 [Auto-Reactivación Human Handoff] Han pasado ${minPassed} min desde última intervención humana (+${clientNumber}). Reactivando Bot...`);
 
         // Despausar en PostgreSQL (Contact, Chat, Customer) — operación atómica
         const reactivateOps = [
@@ -1937,20 +1951,14 @@ Atributos/Tags: ${Array.isArray(product.tags) ? product.tags.join(', ') : ''}
 
     if (aiResponse.trim() === '[BAN_USER]') {
       console.log(`👥 [Auto-Pausa Human Handoff] Lenguaje inapropiado detectado para +${clientNumber}. Pausando bot...`);
-      if (contact && !contact.botPaused) {
-        await prisma.contact.update({ where: { id: contact.id }, data: { botPaused: true } });
-      }
-      if (chat && !chat.botPaused) {
-        await prisma.chat.update({ where: { id: chat.id }, data: { botPaused: true } });
-      }
-      if (customer && !customer.isBotPaused) {
-        await prisma.customer.update({ where: { id: customer.id }, data: { isBotPaused: true } });
-      }
-      const profanityIoRoom = tenant?.id ? `tenant:${tenant.id}` : null;
-      if (reqIo && profanityIoRoom) {
-        reqIo.to(profanityIoRoom).emit('contact_updated', { contactId: contact?.id, phone: clientNumber, botPaused: true, reason: 'PROFANITY' });
-        reqIo.to(profanityIoRoom).emit('bot_status_changed', { contactId: contact?.id, phone: clientNumber, botPaused: true });
-      }
+      await activateHumanHandoff({
+        tenantId: tenant.id,
+        contactId: contact?.id,
+        chatId: chat?.id,
+        phone: clientNumber,
+        io: reqIo,
+        reason: 'PROFANITY'
+      });
       return;
     }
 
@@ -1969,22 +1977,14 @@ Atributos/Tags: ${Array.isArray(product.tags) ? product.tags.join(', ') : ''}
 
     if (handoffMatches.length > 0) {
       // 1. Pausar el Bot en PostgreSQL para este contacto (Auto-Pausa)
-      if (contact && !contact.botPaused) {
-        await prisma.contact.update({ where: { id: contact.id }, data: { botPaused: true } });
-      }
-      if (chat && !chat.botPaused) {
-        await prisma.chat.update({ where: { id: chat.id }, data: { botPaused: true } });
-      }
-      if (customer && !customer.isBotPaused) {
-        await prisma.customer.update({ where: { id: customer.id }, data: { isBotPaused: true } });
-      }
-
-      // 2. Emitir eventos por WebSocket en tiempo real para el Dashboard (Live Chat CRM) — solo al tenant
-      const handoffIoRoom = tenant?.id ? `tenant:${tenant.id}` : null;
-      if (reqIo && handoffIoRoom) {
-        reqIo.to(handoffIoRoom).emit('contact_updated', { contactId: contact?.id, phone: clientNumber, botPaused: true, reason: 'HUMAN_HANDOFF' });
-        reqIo.to(handoffIoRoom).emit('bot_status_changed', { contactId: contact?.id, phone: clientNumber, botPaused: true });
-      }
+      await activateHumanHandoff({
+        tenantId: tenant.id,
+        contactId: contact?.id,
+        chatId: chat?.id,
+        phone: clientNumber,
+        io: reqIo,
+        reason: 'HUMAN_HANDOFF'
+      });
 
       // 3. Enviar notificación por WhatsApp si el tenant tiene configurado teléfono de alertas
       const rawDestPhone = await resolveNotificationPhone(tenant.id, tenantDetails);
