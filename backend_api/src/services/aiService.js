@@ -376,10 +376,17 @@ async function buildGeminiContents(messages, mediaItems = []) {
       geminiWarn(`Mensaje de usuario truncado para Gemini: ${origLen} chars → ${textContent.length} chars (límite: ${MAX_USER_MESSAGE_CHARS})`);
     }
 
-    const parts = [{ text: textContent || '.' }];
-
     // Adjuntar multimedia solo al último turno del usuario
     const isLastUserMsg = role === 'user' && i === messages.length - 1;
+    
+    if (isLastUserMsg && mediaItems.length > 0) {
+      if (!textContent.trim()) {
+        textContent = 'Analiza la imagen adjunta y responde según el contexto comercial.';
+      }
+    }
+
+    const parts = [{ text: textContent || '.' }];
+
     if (isLastUserMsg && mediaItems.length > 0) {
       const safeMedia = mediaItems.slice(0, MAX_MEDIA_ITEMS);
       for (const item of safeMedia) {
@@ -528,15 +535,42 @@ async function callGemini(systemPrompt, messages, mediaItems = [], tools = [], t
       sessionUsage.circuitState = globalCircuitBreaker.state;
 
       // ── 📊 DIAGNÓSTICO ESTRUCTURADO DE PAYLOAD ──────────
+      let textBytes = 0;
+      let mediaBytes = 0;
+      let imageCount = 0;
+
+      if (Array.isArray(contents)) {
+        for (const turn of contents) {
+          if (turn.parts) {
+            for (const part of turn.parts) {
+              if (part.text) {
+                textBytes += Buffer.byteLength(part.text, 'utf8');
+              } else if (part.inlineData) {
+                mediaBytes += Buffer.byteLength(part.inlineData.data, 'utf8');
+                if (part.inlineData.mimeType?.startsWith('image/')) {
+                  imageCount++;
+                }
+              }
+            }
+          }
+        }
+      }
+
       const payloadJson    = JSON.stringify(contents);
-      const payloadBytes   = Buffer.byteLength(payloadJson, 'utf8');
-      const payloadKb      = (payloadBytes / 1024).toFixed(1);
+      const totalPayloadBytes = Buffer.byteLength(payloadJson, 'utf8');
+      
+      // La sobrecarga de JSON, system prompt y tools se cuentan como texto
+      const nonContentBytes = Math.max(0, totalPayloadBytes - (textBytes + mediaBytes));
+      const totalTextBytes = textBytes + nonContentBytes;
+
+      const textKb       = (totalTextBytes / 1024).toFixed(1);
+      const mediaKb      = (mediaBytes / 1024).toFixed(1);
       const turnCount      = contents.length;
-      const estimatedTokens = Math.round(payloadBytes / 4);
+      const estimatedTextTokens = Math.round(totalTextBytes / 4);
 
       geminiLog('═'.repeat(60));
       geminiLog(`Intento ${attempt}/${MAX_TOTAL_ATTEMPTS} | Modelo: ${modelSlug} | Key: ${keyInfo.name} (${keyInfo.masked}) | Timeout: ${currentTimeoutMs / 1000}s`);
-      geminiLog(`📦 PAYLOAD: ${turnCount} turnos | ${payloadKb} KB | ~${estimatedTokens} tokens est. | maxOutputTokens: ${MAX_OUTPUT_TOKENS}`);
+      geminiLog(`📦 PAYLOAD: ${turnCount} turnos | Text: ${textKb} KB (~${estimatedTextTokens} tokens est.) | Media: ${mediaKb} KB (${imageCount} images) | maxOutputTokens: ${MAX_OUTPUT_TOKENS}`);
 
       const attemptStartTime = Date.now();
       

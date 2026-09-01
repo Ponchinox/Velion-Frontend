@@ -618,7 +618,7 @@ function normalizeMeta(body) {
     if (msg.type === 'text') {
       text = msg.text?.body || '';
     } else if (msg.type === 'image') {
-      text = msg.image?.caption || 'Analiza esta imagen';
+      text = msg.image?.caption || '';
       imageId = msg.image?.id || null;
     } else if (msg.type === 'audio') {
       text = '[Nota de voz de WhatsApp] Escucha este audio y respóndeme o ejecuta mi solicitud.';
@@ -693,7 +693,7 @@ async function normalizeEvolution(body, requestApiKey) {
   } else if (data.message?.extendedTextMessage?.text) {
     text = data.message.extendedTextMessage.text;
   } else if (data.message?.imageMessage) {
-    text = data.message.imageMessage.caption || 'Analiza esta imagen';
+    text = data.message.imageMessage.caption || '';
     try {
       const mediaRes = await axios.post(
         `${evoUrl}/chat/getBase64FromMediaMessage/${instance}`,
@@ -1045,8 +1045,8 @@ async function _processWebhookEvent(body, isMeta, provider, io, query, headers) 
     }
   }
 
-  // Ignorar mensajes sin texto
-  if (!userMessageText?.trim()) return;
+  // Ignorar mensajes sin texto y sin contenido multimedia
+  if (!userMessageText?.trim() && !normalized.imageId && !normalized.audioId && mediaItems.length === 0) return;
 
   // ── 3.5 DEDUPLICACIÓN DE WEBHOOKS (REINTENTOS DE RED) ──
   if (normalized.msgId) {

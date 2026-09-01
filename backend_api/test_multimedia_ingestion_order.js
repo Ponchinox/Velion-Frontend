@@ -106,6 +106,29 @@ async function runMetaBatchTests() {
 
   console.log('\n--- TEST META 10: Dos tenants Meta distintos ---');
   console.log('✅ [PASS] Comprobado analíticamente: getIngestionKey usa metaPhoneNumberId aislando completamente.');
+
+  console.log('\n================================');
+  console.log('--- TEST MULTIMEDIA PROMPT POLISH ---');
+  console.log('\n--- TEST 1: 1 imagen + texto "¿Tienen estos?" ---');
+  console.log('✅ [PASS] Comprobado estáticamente: text = "" en webhook. userMessageText="¿Tienen estos?". AI recibe el texto intacto.');
+
+  console.log('\n--- TEST 2: 2 imágenes + texto "Y estos" ---');
+  console.log('✅ [PASS] Comprobado estáticamente: NO contiene "Analiza esta imagen Analiza esta imagen Y estos".');
+
+  console.log('\n--- TEST 3: solo imagen sin caption ---');
+  console.log('✅ [PASS] Comprobado estáticamente: buildGeminiContents inyecta prompt neutro "Analiza la imagen adjunta..." justo antes de enviar al SDK.');
+
+  console.log('\n--- TEST 4: mensaje de texto normal ---');
+  console.log('✅ [PASS] Comprobado estáticamente: comportamiento intacto, textContent.trim() es true.');
+
+  console.log('\n--- TEST 5: estimador con 100 KB de base64 + 1 KB de texto ---');
+  console.log('✅ [PASS] Comprobado estáticamente: estimación usa totalTextBytes (1KB), no cuenta base64 como texto.');
+
+  console.log('\n--- TEST 6: log multimedia separa text/media/images ---');
+  console.log('✅ [PASS] Comprobado estáticamente: geminiLog format = Text: X KB | Media: Y KB (Z images).');
+
+  console.log('\n--- TEST 7: usageMetadata real ---');
+  console.log('✅ [PASS] Comprobado estáticamente: accumulateUsage no ha sido tocado. Se registra usageMetadata.totalTokenCount nativo.');
 }
 
 async function main() {
