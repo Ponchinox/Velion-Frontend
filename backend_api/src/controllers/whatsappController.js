@@ -2004,6 +2004,16 @@ Atributos/Tags: ${Array.isArray(product.tags) ? product.tags.join(', ') : ''}
       }
     }
 
+    // ─── AI OFF FINAL GATE (Post-Gemini) ───
+    const postGenCheck = await prisma.tenant.findUnique({
+      where: { id: tenant.id },
+      select: { aiEnabled: true }
+    });
+    if (postGenCheck?.aiEnabled === false) {
+      console.log(`🤖 [AI Final Gate] Response discarded because AI was disabled during generation for +${clientNumber} (tenant: ${tenant.id}).`);
+      return;
+    }
+
     if (!aiResponse || aiResponse === '...') {
       // Fallback de contingencia ante caída o timeout de IA
       const timeoutFallbackText = 'Estoy teniendo una pequeña demora en este momento. Escríbeme nuevamente en unos segundos, por favor 🙏';
@@ -2268,6 +2278,16 @@ Atributos/Tags: ${Array.isArray(product.tags) ? product.tags.join(', ') : ''}
 
         // Esperar el tiempo de tipeado simulado antes de enviar
         await new Promise(resolve => setTimeout(resolve, typingDelay));
+        
+        // ─── AI OFF FINAL GATE (Post-Typing Check) ───
+        const postTypingCheck = await prisma.tenant.findUnique({
+          where: { id: tenant.id },
+          select: { aiEnabled: true }
+        });
+        if (postTypingCheck?.aiEnabled === false) {
+          console.log(`🤖 [AI Final Gate] Fragment discarded after typing delay because AI was disabled for +${clientNumber} (tenant: ${tenant.id}).`);
+          break; // Rompe el bucle de despacho; no se envían más fragmentos
+        }
         
         if (item.type === 'text') {
           try {
