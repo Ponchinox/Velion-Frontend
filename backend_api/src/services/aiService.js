@@ -463,16 +463,28 @@ async function callGemini(systemPrompt, messages, mediaItems = [], tools = [], t
       geminiLog(`Intento ${attempt}/${MAX_TOTAL_ATTEMPTS} | Modelo: ${modelSlug} | Key: ${keyInfo.name} (${keyInfo.masked}) | Timeout: ${currentTimeoutMs / 1000}s`);
       geminiLog(`📦 PAYLOAD: ${turnCount} turnos | ${payloadKb} KB | ~${estimatedTokens} tokens est. | maxOutputTokens: ${MAX_OUTPUT_TOKENS}`);
 
-      const startTime = Date.now();
-      const controller = new AbortController();
-      const timeoutHandle = setTimeout(() => controller.abort(), currentTimeoutMs);
+      const attemptStartTime = Date.now();
+
+      // Helper para ejecutar cada llamada HTTP con su propio AbortController y timeout completo
+      const executeWithTimeout = async (requestLabel) => {
+        const controller = new AbortController();
+        const timeoutHandle = setTimeout(() => controller.abort(), currentTimeoutMs);
+        const reqStart = Date.now();
+        try {
+          const resp = await keyInfo.client.models.generateContent({
+            model:  modelSlug,
+            contents,
+            config: { ...config, abortSignal: controller.signal },
+          });
+          geminiLog(`⏱️ [Gemini HTTP] ${requestLabel} completada en ${(Date.now() - reqStart) / 1000}s (Timeout límite: ${currentTimeoutMs / 1000}s)`);
+          return resp;
+        } finally {
+          clearTimeout(timeoutHandle);
+        }
+      };
 
       try {
-        let response = await keyInfo.client.models.generateContent({
-          model:    modelSlug,
-          contents,
-          config:   { ...config, abortSignal: controller.signal },
-        });
+        let response = await executeWithTimeout(`Intento ${attempt} - Petición Inicial`);
 
         accumulateUsage(response);
 
@@ -512,11 +524,7 @@ async function callGemini(systemPrompt, messages, mediaItems = [], tools = [], t
             contents.push({ role: 'user', parts: [funcResponsePart] });
 
             geminiLog(`🛠️ [FC] Ronda ${toolRounds}/${MAX_TOOL_ROUNDS} completada. Generando siguiente paso...`);
-            response = await keyInfo.client.models.generateContent({
-              model:    modelSlug,
-              contents,
-              config:   { ...config, abortSignal: controller.signal },
-            });
+            response = await executeWithTimeout(`Intento ${attempt} - Ronda Tool ${toolRounds}`);
 
             accumulateUsage(response);
           } catch (funcErr) {
@@ -525,8 +533,7 @@ async function callGemini(systemPrompt, messages, mediaItems = [], tools = [], t
           }
         }
 
-        clearTimeout(timeoutHandle);
-        const latencyMs = Date.now() - startTime;
+        const latencyMs = Date.now() - attemptStartTime;
         const rawText = response.text || '';
 
         const aiText = rawText
@@ -545,14 +552,13 @@ async function callGemini(systemPrompt, messages, mediaItems = [], tools = [], t
 
         const finishReason = response.candidates?.[0]?.finishReason || 'STOP';
         geminiLog(`✅ Intento ${attempt}/${MAX_TOTAL_ATTEMPTS} OK (${keyInfo.name})`);
-        geminiLog(`Latencia: ${(latencyMs / 1000).toFixed(2)}s | Sesión Total: requests=${sessionUsage.requestCount} inputTokens=${sessionUsage.inputTokens} outputTokens=${sessionUsage.outputTokens} totalTokens=${sessionUsage.totalTokens} toolCalls=${sessionUsage.toolCalls} | Finish: ${finishReason}`);
+        geminiLog(`Latencia Total Intento: ${(latencyMs / 1000).toFixed(2)}s | Sesión Total: requests=${sessionUsage.requestCount} inputTokens=${sessionUsage.inputTokens} outputTokens=${sessionUsage.outputTokens} totalTokens=${sessionUsage.totalTokens} toolCalls=${sessionUsage.toolCalls} | Finish: ${finishReason}`);
 
         return aiText;
 
       } catch (err) {
-        clearTimeout(timeoutHandle);
         lastErr = err;
-        const latencyMs = Date.now() - startTime;
+        const latencyMs = Date.now() - attemptStartTime;
         const errType   = classifyError(err);
         lastErrType     = errType;
         const errMsg    = (err?.message || String(err)).slice(0, 120);
