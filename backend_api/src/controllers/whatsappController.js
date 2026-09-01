@@ -698,7 +698,7 @@ async function normalizeEvolution(body, requestApiKey) {
       const mediaRes = await axios.post(
         `${evoUrl}/chat/getBase64FromMediaMessage/${instance}`,
         { message: data },
-        getEvoHeaders(requestApiKey)
+        { ...getEvoHeaders(requestApiKey), timeout: 15000 }
       );
       const imageBase64 = typeof mediaRes.data === 'string' ? mediaRes.data : (mediaRes.data?.base64 || null);
       if (imageBase64) {
@@ -713,7 +713,7 @@ async function normalizeEvolution(body, requestApiKey) {
       const mediaRes = await axios.post(
         `${evoUrl}/chat/getBase64FromMediaMessage/${instance}`,
         { message: data },
-        getEvoHeaders(requestApiKey)
+        { ...getEvoHeaders(requestApiKey), timeout: 15000 }
       );
       const audioBase64 = typeof mediaRes.data === 'string' ? mediaRes.data : (mediaRes.data?.base64 || null);
       if (audioBase64) {
@@ -732,6 +732,123 @@ async function normalizeEvolution(body, requestApiKey) {
   const pushName = !fromMe ? (data?.pushName || data?.key?.pushName || null) : null;
 
   return { sender, text, instance, pushName, fromMe, key, rawData: data, mediaItems, remoteJid, msgId: key.id || null };
+}
+
+const ingestionQueues = new Map();
+
+export function enqueueIngestionEvent(key, taskFn) {
+  const previous = ingestionQueues.get(key) || Promise.resolve();
+  
+  const current = previous
+    .catch((err) => {
+      console.error(`⚠️ [Ingestion Queue] Error absorbido en evento anterior para ${key}:`, err.message);
+    })
+    .then(taskFn);
+    
+  ingestionQueues.set(key, current);
+  
+  current.finally(() => {
+    // Liberamos la cola solo si esta promesa sigue siendo la última de la cadena (evita memory leaks)
+    if (ingestionQueues.get(key) === current) {
+      ingestionQueues.delete(key);
+    }
+  }).catch(() => {});
+  
+  return current;
+}
+
+export function getIngestionQueues() {
+  return ingestionQueues;
+}
+
+function extractMetaMessageEvents(body) {
+  if (!body?.entry) return [];
+  const events = [];
+
+  for (const entry of body.entry) {
+    if (!entry.changes) continue;
+    for (const change of entry.changes) {
+      const value = change.value;
+      if (!value) continue;
+
+      const baseValue = {
+        metadata: value.metadata,
+        messaging_product: value.messaging_product,
+      };
+
+      if (value.contacts) {
+        baseValue.contacts = value.contacts;
+      }
+
+      let hasContent = false;
+
+      if (value.statuses && value.statuses.length > 0) {
+        hasContent = true;
+        for (const status of value.statuses) {
+          events.push({
+            object: body.object,
+            entry: [{ id: entry.id, changes: [{ field: change.field, value: { ...baseValue, statuses: [status] } }] }]
+          });
+        }
+      }
+
+      if (value.message_echoes && value.message_echoes.length > 0) {
+        hasContent = true;
+        for (const echo of value.message_echoes) {
+          events.push({
+            object: body.object,
+            entry: [{ id: entry.id, changes: [{ field: change.field, value: { ...baseValue, message_echoes: [echo] } }] }]
+          });
+        }
+      }
+
+      if (value.messages && value.messages.length > 0) {
+        hasContent = true;
+        for (const msg of value.messages) {
+          events.push({
+            object: body.object,
+            entry: [{ id: entry.id, changes: [{ field: change.field, value: { ...baseValue, messages: [msg] } }] }]
+          });
+        }
+      }
+
+      if (!hasContent) {
+        events.push({
+          object: body.object,
+          entry: [{ id: entry.id, changes: [change] }]
+        });
+      }
+    }
+  }
+  return events;
+}
+
+export function getIngestionKey(body, isMeta) {
+  try {
+    if (isMeta) {
+      const value = body?.entry?.[0]?.changes?.[0]?.value;
+      const metaPhoneNumberId = value?.metadata?.phone_number_id;
+      if (!metaPhoneNumberId) return null;
+      const echoMsg = value?.message_echoes?.[0] || (value?.messages?.[0]?.is_echo ? value?.messages?.[0] : null);
+      const msg = value?.messages?.[0];
+      let remoteJid = echoMsg ? (echoMsg.to || echoMsg.recipient_id) : (msg?.from || '');
+      if (!remoteJid) return null;
+      return `META:${metaPhoneNumberId}:${remoteJid.replace(/^\+/, '')}`;
+    } else {
+      const instance = body?.instance;
+      if (!instance) return null;
+      const key = body?.data?.key || {};
+      let remoteJid = key.remoteJid || '';
+      if (remoteJid.includes('@lid') && key.remoteJidAlt) {
+        remoteJid = key.remoteJidAlt;
+      }
+      remoteJid = remoteJid.replace(/^\+/, '').split('@')[0];
+      if (!remoteJid) return null;
+      return `EVO:${instance}:${remoteJid}`;
+    }
+  } catch (e) {
+    return null;
+  }
 }
 
 /**
@@ -758,6 +875,52 @@ export async function receiveWebhook(req, res) {
   // Meta requiere respuesta inmediata 200 antes de procesar
   res.sendStatus(200);
 
+  // 1. OBTENER EVENTOS INDIVIDUALES (Solución de Meta Batching)
+  const events = isMeta ? extractMetaMessageEvents(req.body) : [req.body];
+
+  // 2. ENCOLAR CADA EVENTO EN SU RESPECTIVO CHAT (Arrival Order)
+  for (const eventBody of events) {
+    // Deduplicación temprana por evento
+    let msgId = null;
+    if (isMeta) {
+      const value = eventBody?.entry?.[0]?.changes?.[0]?.value;
+      const echoMsg = value?.message_echoes?.[0] || (value?.messages?.[0]?.is_echo ? value?.messages?.[0] : null);
+      msgId = echoMsg ? echoMsg.id : (value?.messages?.[0]?.id || null);
+    } else {
+      msgId = eventBody?.data?.key?.id || null;
+    }
+    
+    if (msgId && processedWebhooksCache.has(msgId)) {
+      console.log(`♻️ [Deduplication] Webhook duplicado ignorado de forma temprana (msgId: ${msgId})`);
+      continue; // Siguiente evento
+    }
+
+    const ingestionKey = getIngestionKey(eventBody, isMeta);
+    
+    // Clonamos referencias compartidas del express request original
+    const reqIo = req.io;
+    const reqQuery = req.query;
+    const reqHeaders = req.headers;
+
+    if (ingestionKey && (eventBody?.event === 'messages.upsert' || isMeta)) {
+      enqueueIngestionEvent(ingestionKey, () => 
+        _processWebhookEvent(eventBody, isMeta, provider, reqIo, reqQuery, reqHeaders)
+      );
+    } else {
+      // Si no es encolable (ej. status o informativo sin message), se dispara independiente sin esperar en queue
+      // Pero no debe bloquear el loop
+      _processWebhookEvent(eventBody, isMeta, provider, reqIo, reqQuery, reqHeaders).catch(err => {
+         console.error('❌ Error en evento no encolable:', err.message);
+      });
+    }
+  }
+}
+
+/**
+ * Función interna que procesa el payload asíncronamente
+ */
+async function _processWebhookEvent(body, isMeta, provider, io, query, headers) {
+  const req = { body, query, headers, io };
   // ── 3. NORMALIZACIÓN DEL PAYLOAD ───────────────────────────────────────────
   let normalized = null;
   let instance = null;

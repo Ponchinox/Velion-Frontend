@@ -59,7 +59,8 @@ export async function downloadMetaMedia(mediaId, token) {
   try {
     // 1. Obtener la URL temporal de descarga del archivo
     const metaRes = await axios.get(`https://graph.facebook.com/v20.0/${mediaId}`, {
-      headers: { Authorization: `Bearer ${token}` }
+      headers: { Authorization: `Bearer ${token}` },
+      timeout: 15000
     });
     const downloadUrl = metaRes.data?.url;
     const mimeType = metaRes.data?.mime_type || 'audio/ogg';
@@ -68,7 +69,8 @@ export async function downloadMetaMedia(mediaId, token) {
     // 2. Descargar el binario usando el token en el header
     const binaryRes = await axios.get(downloadUrl, {
       headers: { Authorization: `Bearer ${token}` },
-      responseType: 'arraybuffer'
+      responseType: 'arraybuffer',
+      timeout: 15000
     });
 
     const base64 = Buffer.from(binaryRes.data).toString('base64');
