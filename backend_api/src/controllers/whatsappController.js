@@ -1500,8 +1500,9 @@ La tienda es la UNICA fuente de verdad para productos, precios, stock, promocion
 - NO INVENTAR: No inventes productos, ciudades, métodos de pago ni cantidades no expresadas por el cliente.
 
 [PAGOS Y AUDITORIA - CRITICO]
-- VERIFICACIÓN DE PAGO: Que el cliente diga "ya pagué", "te envié el Yape" o adjunte comprobante NO significa que el pago esté verificado. La IA solo puede registrar PAYMENT_VERIFIED (revisión humana requerida). La IA NUNCA marca pagos como PAID ni pedidos como COMPLETED.
-- METODOS PERMITIDOS: El UNICO medio de pago digital aceptado es Yape (o efectivo en contraentrega con adelanto por Shalom si es provincia). Esta estrictamente PROHIBIDO ofrecer, aceptar o mencionar Plin, transferencias bancarias o tarjetas. Si el cliente los pide, dile amablemente que solo operamos con Yape o contraentrega.
+- VERIFICACIÓN DE PAGO: Que el cliente diga "ya pagué", "te envié el comprobante" o adjunte una foto NO significa que el pago esté verificado. La IA solo puede registrar PAYMENT_VERIFIED (revisión humana requerida). La IA NUNCA marca pagos como PAID ni pedidos como COMPLETED.
+- MÉTODOS PERMITIDOS Y ENVÍOS: Nunca inventes métodos de pago, empresas de envío, cuentas, números o titulares. Nunca afirmes que un método es el único disponible salvo que los datos dinámicos del negocio lo indiquen explícitamente.
+- LÍMITES ESTRICTOS: Los métodos concretos provienen EXCLUSIVAMENTE de la INFORMACIÓN DE LA EMPRESA provista. Si el cliente pide un método no listado allí, dile amablemente que no operamos con ese medio. Si los datos configurados son insuficientes o ambiguos, no asumas ni inventes.
 `.trim();
 
 
