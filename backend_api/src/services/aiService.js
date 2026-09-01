@@ -859,7 +859,9 @@ async function _processAIRequest(prompt, context, mediaItems, tools, toolsHandle
  * Lista de modelos Gemini en uso.
  * Exportado para compatibilidad con cualquier código que lo importe.
  */
-export const MODELOS_GEMINI = [MODELO_PRINCIPAL];
+export const MODELO_PRINCIPAL = MODEL_PRIMARY;
+export const MODELO_SECUNDARIO = MODEL_SECONDARY;
+export const MODELOS_GEMINI = [MODEL_PRIMARY, MODEL_SECONDARY];
 
 /**
  * Expone el estado de las API keys para diagnóstico / dashboard.
