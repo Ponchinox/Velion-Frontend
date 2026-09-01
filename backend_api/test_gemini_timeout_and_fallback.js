@@ -49,6 +49,7 @@ const ERR_TYPE = {
   BAD_REQUEST: 'BAD_REQUEST',
   SERVER_ERROR: 'SERVER_ERROR',
   UNSAFE_OUTPUT: 'UNSAFE_OUTPUT',
+  INCOMPLETE_GENERATION: 'INCOMPLETE_GENERATION',
   UNKNOWN: 'UNKNOWN',
 };
 
@@ -60,6 +61,7 @@ function classifyError(err) {
   const msg = (err?.message || String(err)).toLowerCase();
   
   if (msg.includes('outbound text guard')) return ERR_TYPE.UNSAFE_OUTPUT;
+  if (msg.includes('incomplete_generation') || msg.includes('max_tokens')) return ERR_TYPE.INCOMPLETE_GENERATION;
   if (status === 429) return ERR_TYPE.RATE_LIMIT;
   if (status === 401 || status === 403) return ERR_TYPE.AUTH;
   if (status === 400) return ERR_TYPE.BAD_REQUEST;
@@ -150,8 +152,9 @@ async function simulatePerHttpRequestGemini({
       }
       return {
         functionCalls: [],
-        candidates: [{ content: { role: 'model', parts: [{ text: step.text || 'Respuesta OK' }] } }],
-        text: step.text || 'Respuesta OK'
+        candidates: [{ content: { role: 'model', parts: [{ text: step.text || 'Respuesta OK' }] }, finishReason: step.finishReason || 'STOP' }],
+        text: step.text || 'Respuesta OK',
+        usageMetadata: step.usageMetadata || null
       };
     };
 
@@ -191,6 +194,12 @@ async function simulatePerHttpRequestGemini({
         throw new Error('Outbound Text Guard interceptó estructura interna.');
       }
       
+      const finishReason = response.candidates?.[0]?.finishReason || 'STOP';
+      if (finishReason === 'MAX_TOKENS') {
+         resultText = null;
+         throw new Error('INCOMPLETE_GENERATION: MAX_TOKENS');
+      }
+
       resultText = aiText;
       if (isPrimary) globalCircuitBreaker.recordSuccess();
       break; // Éxito
@@ -786,6 +795,100 @@ async function main() {
     });
     assert.strictEqual(res.resultText, null);
     assert.strictEqual(res.lastErrType, ERR_TYPE.UNSAFE_OUTPUT, 'Debe ser capturado como UNSAFE_OUTPUT por simulate');
+  });
+
+  console.log('\n══ Tests de Hotfix MAX_TOKENS e INCOMPLETE_GENERATION ══');
+
+  await runTest('TEST BF / TEST A: PRIMARY HTTP 200, Finish=STOP -> devuelve normalmente', async () => {
+    const res = await simulatePerHttpRequestGemini({
+      attemptsPlan: [[{ type: 'SUCCESS', text: 'Todo completo.', finishReason: 'STOP' }]]
+    });
+    assert.strictEqual(res.resultText, 'Todo completo.');
+  });
+
+  await runTest('TEST BG / TEST B: PRIMARY MAX_TOKENS -> texto parcial NO se devuelve -> Secondary es llamado', async () => {
+    const res = await simulatePerHttpRequestGemini({
+      attemptsPlan: [
+        [{ type: 'SUCCESS', text: 'Respuesta pa', finishReason: 'MAX_TOKENS' }],
+        [{ type: 'SUCCESS', text: 'Respuesta completa y correcta.', finishReason: 'STOP' }]
+      ]
+    });
+    assert.strictEqual(res.httpCallsLog.length, 2);
+    assert.strictEqual(res.httpCallsLog[0].model, MODEL_PRIMARY);
+    assert.strictEqual(res.httpCallsLog[1].model, MODEL_SECONDARY);
+    assert.strictEqual(res.resultText, 'Respuesta completa y correcta.', 'Texto parcial fue descartado');
+  });
+
+  await runTest('TEST BH / TEST C: PRIMARY MAX_TOKENS, SECONDARY STOP -> respuesta completa Secondary llega al caller', async () => {
+    // Es igual al anterior. Lo confirmamos de nuevo:
+    const res = await simulatePerHttpRequestGemini({
+      attemptsPlan: [
+        [{ type: 'SUCCESS', text: 'Respuesta incomp', finishReason: 'MAX_TOKENS' }],
+        [{ type: 'SUCCESS', text: 'Secondary OK.', finishReason: 'STOP' }]
+      ]
+    });
+    assert.strictEqual(res.resultText, 'Secondary OK.');
+  });
+
+  await runTest('TEST BI / TEST D: PRIMARY MAX_TOKENS, SECONDARY MAX_TOKENS -> ninguna respuesta parcial -> fallback', async () => {
+    const res = await simulatePerHttpRequestGemini({
+      attemptsPlan: [
+        [{ type: 'SUCCESS', text: 'Inco', finishReason: 'MAX_TOKENS' }],
+        [{ type: 'SUCCESS', text: 'Inco 2', finishReason: 'MAX_TOKENS' }]
+      ]
+    });
+    assert.strictEqual(res.resultText, null);
+    assert.strictEqual(res.lastErrType, ERR_TYPE.INCOMPLETE_GENERATION);
+  });
+
+  await runTest('TEST BJ / TEST E: MAX_TOKENS del Primary -> NO abre/incrementa Circuit Breaker', async () => {
+    const cbFails = globalCircuitBreaker.fails;
+    await simulatePerHttpRequestGemini({
+      attemptsPlan: [
+        [{ type: 'SUCCESS', text: 'Parcial', finishReason: 'MAX_TOKENS' }],
+        [{ type: 'SUCCESS', text: 'OK', finishReason: 'STOP' }]
+      ],
+      resetState: false
+    });
+    assert.strictEqual(globalCircuitBreaker.fails, cbFails, 'MAX_TOKENS no debe aumentar los fallos del Circuit Breaker');
+  });
+
+  await runTest('TEST BK / TEST F: 503 Primary -> Circuit Breaker sigue incrementando', async () => {
+    const cbFails = globalCircuitBreaker.fails;
+    await simulatePerHttpRequestGemini({
+      attemptsPlan: [
+        [{ type: 'SERVER_ERROR' }],
+        [{ type: 'SUCCESS', text: 'OK' }]
+      ],
+      resetState: false
+    });
+    assert.strictEqual(globalCircuitBreaker.fails, cbFails + 1, '503 debe seguir incrementando fallos');
+  });
+
+  await runTest('TEST BL / TEST G: Tool ejecutada -> post-tool MAX_TOKENS -> failover -> cache evita repetir tool', async () => {
+    let executions = 0;
+    const res = await simulatePerHttpRequestGemini({
+      toolsHandler: async () => { executions++; return { done: true }; },
+      attemptsPlan: [
+        [{ type: 'TOOL_CALL', toolName: 't1' }, { type: 'SUCCESS', text: 'Parcial', finishReason: 'MAX_TOKENS' }],
+        [{ type: 'TOOL_CALL', toolName: 't1' }, { type: 'SUCCESS', text: 'Completo', finishReason: 'STOP' }]
+      ]
+    });
+    assert.strictEqual(executions, 1, 'Tool se ejecutó solo 1 vez');
+    assert.strictEqual(res.resultText, 'Completo');
+    assert.strictEqual(res.httpCallsLog.length, 4, 'Tool call(1) + text(1) + Tool call cached(1) + text(1) = 4');
+  });
+
+  await runTest('TEST BM / TEST H e I: Revisión estática de aiService.js para limits/thinking config', () => {
+    const content = fs.readFileSync(path.join(__dirname, 'src', 'services', 'aiService.js'), 'utf8');
+    assert.ok(content.includes('MAX_OUTPUT_TOKENS = 800;'), 'Falta subir el límite a 800');
+    assert.ok(content.includes('ThinkingLevel.MINIMAL'), 'Falta cambiar a ThinkingLevel.MINIMAL');
+  });
+
+  await runTest('TEST BN / TEST J: usageMetadata incluye thoughtsTokenCount', () => {
+    const content = fs.readFileSync(path.join(__dirname, 'src', 'services', 'aiService.js'), 'utf8');
+    assert.ok(content.includes('usageMetadata.thoughtsTokenCount'), 'Falta incluir thoughtsTokenCount de usageMetadata');
+    assert.ok(content.includes('thoughtTokens='), 'Falta loguear thoughtTokens');
   });
 
   console.log('\n======================================================================');

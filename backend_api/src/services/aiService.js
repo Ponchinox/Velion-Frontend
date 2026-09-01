@@ -48,8 +48,8 @@ const GEMINI_TIMEOUT_ATTEMPT_2_TIMEOUT_MS = 25_000;
 /** Límite máximo de caracteres por mensaje del usuario (Fase 1: Protección Económica) */
 export const MAX_USER_MESSAGE_CHARS = 2000;
 
-/** Tokens máximos de salida por petición (Fase 1: reducido de 1024 -> 400) */
-const MAX_OUTPUT_TOKENS = 400;
+/** Tokens máximos de salida por petición (Fase 1: reducido de 1024 -> 400, ahora 800) */
+const MAX_OUTPUT_TOKENS = 800;
 
 /** Máximo de rondas de Function Calling por interacción (Fase 1: Protección contra loops) */
 const MAX_TOOL_ROUNDS = 3;
@@ -58,10 +58,9 @@ const MAX_TOOL_ROUNDS = 3;
 const MAX_TOTAL_ATTEMPTS = 2;
 
 /**
- * ThinkingLevel.LOW = "LOW" — nivel textual nativo soportado por @google/genai v2.x
- * para gemini-3.7-flash y modelos Gemini 3.x.
+ * ThinkingLevel.MINIMAL — nivel mínimo de reasoning, latencia baja comercial
  */
-const THINKING_LEVEL = ThinkingLevel.LOW; // = "LOW"
+const THINKING_LEVEL = ThinkingLevel.MINIMAL;
 
 /** Máx. ítems multimedia por petición */
 const MAX_MEDIA_ITEMS = 3;
@@ -75,6 +74,7 @@ const ERR_TYPE = {
   SERVER_ERROR:  'SERVER_ERROR',
   NETWORK:       'NETWORK',
   UNSAFE_OUTPUT: 'UNSAFE_OUTPUT',
+  INCOMPLETE_GENERATION: 'INCOMPLETE_GENERATION',
   UNKNOWN:       'UNKNOWN'
 };
 
@@ -151,6 +151,10 @@ function classifyError(err) {
 
   if (msg.includes('outbound text guard')) {
     return ERR_TYPE.UNSAFE_OUTPUT;
+  }
+
+  if (msg.includes('incomplete_generation') || msg.includes('max_tokens')) {
+    return ERR_TYPE.INCOMPLETE_GENERATION;
   }
 
   return ERR_TYPE.UNKNOWN;
@@ -457,6 +461,7 @@ async function callGemini(systemPrompt, messages, mediaItems = [], tools = [], t
   // Objeto para acumular el uso real de toda esta interacción (incluye Function Calling y retries)
   const sessionUsage = {
     inputTokens: 0,
+    thoughtTokens: 0,
     outputTokens: 0,
     totalTokens: 0,
     requestCount: 0,
@@ -469,8 +474,10 @@ async function callGemini(systemPrompt, messages, mediaItems = [], tools = [], t
     if (resp?.usageMetadata) {
       const inTok = Number(resp.usageMetadata.promptTokenCount) || 0;
       const outTok = Number(resp.usageMetadata.candidatesTokenCount) || 0;
+      const thoughtTok = Number(resp.usageMetadata.thoughtsTokenCount) || 0;
       const totTok = Number(resp.usageMetadata.totalTokenCount) || (inTok + outTok);
       sessionUsage.inputTokens += inTok;
+      sessionUsage.thoughtTokens += thoughtTok;
       sessionUsage.outputTokens += outTok;
       sessionUsage.totalTokens += totTok;
       sessionUsage.requestCount += 1;
@@ -646,11 +653,16 @@ async function callGemini(systemPrompt, messages, mediaItems = [], tools = [], t
 
 
         const finishReason = response.candidates?.[0]?.finishReason || 'STOP';
+        if (finishReason === 'MAX_TOKENS') {
+           geminiWarn(`⚠️ Generación incompleta por MAX_TOKENS. Interceptando para failover.`);
+           throw new Error('INCOMPLETE_GENERATION: MAX_TOKENS');
+        }
+
         geminiLog(`✅ Intento ${attempt}/${MAX_TOTAL_ATTEMPTS} OK (${keyInfo.name}) - Modelo: ${modelSlug}`);
         if (isPrimary) {
            globalCircuitBreaker.recordSuccess();
         }
-        geminiLog(`Latencia Total Intento: ${(latencyMs / 1000).toFixed(2)}s | Sesión Total: requests=${sessionUsage.requestCount} inputTokens=${sessionUsage.inputTokens} outputTokens=${sessionUsage.outputTokens} totalTokens=${sessionUsage.totalTokens} toolCalls=${sessionUsage.toolCalls} | Finish: ${finishReason}`);
+        geminiLog(`Latencia Total Intento: ${(latencyMs / 1000).toFixed(2)}s | Sesión Total: requests=${sessionUsage.requestCount} inputTokens=${sessionUsage.inputTokens} thoughtTokens=${sessionUsage.thoughtTokens} outputTokens=${sessionUsage.outputTokens} totalTokens=${sessionUsage.totalTokens} toolCalls=${sessionUsage.toolCalls} | Finish: ${finishReason}`);
 
         return aiText;
 
