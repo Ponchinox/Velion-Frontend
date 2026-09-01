@@ -66,7 +66,6 @@ const THINKING_LEVEL = ThinkingLevel.LOW; // = "LOW"
 /** Máx. ítems multimedia por petición */
 const MAX_MEDIA_ITEMS = 3;
 
-// Clasificación de tipos de error
 const ERR_TYPE = {
   TIMEOUT:       'TIMEOUT',
   RATE_LIMIT:    'RATE_LIMIT',
@@ -75,7 +74,8 @@ const ERR_TYPE = {
   NOT_FOUND:     'NOT_FOUND',
   SERVER_ERROR:  'SERVER_ERROR',
   NETWORK:       'NETWORK',
-  UNKNOWN:       'UNKNOWN',
+  UNSAFE_OUTPUT: 'UNSAFE_OUTPUT',
+  UNKNOWN:       'UNKNOWN'
 };
 
 // Modelo principal
@@ -147,6 +147,10 @@ function classifyError(err) {
   if (msg.includes('network') || msg.includes('econnrefused') ||
       msg.includes('enotfound') || msg.includes('fetch')) {
     return ERR_TYPE.NETWORK;
+  }
+
+  if (msg.includes('outbound text guard')) {
+    return ERR_TYPE.UNSAFE_OUTPUT;
   }
 
   return ERR_TYPE.UNKNOWN;
@@ -620,6 +624,23 @@ async function callGemini(systemPrompt, messages, mediaItems = [], tools = [], t
           throw new Error('Respuesta vacía de Gemini tras agotar intentos.');
         }
 
+        // --- OUTBOUND TEXT GUARD ---
+        // Prevenir fuga de estructuras internas, function calls o tool responses a los clientes
+        const leakPatterns = [
+          /response:\s*default_api:/i,
+          /functionCall/i,
+          /call:\s*[a-zA-Z0-9_]+/i,
+          /^{\s*"product"\s*:/i,
+          /\[\s*object\s+Object\s*\]/i
+        ];
+        
+        const hasLeak = leakPatterns.some(pattern => pattern.test(aiText));
+        if (hasLeak) {
+           geminiWarn(`[SECURITY] Outbound Text Guard interceptó una posible fuga de datos: ${aiText.slice(0, 100)}...`);
+           throw new Error('Outbound Text Guard interceptó estructura interna.');
+        }
+
+
         const finishReason = response.candidates?.[0]?.finishReason || 'STOP';
         geminiLog(`✅ Intento ${attempt}/${MAX_TOTAL_ATTEMPTS} OK (${keyInfo.name}) - Modelo: ${modelSlug}`);
         if (isPrimary) {
@@ -646,8 +667,8 @@ async function callGemini(systemPrompt, messages, mediaItems = [], tools = [], t
         // Si falló este intento, incrementamos el contador de reintentos
         sessionUsage.retryCount++;
 
-        // NO REINTENTAR: Errores no recuperables (400 Bad Request, 401/403 Auth)
-        if (errType === ERR_TYPE.BAD_REQUEST || errType === ERR_TYPE.AUTH) {
+        // NO REINTENTAR: Errores no recuperables (400 Bad Request, 401/403 Auth, Fuga de Datos)
+        if (errType === ERR_TYPE.BAD_REQUEST || errType === ERR_TYPE.AUTH || errType === ERR_TYPE.UNSAFE_OUTPUT) {
           geminiError(`Error ${errType} no es reintentable. Abortando inmediatamente.`);
           throw err;
         }

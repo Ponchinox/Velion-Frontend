@@ -48,6 +48,7 @@ const ERR_TYPE = {
   AUTH: 'AUTH',
   BAD_REQUEST: 'BAD_REQUEST',
   SERVER_ERROR: 'SERVER_ERROR',
+  UNSAFE_OUTPUT: 'UNSAFE_OUTPUT',
   UNKNOWN: 'UNKNOWN',
 };
 
@@ -56,6 +57,9 @@ function classifyError(err) {
     return ERR_TYPE.TIMEOUT;
   }
   const status = err?.status;
+  const msg = (err?.message || String(err)).toLowerCase();
+  
+  if (msg.includes('outbound text guard')) return ERR_TYPE.UNSAFE_OUTPUT;
   if (status === 429) return ERR_TYPE.RATE_LIMIT;
   if (status === 401 || status === 403) return ERR_TYPE.AUTH;
   if (status === 400) return ERR_TYPE.BAD_REQUEST;
@@ -165,7 +169,19 @@ async function simulatePerHttpRequestGemini({
         response = await executeWithTimeout(`Intento ${attempt} - Ronda Tool ${toolRounds}`);
       }
 
-      resultText = response.text || '';
+      const aiText = response.text || '';
+      const leakPatterns = [
+        /response:\s*default_api:/i,
+        /functionCall/i,
+        /call:\s*[a-zA-Z0-9_]+/i,
+        /^{\s*"product"\s*:/i,
+        /\[\s*object\s+Object\s*\]/i
+      ];
+      if (leakPatterns.some(p => p.test(aiText))) {
+        throw new Error('Outbound Text Guard interceptó estructura interna.');
+      }
+      
+      resultText = aiText;
       if (isPrimary) globalCircuitBreaker.recordSuccess();
       break; // Éxito
     } catch (err) {
@@ -177,7 +193,7 @@ async function simulatePerHttpRequestGemini({
          globalCircuitBreaker.recordFail();
       }
 
-      if (errType === ERR_TYPE.BAD_REQUEST || errType === ERR_TYPE.AUTH) break; 
+      if (errType === ERR_TYPE.BAD_REQUEST || errType === ERR_TYPE.AUTH || errType === ERR_TYPE.UNSAFE_OUTPUT) break; 
       if (attempt >= 2) break;
     }
   }
@@ -625,6 +641,141 @@ async function main() {
     });
     const modelContent = res.finalContents.find(c => c.role === 'model' && c.parts.some(p => p.functionCall));
     assert.strictEqual(modelContent.parts.length, 2, 'Debe conservar ambos parts: thought y functionCall sin destruir nada');
+  });
+
+  console.log('\n══ Tests de Seguridad de Salida (Outbound Text Guard) ══');
+
+  await runTest('TEST AR: Texto con serialización interna (response:default_api) lanza error', async () => {
+    const res = await simulatePerHttpRequestGemini({
+      attemptsPlan: [[{ type: 'SUCCESS', text: 'response:default_api:get_product_details({ id: 123 })' }]]
+    });
+    assert.strictEqual(res.lastErrType, ERR_TYPE.UNSAFE_OUTPUT);
+    assert.strictEqual(res.resultText, null);
+  });
+
+  await runTest('TEST AS: Texto con functionCall literal lanza error', async () => {
+    const res = await simulatePerHttpRequestGemini({
+      attemptsPlan: [[{ type: 'SUCCESS', text: 'Aquí tienes: functionCall: { name: "get_product_details" }' }]]
+    });
+    assert.strictEqual(res.lastErrType, ERR_TYPE.UNSAFE_OUTPUT);
+  });
+
+  await runTest('TEST AT: JSON-like con {"product": lanza error', async () => {
+    const res = await simulatePerHttpRequestGemini({
+      attemptsPlan: [[{ type: 'SUCCESS', text: '{"product": {"name": "Test"}}' }]]
+    });
+    assert.strictEqual(res.lastErrType, ERR_TYPE.UNSAFE_OUTPUT);
+  });
+
+  await runTest('TEST AU: Pasa texto comercial normal sin problemas', async () => {
+    const res = await simulatePerHttpRequestGemini({
+      attemptsPlan: [[{ type: 'SUCCESS', text: '¡Hola! Tenemos ese producto en stock. ¿Te gustaría ordenar?' }]]
+    });
+    assert.strictEqual(res.resultText, '¡Hola! Tenemos ese producto en stock. ¿Te gustaría ordenar?');
+  });
+
+  await runTest('TEST AV: Tool response valid output is returned normally', async () => {
+    const res = await simulatePerHttpRequestGemini({
+      toolsHandler: async () => ({ res: 'datos' }),
+      attemptsPlan: [
+        [{ type: 'TOOL_CALL', toolName: 't1' }, { type: 'SUCCESS', text: 'Ese producto cuesta $10.' }]
+      ]
+    });
+    assert.strictEqual(res.resultText, 'Ese producto cuesta $10.');
+  });
+
+  await runTest('TEST AW: Texto que incluye object Object lanza error', async () => {
+    const res = await simulatePerHttpRequestGemini({
+      attemptsPlan: [[{ type: 'SUCCESS', text: 'El resultado es [object Object]' }]]
+    });
+    assert.strictEqual(res.lastErrType, ERR_TYPE.UNSAFE_OUTPUT);
+  });
+
+  await runTest('TEST AX: Tool response estructurado + texto posterior = OK', async () => {
+    const res = await simulatePerHttpRequestGemini({
+      toolsHandler: async () => ({
+        result: { id: 1, url: "http://image" }
+      }),
+      attemptsPlan: [
+        [{ type: 'TOOL_CALL', toolName: 'get_product_details' }, { type: 'SUCCESS', text: 'El producto está disponible. ¿Te interesa?' }]
+      ]
+    });
+    assert.strictEqual(res.resultText, 'El producto está disponible. ¿Te interesa?');
+    const funcResponse = res.finalContents.find(c => c.role === 'user' && c.parts.some(p => p.functionResponse));
+    assert.deepStrictEqual(funcResponse.parts[0].functionResponse.response.result.url, "http://image");
+  });
+
+  await runTest('TEST AY: Tool -> TIMEOUT -> SECONDARY -> OK', async () => {
+    const res = await simulatePerHttpRequestGemini({
+      toolsHandler: async () => ({ res: 'datos' }),
+      attemptsPlan: [
+        [{ type: 'TOOL_CALL', toolName: 'test' }, { type: 'TIMEOUT' }],
+        [{ type: 'SUCCESS', text: 'Texto recuperado' }]
+      ]
+    });
+    assert.strictEqual(res.resultText, 'Texto recuperado');
+    assert.strictEqual(res.httpCallsLog[2].model, MODEL_SECONDARY);
+  });
+
+  await runTest('TEST AZ: Ambos fallan tras tool -> RESULTADO NULO', async () => {
+    const res = await simulatePerHttpRequestGemini({
+      toolsHandler: async () => ({ res: 'datos' }),
+      attemptsPlan: [
+        [{ type: 'TOOL_CALL', toolName: 'test' }, { type: 'TIMEOUT' }],
+        [{ type: 'TIMEOUT' }]
+      ]
+    });
+    assert.strictEqual(res.resultText, null);
+    assert.strictEqual(res.lastErrType, ERR_TYPE.TIMEOUT);
+  });
+
+  await runTest('TEST BA: thoughtSignature no contamina texto final', async () => {
+    const res = await simulatePerHttpRequestGemini({
+      toolsHandler: async () => ({ res: 'datos' }),
+      attemptsPlan: [
+        [{ type: 'TOOL_CALL', toolName: 't1', includeThought: true }, { type: 'SUCCESS', text: 'Mensaje limpio' }]
+      ]
+    });
+    assert.strictEqual(res.resultText, 'Mensaje limpio');
+  });
+
+  await runTest('TEST BB: update_commercial_state obj NO se filtra al cliente', async () => {
+    const res = await simulatePerHttpRequestGemini({
+      toolsHandler: async () => ({ success: true, updated: true }),
+      attemptsPlan: [
+        [{ type: 'TOOL_CALL', toolName: 'update_commercial_state' }, { type: 'SUCCESS', text: 'Estado actualizado.' }]
+      ]
+    });
+    assert.strictEqual(res.resultText, 'Estado actualizado.');
+  });
+
+  await runTest('TEST BC: Pasan palabras clave comerciales ("producto", "respuesta", "imagen", "función")', async () => {
+    const txt = 'La respuesta de la función es que el producto tiene una imagen muy bonita.';
+    const res = await simulatePerHttpRequestGemini({
+      attemptsPlan: [[{ type: 'SUCCESS', text: txt }]]
+    });
+    assert.strictEqual(res.resultText, txt);
+  });
+
+  await runTest('TEST BD: Outbound Guard bloquea -> NO incrementa fallos del PRIMARY', async () => {
+    const cb = globalCircuitBreaker.fails;
+    try {
+      await simulatePerHttpRequestGemini({
+        attemptsPlan: [[{ type: 'SUCCESS', text: 'response:default_api:' }]],
+        resetState: false
+      });
+    } catch (err) {}
+    assert.strictEqual(globalCircuitBreaker.fails, cb, 'Fails no debe incrementar por UNSAFE_OUTPUT');
+  });
+
+  await runTest('TEST BE: Outbound Guard bloquea -> Error lanzado y clasificable (UNSAFE_OUTPUT)', async () => {
+    const res = await simulatePerHttpRequestGemini({
+      attemptsPlan: [
+        [{ type: 'SUCCESS', text: 'functionCall: leaked' }]
+      ]
+    });
+    assert.strictEqual(res.resultText, null);
+    assert.strictEqual(res.lastErrType, ERR_TYPE.UNSAFE_OUTPUT, 'Debe ser capturado como UNSAFE_OUTPUT por simulate');
   });
 
   console.log('\n======================================================================');
