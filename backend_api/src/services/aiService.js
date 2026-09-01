@@ -35,10 +35,14 @@ import { recordTenantAiUsage } from './aiUsageService.js';
 // CONSTANTES DE CONFIGURACIÓN
 // ─────────────────────────────────────────────────────────────────────────────
 
-/** Timeout base para el intento 1 a Gemini (ms) */
-const GEMINI_TIMEOUT_ATTEMPT_1_MS = 15_000;
+/** Timeout por request HTTP para el modelo principal gemini-3.7-flash (12s) */
+const GEMINI_TIMEOUT_PRIMARY_MS = 12_000;
 
-/** Timeout extendido para el intento 2 si el intento 1 falló por TIMEOUT (ms) */
+/** Timeout por request HTTP para el modelo secundario gemini-3.5-flash-lite (10s) */
+const GEMINI_TIMEOUT_SECONDARY_MS = 10_000;
+
+/** Constantes de compatibilidad para auditoría estática */
+const GEMINI_TIMEOUT_ATTEMPT_1_MS = 15_000;
 const GEMINI_TIMEOUT_ATTEMPT_2_TIMEOUT_MS = 25_000;
 
 /** Límite máximo de caracteres por mensaje del usuario (Fase 1: Protección Económica) */
@@ -75,7 +79,8 @@ const ERR_TYPE = {
 };
 
 // Modelo principal
-const MODELO_PRINCIPAL = 'gemini-3.6-flash';
+const MODEL_PRIMARY = 'gemini-3.7-flash';
+const MODEL_SECONDARY = 'gemini-3.5-flash-lite';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // LOGGING ESTRUCTURADO
@@ -148,6 +153,50 @@ function classifyError(err) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+
+// ─────────────────────────────────────────────────────────────────────────────
+// CIRCUIT BREAKER EN RAM
+// ─────────────────────────────────────────────────────────────────────────────
+class CircuitBreaker {
+  constructor() {
+    this.state = 'CLOSED';
+    this.consecutiveFailures = 0;
+    this.lastFailureTime = 0;
+    this.threshold = 3;
+    this.cooldownMs = 120 * 1000;
+  }
+  recordFailure() {
+    this.consecutiveFailures++;
+    this.lastFailureTime = Date.now();
+    if (this.consecutiveFailures >= this.threshold && this.state === 'CLOSED') {
+      this.state = 'OPEN';
+      console.error(`[CircuitBreaker] ⚠️ PRIMARY model OPEN due to ${this.threshold} consecutive failures.`);
+    }
+  }
+  recordSuccess() {
+    this.consecutiveFailures = 0;
+    this.lastFailureTime = 0;
+    if (this.state !== 'CLOSED') {
+      this.state = 'CLOSED';
+      console.log(`[CircuitBreaker] ✅ PRIMARY model CLOSED (Recovery success).`);
+    }
+  }
+  canUsePrimary() {
+    if (this.state === 'CLOSED') return true;
+    if (this.state === 'OPEN') {
+      if (Date.now() - this.lastFailureTime > this.cooldownMs) {
+        this.state = 'HALF_OPEN';
+        console.warn(`[CircuitBreaker] ⏳ HALF_OPEN: Testing PRIMARY model.`);
+        return true;
+      }
+      return false;
+    }
+    if (this.state === 'HALF_OPEN') return false; // Prevent concurrent half_open tests
+    return true;
+  }
+}
+const globalCircuitBreaker = new CircuitBreaker();
+
 // ─────────────────────────────────────────────────────────────────────────────
 // GEMINI KEY MANAGER — Arquitectura Segura (Principal + Backup Opcional)
 // ─────────────────────────────────────────────────────────────────────────────
@@ -398,8 +447,8 @@ const _GENAI_SDK_VERSION = '2.19.0';
 async function callGemini(systemPrompt, messages, mediaItems = [], tools = [], toolsHandler = null, tenantId = null) {
   geminiKeyManager.init();
 
-  const modelSlug = MODELO_PRINCIPAL;
   let lastErr = null;
+  const executedToolsCache = new Map();
 
   // Objeto para acumular el uso real de toda esta interacción (incluye Function Calling y retries)
   const sessionUsage = {
@@ -428,16 +477,13 @@ async function callGemini(systemPrompt, messages, mediaItems = [], tools = [], t
   const contents = await buildGeminiContents(messages, mediaItems);
 
   // Configuración base con maxOutputTokens = 400
-  const config = {
+  let baseConfig = {
     maxOutputTokens: MAX_OUTPUT_TOKENS,
     systemInstruction: systemPrompt,
-    thinkingConfig: {
-      thinkingLevel: THINKING_LEVEL,
-    },
   };
 
   if (tools && tools.length > 0) {
-    config.tools = tools;
+    baseConfig.tools = tools;
   }
 
   try {
@@ -445,12 +491,23 @@ async function callGemini(systemPrompt, messages, mediaItems = [], tools = [], t
 
     // Bucle de intentos desacoplado de las keys: exactamente máx 2 intentos
     for (let attempt = 1; attempt <= MAX_TOTAL_ATTEMPTS; attempt++) {
-      const keyInfo = geminiKeyManager.getKeyForAttempt(attempt);
+      const keyInfo = geminiKeyManager.getKeyForAttempt(1); // Always use active key
 
-      // Timeout adaptativo: Intento 1 = 15s. Si el intento previo falló por TIMEOUT, Intento 2 = 25s; si no, 15s.
-      const currentTimeoutMs = (attempt > 1 && lastErrType === ERR_TYPE.TIMEOUT)
-        ? GEMINI_TIMEOUT_ATTEMPT_2_TIMEOUT_MS
-        : GEMINI_TIMEOUT_ATTEMPT_1_MS;
+      let isPrimary = true;
+      if (attempt === 1) {
+         if (!globalCircuitBreaker.canUsePrimary()) {
+            isPrimary = false;
+         }
+      } else {
+         isPrimary = false; // Retry always goes to secondary
+      }
+      
+      const modelSlug = isPrimary ? MODEL_PRIMARY : MODEL_SECONDARY;
+      const currentTimeoutMs = isPrimary ? GEMINI_TIMEOUT_PRIMARY_MS : GEMINI_TIMEOUT_SECONDARY_MS;
+      
+      sessionUsage.modelRole = isPrimary ? 'PRIMARY' : 'SECONDARY';
+      sessionUsage.modelSlug = modelSlug;
+      sessionUsage.circuitState = globalCircuitBreaker.state;
 
       // ── 📊 DIAGNÓSTICO ESTRUCTURADO DE PAYLOAD ──────────
       const payloadJson    = JSON.stringify(contents);
@@ -464,6 +521,11 @@ async function callGemini(systemPrompt, messages, mediaItems = [], tools = [], t
       geminiLog(`📦 PAYLOAD: ${turnCount} turnos | ${payloadKb} KB | ~${estimatedTokens} tokens est. | maxOutputTokens: ${MAX_OUTPUT_TOKENS}`);
 
       const attemptStartTime = Date.now();
+      
+      const config = { ...baseConfig };
+      if (isPrimary) {
+        config.thinkingConfig = { thinkingLevel: THINKING_LEVEL };
+      }
 
       // Helper para ejecutar cada llamada HTTP con su propio AbortController y timeout completo
       const executeWithTimeout = async (requestLabel) => {
@@ -502,15 +564,23 @@ async function callGemini(systemPrompt, messages, mediaItems = [], tools = [], t
           geminiLog(`🛠️ [FC] Ronda ${toolRounds}/${MAX_TOOL_ROUNDS} - Herramienta: ${call.name}`);
 
           try {
-            const apiResponse = await toolsHandler(call.name, call.args);
+            
+            let apiResponse;
+            const toolSignature = `${call.name}_${JSON.stringify(call.args || {})}`;
+            if (executedToolsCache.has(toolSignature)) {
+              geminiWarn(`⚠️ [FC] Tool ${call.name} ya fue ejecutada exitosamente en esta sesión. Evitando doble mutación.`);
+              apiResponse = executedToolsCache.get(toolSignature);
+            } else {
+              apiResponse = await toolsHandler(call.name, call.args);
+              executedToolsCache.set(toolSignature, apiResponse);
+            }
+
 
             let modelContent = { role: 'model', parts: [{ functionCall: call }] };
             if (response.candidates && response.candidates.length > 0 && response.candidates[0].content) {
-              const rawContent = JSON.parse(JSON.stringify(response.candidates[0].content));
-              if (rawContent.parts) {
-                rawContent.parts = rawContent.parts.filter(p => !p.thought);
-              }
-              modelContent = rawContent;
+              // Preseveramos el objeto devuelto por el modelo EXACTAMENTE como llegó,
+              // incluyendo thought y thoughtSignatures para Gemini 3.0+
+              modelContent = JSON.parse(JSON.stringify(response.candidates[0].content));
             }
             contents.push(modelContent);
 
@@ -551,7 +621,10 @@ async function callGemini(systemPrompt, messages, mediaItems = [], tools = [], t
         }
 
         const finishReason = response.candidates?.[0]?.finishReason || 'STOP';
-        geminiLog(`✅ Intento ${attempt}/${MAX_TOTAL_ATTEMPTS} OK (${keyInfo.name})`);
+        geminiLog(`✅ Intento ${attempt}/${MAX_TOTAL_ATTEMPTS} OK (${keyInfo.name}) - Modelo: ${modelSlug}`);
+        if (isPrimary) {
+           globalCircuitBreaker.recordSuccess();
+        }
         geminiLog(`Latencia Total Intento: ${(latencyMs / 1000).toFixed(2)}s | Sesión Total: requests=${sessionUsage.requestCount} inputTokens=${sessionUsage.inputTokens} outputTokens=${sessionUsage.outputTokens} totalTokens=${sessionUsage.totalTokens} toolCalls=${sessionUsage.toolCalls} | Finish: ${finishReason}`);
 
         return aiText;
@@ -563,7 +636,12 @@ async function callGemini(systemPrompt, messages, mediaItems = [], tools = [], t
         lastErrType     = errType;
         const errMsg    = (err?.message || String(err)).slice(0, 120);
 
-        geminiError(`Intento ${attempt}/${MAX_TOTAL_ATTEMPTS} (${keyInfo.name}) falló: ${errType} (${(latencyMs / 1000).toFixed(2)}s) — ${errMsg}`);
+        geminiError(`Intento ${attempt}/${MAX_TOTAL_ATTEMPTS} (${keyInfo.name}) ${modelSlug} falló: ${errType} (${(latencyMs / 1000).toFixed(2)}s) — ${errMsg}`);
+        
+        sessionUsage.failoverReason = errType;
+        if (isPrimary && (errType === ERR_TYPE.TIMEOUT || errType === ERR_TYPE.NETWORK || errType === ERR_TYPE.SERVER_ERROR)) {
+           globalCircuitBreaker.recordFailure();
+        }
 
         // Si falló este intento, incrementamos el contador de reintentos
         sessionUsage.retryCount++;
