@@ -35,11 +35,11 @@ import { recordTenantAiUsage } from './aiUsageService.js';
 // CONSTANTES DE CONFIGURACIÓN
 // ─────────────────────────────────────────────────────────────────────────────
 
-/** Timeout por request HTTP para el modelo principal gemini-3.7-flash (12s) */
+/** Timeout por request HTTP para el modelo principal (12s) */
 const GEMINI_TIMEOUT_PRIMARY_MS = 12_000;
 
-/** Timeout por request HTTP para el modelo secundario gemini-3.5-flash-lite (10s) */
-const GEMINI_TIMEOUT_SECONDARY_MS = 10_000;
+/** Timeout por request HTTP para el modelo secundario (12s) */
+const GEMINI_TIMEOUT_SECONDARY_MS = 12_000;
 
 /** Constantes de compatibilidad para auditoría estática */
 const GEMINI_TIMEOUT_ATTEMPT_1_MS = 15_000;
@@ -79,8 +79,8 @@ const ERR_TYPE = {
 };
 
 // Modelo principal
-const MODEL_PRIMARY = 'gemini-3.7-flash';
-const MODEL_SECONDARY = 'gemini-3.5-flash-lite';
+const MODEL_PRIMARY = 'gemini-3.5-flash-lite';
+const MODEL_SECONDARY = 'gemini-3.5-flash';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // LOGGING ESTRUCTURADO
@@ -484,6 +484,7 @@ async function callGemini(systemPrompt, messages, mediaItems = [], tools = [], t
   let baseConfig = {
     maxOutputTokens: MAX_OUTPUT_TOKENS,
     systemInstruction: systemPrompt,
+    thinkingConfig: { thinkingLevel: THINKING_LEVEL },
   };
 
   if (tools && tools.length > 0) {
@@ -503,7 +504,13 @@ async function callGemini(systemPrompt, messages, mediaItems = [], tools = [], t
             isPrimary = false;
          }
       } else {
-         isPrimary = false; // Retry always goes to secondary
+         // Si el intento 1 ya fue SECONDARY (porque PRIMARY estaba OPEN/SKIPPED),
+         // no hacemos un segundo intento hacia el mismo modelo SECONDARY.
+         if (!globalCircuitBreaker.canUsePrimary() && globalCircuitBreaker.state !== 'HALF_OPEN') {
+            geminiWarn(`PRIMARY estaba OPEN. El intento 1 fue SECONDARY y falló. No se reintenta el mismo modelo.`);
+            break;
+         }
+         isPrimary = false; // Retry normal siempre va al secondary
       }
       
       const modelSlug = isPrimary ? MODEL_PRIMARY : MODEL_SECONDARY;
@@ -527,9 +534,6 @@ async function callGemini(systemPrompt, messages, mediaItems = [], tools = [], t
       const attemptStartTime = Date.now();
       
       const config = { ...baseConfig };
-      if (isPrimary) {
-        config.thinkingConfig = { thinkingLevel: THINKING_LEVEL };
-      }
 
       // Helper para ejecutar cada llamada HTTP con su propio AbortController y timeout completo
       const executeWithTimeout = async (requestLabel) => {

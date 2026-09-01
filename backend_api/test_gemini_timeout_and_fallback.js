@@ -68,9 +68,9 @@ function classifyError(err) {
 }
 
 const GEMINI_TIMEOUT_PRIMARY_MS = 12_000;
-const GEMINI_TIMEOUT_SECONDARY_MS = 10_000;
-const MODEL_PRIMARY = 'gemini-3.7-flash';
-const MODEL_SECONDARY = 'gemini-3.5-flash-lite';
+const GEMINI_TIMEOUT_SECONDARY_MS = 12_000;
+const MODEL_PRIMARY = 'gemini-3.5-flash-lite';
+const MODEL_SECONDARY = 'gemini-3.5-flash';
 
   class CircuitBreaker {
     constructor() { this.state = 'CLOSED'; this.fails = 0; }
@@ -101,7 +101,17 @@ async function simulatePerHttpRequestGemini({
   let resultText = null;
 
   for (let attempt = 1; attempt <= 2; attempt++) {
-    let isPrimary = attempt === 1 && globalCircuitBreaker.state === 'CLOSED';
+    let isPrimary = true;
+    if (attempt === 1) {
+       if (globalCircuitBreaker.state !== 'CLOSED' && globalCircuitBreaker.state !== 'HALF_OPEN') {
+          isPrimary = false;
+       }
+    } else {
+       if (globalCircuitBreaker.state !== 'CLOSED' && globalCircuitBreaker.state !== 'HALF_OPEN') {
+          break; // no reintenta secondary si primary estaba open
+       }
+       isPrimary = false;
+    }
     const currentTimeoutMs = isPrimary ? GEMINI_TIMEOUT_PRIMARY_MS : GEMINI_TIMEOUT_SECONDARY_MS;
     const model = isPrimary ? MODEL_PRIMARY : MODEL_SECONDARY;
 
