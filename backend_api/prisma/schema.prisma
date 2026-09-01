@@ -35,6 +35,7 @@ model Tenant {
   createdAt            DateTime                   @default(now())
   updatedAt            DateTime                   @updatedAt
   aiEnabled            Boolean                    @default(true)
+  aiDisabledAt         DateTime?
   sessionInactivityHours Int                      @default(6)
   dailyTokenBudget     Int?                       @default(100000)
   monthlyTokenBudget   Int?                       @default(2000000)

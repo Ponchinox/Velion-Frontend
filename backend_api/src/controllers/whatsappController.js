@@ -173,6 +173,34 @@ const iaRateLimitCache = new Map();
 const processingLocks = new Set();
 const pendingQueues = new Map();
 
+// ─── AI CONFIG EPOCH ───────────────────────────────────────────────────────────
+// Contador de versión por tenant. Se incrementa cada vez que el dueño desactiva
+// la IA (aiEnabled: false). Cualquier job (buffer/pendingQueue) que nació con un
+// epoch anterior al actual se considera OBSOLETO y se descarta sin despachar.
+// Vive ÚNICAMENTE en RAM: un reinicio limpia los jobs en vuelo también, lo cual
+// es correcto porque el estado fresco de aiEnabled se lee desde PostgreSQL al
+// primer mensaje posterior al reinicio.
+const tenantAiConfigEpoch = new Map();
+
+/**
+ * Devuelve el epoch actual del tenant (0 si nunca se ha incrementado).
+ */
+export function getTenantAiEpoch(tenantId) {
+  return tenantAiConfigEpoch.get(tenantId) ?? 0;
+}
+
+/**
+ * Incrementa el epoch del tenant. Debe llamarse cuando aiEnabled cambia a false.
+ * Los jobs creados ANTES de esta llamada llevarán un epoch menor y serán cancelados.
+ */
+export function incrementTenantAiEpoch(tenantId) {
+  const prev = tenantAiConfigEpoch.get(tenantId) ?? 0;
+  const next = prev + 1;
+  tenantAiConfigEpoch.set(tenantId, next);
+  console.log(`🔢 [AI Epoch] Tenant ${tenantId.slice(0,8)} epoch incremented: ${prev} → ${next}. All pending jobs are now OBSOLETE.`);
+  return next;
+}
+
 // ── aiMessageTracker: delegamos al servicio de dos capas (RAM + PostgreSQL) ──
 // markMessageAsSentByAi es exportada para compatibilidad con importaciones externas
 export function markMessageAsSentByAi(textOrId) {
@@ -1177,7 +1205,8 @@ export async function receiveWebhook(req, res) {
           metaPhoneNumberId: metaNumberRecord?.metaPhoneNumberId,
           metaAccessToken: metaNumberRecord?.metaAccessToken,
           data: normalized.rawData, reqIo: req.io,
-          msgId: normalized.msgId
+          msgId: normalized.msgId,
+          epochAtCreation: getTenantAiEpoch(tenant.id)
         });
         console.log(`🔒 [Processing Lock] IA ocupada para +${clientNumber} (tenant: ${tenant.id}). Mensaje guardado en pendingQueue.`);
       }
@@ -1239,6 +1268,7 @@ export async function receiveWebhook(req, res) {
         data: normalized.rawData || null,
         reqIo: req.io,
         msgId: normalized.msgId || null,
+        epochAtCreation: getTenantAiEpoch(tenant.id),
         timer: setTimeout(() => {
           processBufferedMessage(bufferKey);
         }, 4000)
@@ -1278,8 +1308,38 @@ async function processBufferedMessage(bufferKey) {
     clientNumber,
     data,
     reqIo,
-    msgId
+    msgId,
+    epochAtCreation = 0
   } = buffer;
+
+  // ─── AI CONFIG EPOCH CHECK (Anti-Revivir) ───
+  // Si el tenant desactivó la IA entre que este job nació y ahora, el epoch
+  // habrá subido. El job se cancela definitivamente: no se genera, no se despacha.
+  const currentEpoch = getTenantAiEpoch(tenant.id);
+  if (epochAtCreation < currentEpoch) {
+    console.log(`🚫 [AI Epoch] Job OBSOLETO para +${clientNumber} (tenant: ${tenant.id.slice(0,8)}). epochAtCreation=${epochAtCreation} < currentEpoch=${currentEpoch}. Descartando sin generar.`);
+    // ─── MARCADOR DE CANCELACIÓN PERSISTENTE (Epoch Path) ───
+    // El usuario escribió algo pero la IA fue desactivada antes de que el buffer
+    // disparara. Persistimos el marcador para que el turno no quede "abierto"
+    // en el historial de PostgreSQL ante futuros procesos de Gemini.
+    if (chat?.id) {
+      try {
+        await prisma.message.create({
+          data: {
+            content: '[Intención cancelada: IA desactivada antes de generar respuesta]',
+            senderRole: 'model',
+            status: 'ai_cancelled',
+            chatId: chat.id,
+            tenantId: tenant.id
+          }
+        });
+        console.log(`🚫 [AI Epoch Marker] Marcador de cancelación (epoch path) persistido en DB para chat ${chat.id}.`);
+      } catch (markerErr) {
+        console.error(`⚠️ [AI Epoch Marker] Error persistiendo marcador (epoch path):`, markerErr.message);
+      }
+    }
+    return;
+  }
 
   // Contexto de Gateway para enviar respuestas por el proveedor correcto
   const gatewayCtx = { provider, instance, apiKey: requestApiKey, metaPhoneNumberId, metaAccessToken };
@@ -1404,21 +1464,7 @@ async function processBufferedMessage(bufferKey) {
     });
     rawMessages.reverse();
 
-    const MAX_USER_MESSAGE_CHARS = 2000;
-    const chatContext = [];
-    for (const msg of rawMessages) {
-      const role = msg.senderRole === 'contact' ? 'user' : 'model';
-      let content = msg.content || '';
-      if (role === 'user' && content.length > MAX_USER_MESSAGE_CHARS) {
-        console.warn(`🛡️ [Cost Guard] Truncando mensaje de usuario para Gemini: ${content.length} chars → ${MAX_USER_MESSAGE_CHARS} chars.`);
-        content = content.slice(0, MAX_USER_MESSAGE_CHARS) + '\n[... Mensaje truncado a 2000 caracteres por seguridad]';
-      }
-      if (chatContext.length > 0 && chatContext[chatContext.length - 1].role === role) {
-        chatContext[chatContext.length - 1].content += '\n' + content;
-      } else {
-        chatContext.push({ role, content });
-      }
-    }
+    const chatContext = buildChatContext(rawMessages);
 
     // ─── CONTROL DE CUOTA / LÍMITE DE MENSAJES MENSUALES DEL TENANT ───
     const startOfMonth = new Date();
@@ -2011,6 +2057,26 @@ Atributos/Tags: ${Array.isArray(product.tags) ? product.tags.join(', ') : ''}
     });
     if (postGenCheck?.aiEnabled === false) {
       console.log(`🤖 [AI Final Gate] Response discarded because AI was disabled during generation for +${clientNumber} (tenant: ${tenant.id}).`);
+      // ─── MARCADOR DE CANCELACIÓN PERSISTENTE ───
+      // Inserta un mensaje sintético de modelo en PostgreSQL para cerrar
+      // semánticamente la intención del usuario que quedó sin respuesta.
+      // status='ai_cancelled' es filtrado del chatContext futuro, impidiendo
+      // que Gemini vea el turno del usuario como una tarea pendiente.
+      // Este marcador sobrevive a reinicios del backend (vive en PostgreSQL).
+      try {
+        await prisma.message.create({
+          data: {
+            content: '[Respuesta cancelada por desactivación de IA]',
+            senderRole: 'model',
+            status: 'ai_cancelled',
+            chatId: chat.id,
+            tenantId: tenant.id
+          }
+        });
+        console.log(`🚫 [AI Epoch Marker] Marcador de cancelación persistido en DB para chat ${chat.id}. Intención cerrada semánticamente.`);
+      } catch (markerErr) {
+        console.error(`⚠️ [AI Epoch Marker] Error al persistir marcador de cancelación:`, markerErr.message);
+      }
       return;
     }
 
@@ -2390,6 +2456,14 @@ Atributos/Tags: ${Array.isArray(product.tags) ? product.tags.join(', ') : ''}
     const pending = pendingQueues.get(bufferKey);
     if (pending) {
       pendingQueues.delete(bufferKey);
+
+      // ─── AI CONFIG EPOCH CHECK en re-inyección de pendingQueue ───
+      const reInjectEpoch = getTenantAiEpoch(pending.tenant?.id);
+      if ((pending.epochAtCreation ?? 0) < reInjectEpoch) {
+        console.log(`🚫 [AI Epoch] PendingQueue OBSOLETA para +${pending.clientNumber} (epoch=${pending.epochAtCreation ?? 0} < ${reInjectEpoch}). Descartando sin re-inyectar.`);
+        return;
+      }
+
       console.log(`📬 [Pending Queue] Despachando ${pending.text.length} caracteres encolados para +${pending.clientNumber} con nuevo buffer de 4000ms.`);
       // Re-inyectar como nuevo buffer con debounce fresco
       const newBufferEntry = {
@@ -2401,5 +2475,33 @@ Atributos/Tags: ${Array.isArray(product.tags) ? product.tags.join(', ') : ''}
       messageBuffers.set(bufferKey, newBufferEntry);
     }
   }
+}
+
+/**
+ * ─── HELPER: CONSTRUCCIÓN DE CONTEXTO DE CHAT ───
+ * Convierte un array de Message de PostgreSQL en un array de roles para Gemini.
+ * Aplica filtros de marcadores de cancelación y truncamiento.
+ */
+export function buildChatContext(rawMessages, MAX_USER_MESSAGE_CHARS = 2000) {
+  const chatContext = [];
+  for (const msg of rawMessages) {
+    if (msg.status === 'ai_cancelled') {
+      chatContext.push({ role: 'model', content: '[...]' });
+      continue;
+    }
+
+    const role = msg.senderRole === 'contact' ? 'user' : 'model';
+    let content = msg.content || '';
+    if (role === 'user' && content.length > MAX_USER_MESSAGE_CHARS) {
+      content = content.slice(0, MAX_USER_MESSAGE_CHARS) + '\n[... Mensaje truncado a 2000 caracteres por seguridad]';
+    }
+    
+    if (chatContext.length > 0 && chatContext[chatContext.length - 1].role === role) {
+      chatContext[chatContext.length - 1].content += '\n' + content;
+    } else {
+      chatContext.push({ role, content });
+    }
+  }
+  return chatContext;
 }
 
