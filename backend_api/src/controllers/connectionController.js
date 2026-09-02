@@ -84,7 +84,7 @@ function getEvoHeaders() {
  * Helper para formatear el nombre de la instancia en base al tenantId
  */
 function getEvoInstanceName(tenantId) {
-  return `bot_prod_${tenantId.slice(0, 8)}`;
+  return `bot_prod_${tenantId}`;
 }
 
 /**
@@ -136,8 +136,13 @@ export async function createMetaInstance(req, res) {
       ? `${rawWebhookUrl}&apikey=${cleanApiKey}`
       : `${rawWebhookUrl}${apiKeyParam}`;
 
-    // ── Nombre de instancia único para Meta por tenant ────────────────────
-    const instanceName = `bot_meta_${tenantId.slice(0, 8)}`;
+    // ── 0. Verificar si ya existe registro Meta para este tenant ─────────────────
+    const existing = await prisma.registeredWhatsAppNumber.findFirst({
+      where: { tenantId, provider: 'META' },
+    });
+
+    // ── Nombre de instancia para Meta: reutilizar si ya existe (legacy o nuevo), o generar con UUID completo si es nuevo ──
+    const instanceName = existing?.instanceName || `bot_meta_${tenantId}`;
 
     // ── Payload exacto que se envía a Evolution API ───────────────────────
     const evolutionPayload = {
@@ -197,10 +202,6 @@ export async function createMetaInstance(req, res) {
     }
 
     // ── 3. Guardar / actualizar registro en la BD ─────────────────────────
-    const existing = await prisma.registeredWhatsAppNumber.findFirst({
-      where: { tenantId, provider: 'META' },
-    });
-
     let record;
     if (existing) {
       record = await prisma.registeredWhatsAppNumber.update({
@@ -257,7 +258,12 @@ export async function getStatus(req, res) {
 
     let instanceName = req.query.instanceName;
     if (!instanceName) {
-      instanceName = getEvoInstanceName(tenantId);
+      const existingConn = await prisma.registeredWhatsAppNumber.findFirst({
+        where: { tenantId },
+        orderBy: { createdAt: 'desc' },
+        select: { instanceName: true }
+      });
+      instanceName = existingConn?.instanceName || getEvoInstanceName(tenantId);
     }
     const evoUrl = process.env.EVOLUTION_API_URL || 'http://localhost:8080';
 
@@ -299,14 +305,14 @@ export async function getStatus(req, res) {
     if (error.response && error.response.status === 404) {
       return res.json({
         status: 'close',
-        instanceName: getEvoInstanceName(req.user.tenantId),
+        instanceName: instanceName || getEvoInstanceName(req.user.tenantId),
         phone: null,
       });
     }
     console.error('❌ [Connections Controller] Error al obtener estado:', error.response?.data || error.message);
     return res.json({
       status: 'close',
-      instanceName: getEvoInstanceName(req.user.tenantId),
+      instanceName: instanceName || getEvoInstanceName(req.user.tenantId),
       error: 'Evolution API no responde.',
     });
   }
@@ -325,7 +331,12 @@ export async function getQrCode(req, res) {
 
     let instanceName = req.query.instanceName;
     if (!instanceName) {
-      instanceName = `bot_prod_${tenantId.slice(0, 8)}_${Date.now()}`;
+      const existingConn = await prisma.registeredWhatsAppNumber.findFirst({
+        where: { tenantId, provider: { not: 'META' } },
+        orderBy: { createdAt: 'desc' },
+        select: { instanceName: true }
+      });
+      instanceName = existingConn?.instanceName || `bot_prod_${tenantId}_${Date.now()}`;
     }
 
     const evoUrl = process.env.EVOLUTION_API_URL || 'http://localhost:8080';
@@ -488,8 +499,14 @@ export async function logoutDevice(req, res) {
     const { instanceName: bodyInstanceName, connectionId, provider } = req.body;
     const evoUrl = process.env.EVOLUTION_API_URL || 'http://localhost:8080';
 
-    // Determinar qué instancia de Evolution eliminar
-    const instanceName = bodyInstanceName || (provider !== 'META' ? getEvoInstanceName(tenantId) : null);
+    // Determinar qué instancia de Evolution eliminar (reutilizando instanceName persistido si no viene en body)
+    let instanceName = bodyInstanceName;
+    if (!instanceName) {
+      const existingConn = connectionId
+        ? await prisma.registeredWhatsAppNumber.findFirst({ where: { id: connectionId, tenantId }, select: { instanceName: true } })
+        : await prisma.registeredWhatsAppNumber.findFirst({ where: { tenantId }, orderBy: { createdAt: 'desc' }, select: { instanceName: true } });
+      instanceName = existingConn?.instanceName || (provider !== 'META' ? getEvoInstanceName(tenantId) : null);
+    }
 
     // Para ambos proveedores (EVOLUTION y META) eliminamos la instancia de Evolution
     if (instanceName) {

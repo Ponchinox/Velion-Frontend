@@ -13,7 +13,7 @@ function getEvoHeaders(apiKey) {
 }
 
 function getEvoInstanceName(tenantId) {
-  return `bot_prod_${tenantId.slice(0, 8)}`;
+  return `bot_prod_${tenantId}`;
 }
 
 /**
@@ -95,6 +95,13 @@ export async function sendText(opts) {
   if (!provider && tenantId) {
     const ctx = await resolveGatewayCtx(tenantId);
     ({ provider, instance, apiKey, metaPhoneNumberId, metaAccessToken } = ctx);
+  } else if (!instance && tenantId) {
+    const conn = await prisma.registeredWhatsAppNumber.findFirst({
+      where: { tenantId },
+      orderBy: { createdAt: 'desc' },
+      select: { instanceName: true }
+    });
+    if (conn?.instanceName) instance = conn.instanceName;
   }
 
   const isJid = String(to).includes('@lid') || String(to).includes('@s.whatsapp.net');
@@ -184,6 +191,13 @@ export async function sendMedia(opts) {
   if (!provider && tenantId) {
     const ctx = await resolveGatewayCtx(tenantId);
     ({ provider, instance, apiKey, metaPhoneNumberId, metaAccessToken } = ctx);
+  } else if (!instance && tenantId) {
+    const conn = await prisma.registeredWhatsAppNumber.findFirst({
+      where: { tenantId },
+      orderBy: { createdAt: 'desc' },
+      select: { instanceName: true }
+    });
+    if (conn?.instanceName) instance = conn.instanceName;
   }
 
   const isJid = String(to).includes('@lid') || String(to).includes('@s.whatsapp.net');

@@ -253,7 +253,7 @@ model RegisteredWhatsAppNumber {
   metaWabaId        String?
   provider          String    @default("EVOLUTION")
   updatedAt         DateTime  @updatedAt
-  instanceName      String?
+  instanceName      String?   @unique
   connectionState   String    @default("UNKNOWN")
   connectionStateUpdatedAt DateTime? @default(now())
   tenant            Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)

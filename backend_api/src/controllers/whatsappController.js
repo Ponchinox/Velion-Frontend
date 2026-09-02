@@ -1,6 +1,6 @@
 import axios from 'axios';
 import prisma from '../db.js';
-import { mapEvolutionConnectionState } from '../utils/connectionSyncLogic.js';
+import { mapEvolutionConnectionState, handleConnectionUpdateWebhook } from '../utils/connectionSyncLogic.js';
 import { generateAIResponse } from '../services/aiService.js';
 import * as flowService from '../services/flowService.js';
 import { validateAndRegisterWhatsAppConnection } from '../services/antiFraudService.js';
@@ -77,7 +77,7 @@ async function sendWhatsAppMedia(opts) {
  * Helper para formatear el nombre de la instancia en base al tenantId
  */
 function getEvoInstanceName(tenantId) {
-  return `bot_prod_${tenantId.slice(0, 8)}`;
+  return `bot_prod_${tenantId}`;
 }
 
 // Map en memoria para evitar notificaciones duplicadas de pedidos (Debounce TTL de 10 min por cliente)
@@ -220,7 +220,12 @@ export async function getStatus(req, res) {
     return res.status(400).json({ error: 'El usuario no está asociado a ningún Tenant.' });
   }
 
-  const instanceName = getEvoInstanceName(tenantId);
+  const existingConn = await prisma.registeredWhatsAppNumber.findFirst({
+    where: { tenantId },
+    orderBy: { createdAt: 'desc' },
+    select: { instanceName: true }
+  });
+  const instanceName = existingConn?.instanceName || getEvoInstanceName(tenantId);
   const evoUrl = process.env.EVOLUTION_API_URL || 'http://localhost:8080';
 
   try {
@@ -282,7 +287,12 @@ export async function connectDevice(req, res) {
     return res.status(400).json({ error: 'El usuario no está asociado a ningún Tenant.' });
   }
 
-  const instanceName = getEvoInstanceName(tenantId);
+  const existingConn = await prisma.registeredWhatsAppNumber.findFirst({
+    where: { tenantId, provider: { not: 'META' } },
+    orderBy: { createdAt: 'desc' },
+    select: { instanceName: true }
+  });
+  const instanceName = existingConn?.instanceName || getEvoInstanceName(tenantId);
   const evoUrl = process.env.EVOLUTION_API_URL || 'http://localhost:8080';
 
   const baseUrl = process.env.APP_URL || 'https://velion-backend-a7vw.onrender.com';
@@ -423,7 +433,12 @@ export async function disconnectDevice(req, res) {
 
   let instanceName = req.body.instanceName;
   if (!instanceName) {
-    instanceName = getEvoInstanceName(tenantId);
+    const existingConn = await prisma.registeredWhatsAppNumber.findFirst({
+      where: { tenantId },
+      orderBy: { createdAt: 'desc' },
+      select: { instanceName: true }
+    });
+    instanceName = existingConn?.instanceName || getEvoInstanceName(tenantId);
   }
   const evoUrl = process.env.EVOLUTION_API_URL || 'http://localhost:8080';
 
@@ -982,7 +997,7 @@ async function _processWebhookEvent(body, isMeta, provider, io, query, headers) 
     requestApiKey = (req.query?.apikey || req.headers?.apikey || req.body?.apikey || req.headers?.['x-api-key'] || '').trim();
     instance = req.body?.instance;
     
-    // Interceptar CONNECTION_UPDATE para asegurar persistencia
+    // Interceptar CONNECTION_UPDATE para asegurar persistencia y reconciliación segura
     if (req.body?.event === 'connection.update') {
       const state = req.body?.data?.state || req.body?.state;
       let phone = req.body?.data?.phone || req.body?.phone || req.body?.data?.ownerJid || req.body?.data?.wuid || req.body?.data?.user || req.body?.data?.jid || req.body?.data?.owner;
@@ -991,55 +1006,27 @@ async function _processWebhookEvent(body, isMeta, provider, io, query, headers) 
         phone = phone.split('@')[0];
       }
 
-      // Mapear estado de Evolution a estado de Velion
-      let velionState = mapEvolutionConnectionState(state);
-
-      if (state === 'open') {
-        if (!phone) {
-          try {
-            const evoUrl = process.env.EVOLUTION_API_URL || 'http://localhost:8080';
-            const stateRes = await axios.get(`${evoUrl}/instance/connectionState/${instance}`, getEvoHeaders(requestApiKey));
-            phone = stateRes.data?.instance?.phone || stateRes.data?.instance?.ownerJid || null;
-            if (phone && typeof phone === 'string') phone = phone.split('@')[0];
-          } catch (e) {
-            console.error('Error fetching real phone in fallback:', e.message);
-          }
-        }
-
-        console.log(`🔌 [Webhook] Connection Update: Instancia ${instance} -> State: ${state}, Phone: ${phone || 'N/A'}`);
-
-        if (phone) {
-          // Encontrar tenant por nombre de instancia
-          const tenantPrefix = instance.replace('bot_prod_', '').substring(0, 8);
-          const tenants = await prisma.tenant.findMany({ select: { id: true, name: true, connLimit: true } });
-          const matchingTenant = tenants.find(t => t.id.toLowerCase().startsWith(tenantPrefix.toLowerCase()));
-          
-          if (matchingTenant) {
-             await validateAndRegisterWhatsAppConnection(matchingTenant.id, instance, phone);
-             // Persistir estado real de conexión (Evolution open -> CONNECTED)
-             await prisma.registeredWhatsAppNumber.updateMany({
-               where: { instanceName: instance, tenantId: matchingTenant.id },
-               data: { connectionState: velionState, connectionStateUpdatedAt: new Date() }
-             });
-          }
-        }
-      } else {
-        console.log(`🔌 [Webhook] Connection Update: Instancia ${instance} -> State: ${state} (Velion: ${velionState})`);
-        
-        // Para close/connecting actualizamos la DB sin crear el registro si no existe
-        if (instance && instance.startsWith('bot_prod_')) {
-          const tenantPrefix = instance.replace('bot_prod_', '').substring(0, 8);
-          const tenants = await prisma.tenant.findMany({ select: { id: true, name: true } });
-          const matchingTenant = tenants.find(t => t.id.toLowerCase().startsWith(tenantPrefix.toLowerCase()));
-          
-          if (matchingTenant) {
-            await prisma.registeredWhatsAppNumber.updateMany({
-              where: { instanceName: instance, tenantId: matchingTenant.id },
-              data: { connectionState: velionState, connectionStateUpdatedAt: new Date() }
-            });
-          }
+      if (state === 'open' && !phone && instance) {
+        try {
+          const evoUrl = process.env.EVOLUTION_API_URL || 'http://localhost:8080';
+          const stateRes = await axios.get(`${evoUrl}/instance/connectionState/${instance}`, getEvoHeaders(requestApiKey));
+          phone = stateRes.data?.instance?.phone || stateRes.data?.instance?.ownerJid || null;
+          if (phone && typeof phone === 'string') phone = phone.split('@')[0];
+        } catch (e) {
+          console.error('Error fetching real phone in fallback:', e.message);
         }
       }
+
+      console.log(`🔌 [Webhook] Connection Update: Instancia ${instance} -> State: ${state}, Phone: ${phone || 'N/A'}`);
+
+      await handleConnectionUpdateWebhook({
+        instance,
+        state,
+        phone,
+        prisma,
+        validateAndRegister: validateAndRegisterWhatsAppConnection
+      });
+
       return; // Fin del procesamiento para este evento
     }
 
@@ -1049,8 +1036,8 @@ async function _processWebhookEvent(body, isMeta, provider, io, query, headers) 
     }
     normalized = evoNorm;
     instance = evoNorm.instance;
-    const tenantTag = instance ? instance.replace('bot_prod_', '').substring(0, 8) : 'sistema';
-    console.log(`[🏢 TENANT: ${tenantTag}] 📥 EVENTO: ${req.body?.event || 'N/A'} | De: +${normalized.sender} | Proveedor: EVOLUTION`);
+    const logTag = instance || 'sistema';
+    console.log(`[🏢 INSTANCIA: ${logTag}] 📥 EVENTO: ${req.body?.event || 'N/A'} | De: +${normalized.sender} | Proveedor: EVOLUTION`);
   }
 
   const { sender: clientNumber, text: userMessageText, pushName } = normalized;
@@ -1125,14 +1112,27 @@ async function _processWebhookEvent(body, isMeta, provider, io, query, headers) 
         }
       }
     } else {
-      const tenantPrefix = instance.replace('bot_prod_', '').substring(0, 8);
-      const tenants = await prisma.tenant.findMany({ select: { id: true } });
-      const matchingTenant = tenants.find(t => t.id.toLowerCase().startsWith(tenantPrefix.toLowerCase()));
-      if (!matchingTenant) {
-        console.warn(`⚠️ [Webhook Evolution] No se encontró Tenant para prefijo: ${tenantPrefix}`);
+      if (!instance || typeof instance !== 'string') {
+        console.warn('⚠️ [Webhook Evolution] Webhook recibido sin instanceName.');
         return;
       }
-      tenant = await prisma.tenant.findUnique({ where: { id: matchingTenant.id } });
+
+      // ── RESOLUCIÓN SEGURA Y MULTI-TENANT POR INSTANCIA EXACTA (messages.upsert) ──
+      // Busca en RegisteredWhatsAppNumber por instanceName exacto (soporta legacy y nuevo)
+      const registered = await (prisma.registeredWhatsAppNumber.findUnique
+        ? prisma.registeredWhatsAppNumber.findUnique({ where: { instanceName: instance }, include: { tenant: true } })
+        : prisma.registeredWhatsAppNumber.findFirst({ where: { instanceName: instance }, include: { tenant: true } }));
+
+      if (!registered) {
+        console.warn(`⚠️ [Webhook Evolution] No se encontró RegisteredWhatsAppNumber para instanceName: "${instance}". Mensaje descartado de forma segura.`);
+        return;
+      }
+
+      tenant = registered.tenant;
+      if (!tenant) {
+        tenant = await prisma.tenant.findUnique({ where: { id: registered.tenantId } });
+      }
+      console.log(`✅ [Evolution Gateway] Tenant resuelto: ${tenant?.name || 'Desconocido'} (${tenant?.id}) para instancia: ${instance}`);
     }
 
     if (!tenant) return;
