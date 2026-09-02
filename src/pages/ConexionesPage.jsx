@@ -822,11 +822,27 @@ export default function ConexionesPage() {
             </div>
           </div>
           <div className="flex flex-col items-end gap-1.5">
-            <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-bold
-              ${isMeta ? 'bg-blue-500/15 text-blue-600' : 'bg-emerald-500/15 text-emerald-600'}`}>
-              <span className={`w-2 h-2 rounded-full animate-pulse ${isMeta ? 'bg-blue-500' : 'bg-emerald-500'}`} />
-              Activo
-            </span>
+            {conn.connectionState === 'DISCONNECTED' ? (
+              <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-bold bg-red-500/15 text-red-600 dark:text-red-400">
+                <span className="w-2 h-2 rounded-full bg-red-500" />
+                Desconectado
+              </span>
+            ) : conn.connectionState === 'CONNECTING' ? (
+              <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-bold bg-yellow-500/15 text-yellow-600 dark:text-yellow-400">
+                <span className="w-2 h-2 rounded-full animate-pulse bg-yellow-500" />
+                Conectando...
+              </span>
+            ) : conn.connectionState === 'UNKNOWN' ? (
+              <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-bold bg-slate-500/15 text-slate-600 dark:text-slate-400">
+                <span className="w-2 h-2 rounded-full bg-slate-500" />
+                Estado Desconocido
+              </span>
+            ) : (
+              <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-bold ${isMeta ? 'bg-blue-500/15 text-blue-600' : 'bg-emerald-500/15 text-emerald-600'}`}>
+                <span className={`w-2 h-2 rounded-full animate-pulse ${isMeta ? 'bg-blue-500' : 'bg-emerald-500'}`} />
+                Conectado
+              </span>
+            )}
             <span className={`text-2xs font-semibold px-2 py-0.5 rounded-full ${isMeta ? 'bg-blue-500/10 text-blue-500' : 'bg-emerald-500/10 text-emerald-600'}`}>
               {isMeta ? 'Meta Cloud API' : 'Evolution QR'}
             </span>
@@ -834,15 +850,26 @@ export default function ConexionesPage() {
         </div>
 
         <div className="p-6 space-y-4">
-          <div className={`p-3.5 rounded-xl border space-y-1 ${isMeta ? 'bg-blue-500/8 border-blue-500/20 text-blue-700 dark:text-blue-400' : 'bg-emerald-500/10 border-emerald-500/20 text-emerald-700 dark:text-emerald-400'}`}>
+          <div className={`p-3.5 rounded-xl border space-y-1 ${
+            conn.connectionState === 'DISCONNECTED' 
+              ? 'bg-red-500/10 border-red-500/20 text-red-700 dark:text-red-400'
+              : isMeta 
+                ? 'bg-blue-500/8 border-blue-500/20 text-blue-700 dark:text-blue-400' 
+                : 'bg-emerald-500/10 border-emerald-500/20 text-emerald-700 dark:text-emerald-400'
+          }`}>
             <p className="text-xs font-bold flex items-center gap-1.5">
-              <CheckCircle size={16} weight="fill" />
-              {isMeta ? 'Conectado vía Meta Cloud API Oficial' : 'WhatsApp vinculado exitosamente - Bot Activo'}
+              {conn.connectionState === 'DISCONNECTED' ? (
+                <><CheckCircle size={16} weight="fill" className="text-red-500" /> Requiere Reconexión</>
+              ) : (
+                <><CheckCircle size={16} weight="fill" /> {isMeta ? 'Conectado vía Meta Cloud API Oficial' : 'WhatsApp vinculado exitosamente - Bot Activo'}</>
+              )}
             </p>
             <p className="text-2xs opacity-90">
-              {isMeta
-                ? 'Los mensajes se procesan a través de la Graph API de Meta.'
-                : 'La IA está respondiendo mensajes de clientes en tiempo real.'}
+              {conn.connectionState === 'DISCONNECTED'
+                ? 'WhatsApp desconectado. Verifica la conexión o vuelve a vincularlo si la sesión fue cerrada.'
+                : isMeta
+                  ? 'Los mensajes se procesan a través de la Graph API de Meta.'
+                  : 'La IA está respondiendo mensajes de clientes en tiempo real.'}
             </p>
           </div>
 

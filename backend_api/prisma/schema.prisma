@@ -251,10 +251,12 @@ model RegisteredWhatsAppNumber {
   metaAccessToken   String?
   metaPhoneNumberId String?
   metaWabaId        String?
-  provider          String   @default("EVOLUTION")
-  updatedAt         DateTime @updatedAt
+  provider          String    @default("EVOLUTION")
+  updatedAt         DateTime  @updatedAt
   instanceName      String?
-  tenant            Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  connectionState   String    @default("UNKNOWN")
+  connectionStateUpdatedAt DateTime? @default(now())
+  tenant            Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
 }
 
 model Order {

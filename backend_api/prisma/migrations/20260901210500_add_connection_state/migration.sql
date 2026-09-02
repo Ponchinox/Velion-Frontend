@@ -1,0 +1,3 @@
+ALTER TABLE "RegisteredWhatsAppNumber" 
+  ADD COLUMN "connectionState" TEXT NOT NULL DEFAULT 'UNKNOWN',
+  ADD COLUMN "connectionStateUpdatedAt" TIMESTAMP(3) DEFAULT CURRENT_TIMESTAMP;

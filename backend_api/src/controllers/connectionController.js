@@ -1,6 +1,7 @@
 import axios from 'axios';
 import prisma from '../db.js';
 import { validateAndRegisterWhatsAppConnection } from '../services/antiFraudService.js';
+import { determineReconciliationUpdates, applyReconciliationUpdates } from '../utils/connectionSyncLogic.js';
 
 /**
  * GET /api/connections/provider
@@ -16,7 +17,7 @@ export async function getProvider(req, res) {
       select: { connLimit: true }
     });
 
-    const connections = await prisma.registeredWhatsAppNumber.findMany({
+    let connections = await prisma.registeredWhatsAppNumber.findMany({
       where: { tenantId },
       orderBy: { createdAt: 'desc' },
       select: {
@@ -26,9 +27,29 @@ export async function getProvider(req, res) {
         metaPhoneNumberId: true,
         metaWabaId: true,
         instanceName: true,
-        // metaAccessToken intencionalmente omitido por seguridad
+        connectionState: true,
+        connectionStateUpdatedAt: true
       },
     });
+
+    // ── RECONCILIACIÓN DEFENSIVA ──
+    const evoUrl = process.env.EVOLUTION_API_URL || 'http://localhost:8080';
+    const headers = getEvoHeaders();
+
+    const fetchEvolutionState = async (conn) => {
+      try {
+        const stateRes = await axios.get(`${evoUrl}/instance/connectionState/${conn.instanceName}`, {
+          ...headers,
+          timeout: 4000
+        });
+        return { state: stateRes.data?.instance?.state };
+      } catch (err) {
+        throw { status: err.response?.status || 500 };
+      }
+    };
+
+    const updates = await determineReconciliationUpdates(connections, fetchEvolutionState);
+    await applyReconciliationUpdates(updates, prisma);
 
     const activeConnectionsCount = connections.length;
 

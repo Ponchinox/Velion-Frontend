@@ -1,5 +1,6 @@
 import axios from 'axios';
 import prisma from '../db.js';
+import { mapEvolutionConnectionState } from '../utils/connectionSyncLogic.js';
 import { generateAIResponse } from '../services/aiService.js';
 import * as flowService from '../services/flowService.js';
 import { validateAndRegisterWhatsAppConnection } from '../services/antiFraudService.js';
@@ -990,6 +991,9 @@ async function _processWebhookEvent(body, isMeta, provider, io, query, headers) 
         phone = phone.split('@')[0];
       }
 
+      // Mapear estado de Evolution a estado de Velion
+      let velionState = mapEvolutionConnectionState(state);
+
       if (state === 'open') {
         if (!phone) {
           try {
@@ -1012,10 +1016,29 @@ async function _processWebhookEvent(body, isMeta, provider, io, query, headers) 
           
           if (matchingTenant) {
              await validateAndRegisterWhatsAppConnection(matchingTenant.id, instance, phone);
+             // Persistir estado real de conexión (Evolution open -> CONNECTED)
+             await prisma.registeredWhatsAppNumber.updateMany({
+               where: { instanceName: instance, tenantId: matchingTenant.id },
+               data: { connectionState: velionState, connectionStateUpdatedAt: new Date() }
+             });
           }
         }
       } else {
-        console.log(`🔌 [Webhook] Connection Update: Instancia ${instance} -> State: ${state}`);
+        console.log(`🔌 [Webhook] Connection Update: Instancia ${instance} -> State: ${state} (Velion: ${velionState})`);
+        
+        // Para close/connecting actualizamos la DB sin crear el registro si no existe
+        if (instance && instance.startsWith('bot_prod_')) {
+          const tenantPrefix = instance.replace('bot_prod_', '').substring(0, 8);
+          const tenants = await prisma.tenant.findMany({ select: { id: true, name: true } });
+          const matchingTenant = tenants.find(t => t.id.toLowerCase().startsWith(tenantPrefix.toLowerCase()));
+          
+          if (matchingTenant) {
+            await prisma.registeredWhatsAppNumber.updateMany({
+              where: { instanceName: instance, tenantId: matchingTenant.id },
+              data: { connectionState: velionState, connectionStateUpdatedAt: new Date() }
+            });
+          }
+        }
       }
       return; // Fin del procesamiento para este evento
     }
