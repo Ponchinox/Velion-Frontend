@@ -410,3 +410,67 @@ test('17. schema.prisma contiene constraint @unique en RegisteredWhatsAppNumber.
   assert.ok(instanceNameLine, 'Debe existir la línea instanceName en schema.prisma');
   assert.strictEqual(instanceNameLine.includes('@unique'), true, 'instanceName DEBE tener la constraint @unique');
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 18-19. GETSTATUS (CONNECTIONCONTROLLER) REFERENCEERROR REGRESSION
+// ─────────────────────────────────────────────────────────────────────────────
+
+test('18. getStatus (connectionController) con error de red/404 NO lanza ReferenceError y devuelve instanceName correcto', async () => {
+  const { getStatus } = await import('./src/controllers/connectionController.js');
+
+  const tenantId = '11111111-2222-3333-4444-555555555555';
+  let jsonResult = null;
+  let statusCode = 200;
+
+  const req = {
+    user: { tenantId },
+    query: { instanceName: 'bot_prod_12345678' }
+  };
+  const res = {
+    status: (code) => {
+      statusCode = code;
+      return res;
+    },
+    json: (data) => {
+      jsonResult = data;
+      return res;
+    }
+  };
+
+  // Esta llamada entra al bloque catch porque Evolution API (localhost:8080) no responde.
+  // En la versión con bug, esto lanzaba ReferenceError: instanceName is not defined.
+  await assert.doesNotReject(async () => {
+    await getStatus(req, res);
+  }, 'getStatus NO debe lanzar ReferenceError');
+
+  assert.ok(jsonResult, 'Debe devolver un objeto JSON');
+  assert.strictEqual(jsonResult.status, 'close');
+  assert.strictEqual(jsonResult.instanceName, 'bot_prod_12345678', 'Debe preservar el instanceName consultado');
+});
+
+test('19. getStatus (connectionController) sin conexión persistida y sin query usa fallback getEvoInstanceName sin ReferenceError', async () => {
+  const { getStatus } = await import('./src/controllers/connectionController.js');
+
+  const tenantId = '99999999-8888-7777-6666-555555555555';
+  let jsonResult = null;
+
+  const req = {
+    user: { tenantId },
+    query: {}
+  };
+  const res = {
+    status: () => res,
+    json: (data) => {
+      jsonResult = data;
+      return res;
+    }
+  };
+
+  await assert.doesNotReject(async () => {
+    await getStatus(req, res);
+  });
+
+  assert.ok(jsonResult);
+  assert.strictEqual(jsonResult.status, 'close');
+  assert.strictEqual(jsonResult.instanceName, `bot_prod_${tenantId}`, 'Debe usar el fallback legítimo con UUID completo');
+});

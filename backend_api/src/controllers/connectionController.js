@@ -250,25 +250,31 @@ export async function createMetaInstance(req, res) {
  * Consulta si la instancia está conectada o desconectada
  */
 export async function getStatus(req, res) {
-  try {
-    const tenantId = req.user.tenantId;
-    if (!tenantId) {
-      return res.status(400).json({ error: 'El usuario no está asociado a ningún Tenant.' });
-    }
+  const tenantId = req.user?.tenantId;
+  if (!tenantId) {
+    return res.status(400).json({ error: 'El usuario no está asociado a ningún Tenant.' });
+  }
 
-    let instanceName = req.query.instanceName;
-    if (!instanceName) {
+  let effectiveInstanceName = req.query.instanceName;
+  if (!effectiveInstanceName) {
+    try {
       const existingConn = await prisma.registeredWhatsAppNumber.findFirst({
         where: { tenantId },
         orderBy: { createdAt: 'desc' },
         select: { instanceName: true }
       });
-      instanceName = existingConn?.instanceName || getEvoInstanceName(tenantId);
+      effectiveInstanceName = existingConn?.instanceName || getEvoInstanceName(tenantId);
+    } catch (dbErr) {
+      console.error('⚠️ [Connections Controller] Error buscando conexión en BD para getStatus:', dbErr.message);
+      effectiveInstanceName = getEvoInstanceName(tenantId);
     }
-    const evoUrl = process.env.EVOLUTION_API_URL || 'http://localhost:8080';
+  }
 
+  const evoUrl = process.env.EVOLUTION_API_URL || 'http://localhost:8080';
+
+  try {
     const response = await axios.get(
-      `${evoUrl}/instance/connectionState/${instanceName}`,
+      `${evoUrl}/instance/connectionState/${effectiveInstanceName}`,
       getEvoHeaders()
     );
 
@@ -278,18 +284,18 @@ export async function getStatus(req, res) {
     if (state === 'open') {
       if (!phone) {
         const registered = await prisma.registeredWhatsAppNumber.findFirst({
-          where: { instanceName }
+          where: { instanceName: effectiveInstanceName }
         });
         if (registered) {
           phone = registered.phoneNumber;
         }
       }
 
-      const validation = await validateAndRegisterWhatsAppConnection(tenantId, instanceName, phone);
+      const validation = await validateAndRegisterWhatsAppConnection(tenantId, effectiveInstanceName, phone);
       if (!validation.allowed) {
         return res.status(403).json({
           status: 'close',
-          instanceName,
+          instanceName: effectiveInstanceName,
           phone: null,
           error: validation.errorMessage,
         });
@@ -298,21 +304,21 @@ export async function getStatus(req, res) {
 
     return res.json({
       status: state === 'open' ? 'open' : 'close',
-      instanceName,
+      instanceName: effectiveInstanceName,
       phone,
     });
   } catch (error) {
     if (error.response && error.response.status === 404) {
       return res.json({
         status: 'close',
-        instanceName: instanceName || getEvoInstanceName(req.user.tenantId),
+        instanceName: effectiveInstanceName,
         phone: null,
       });
     }
     console.error('❌ [Connections Controller] Error al obtener estado:', error.response?.data || error.message);
     return res.json({
       status: 'close',
-      instanceName: instanceName || getEvoInstanceName(req.user.tenantId),
+      instanceName: effectiveInstanceName,
       error: 'Evolution API no responde.',
     });
   }
