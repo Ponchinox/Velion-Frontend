@@ -15,6 +15,7 @@ import { evaluateAiBudgetGuard } from '../services/aiBudgetGuardService.js';
 import {
   markMessageAsSentByAi as _trackerMarkAi,
   isAutomatedMessage,
+  isVelionHumanHandoffAlert,
 } from '../services/aiMessageTracker.js';
 import { activateHumanHandoff } from '../services/humanHandoffService.js';
 import { isHandoffActive } from '../services/humanHandoffGate.js';
@@ -224,6 +225,14 @@ export function incrementTenantAiEpoch(tenantId) {
 // markMessageAsSentByAi es exportada para compatibilidad con importaciones externas
 export function markMessageAsSentByAi(textOrId, opts = {}) {
   _trackerMarkAi(textOrId, opts);
+}
+
+/**
+ * Construye la plantilla oficial de alerta WhatsApp de Human Handoff para el comerciante.
+ */
+export function buildHumanHandoffAlert(clientNumber, reason) {
+  const cleanReason = String(reason || 'Solicitud de asesor humano').trim().slice(0, 120);
+  return `🚨 *ALERTA DE ASESOR REQUERIDO* 🚨\nEl cliente *+${clientNumber}* requiere atención de un asesor humano.\n*Motivo:* ${cleanReason}\n¡Por favor, entra al chat y atiéndelo!`;
 }
 
 // Cache para deduplicación de webhooks entrantes (5 minutos de TTL)
@@ -1201,8 +1210,29 @@ async function _processWebhookEvent(body, isMeta, provider, io, query, headers) 
       const key = normalized.key || {};
       const msgId = key.id;
 
+      // ── DEFENSA DETERMINÍSTICA STATELESS DE ALERTA ADMINISTRATIVA (A + B + C) ──
+      // A. fromMe === true (garantizado por el bloque if)
+      // B. remoteJid / cleanPhone corresponde al número administrativo de notificaciones del tenant
+      // C. text coincide estrictamente con la plantilla propia de alerta de VELION
+      let isHandoffAlert = false;
+      try {
+        const rawNotifPhone = await resolveNotificationPhone(tenant.id, tenant);
+        const adminPhone = sanitizePhoneForEvo(rawNotifPhone);
+        if (adminPhone) {
+          const destPhoneClean = sanitizePhoneForEvo(cleanPhone);
+          const destJidClean = sanitizePhoneForEvo(String(cleanJid || '').split('@')[0]);
+          const isAdminDest = (destPhoneClean && destPhoneClean === adminPhone) || 
+                              (destJidClean && destJidClean === adminPhone);
+          if (isAdminDest && isVelionHumanHandoffAlert(userMessageText)) {
+            isHandoffAlert = true;
+          }
+        }
+      } catch (errAlertCheck) {
+        console.warn('⚠️ [Human Handoff] Error al verificar destino administrativo para alerta handoff:', errAlertCheck.message);
+      }
+
       // Usa aiMessageTracker (RAM + PostgreSQL) en lugar del sentByAiCache local de 60s
-      const isAiMessage = await isAutomatedMessage({
+      const isAiMessage = isHandoffAlert || await isAutomatedMessage({
         tenantId: tenant.id,
         chatId: chat.id,
         msgId,
@@ -1211,7 +1241,7 @@ async function _processWebhookEvent(body, isMeta, provider, io, query, headers) 
       });
 
       if (isAiMessage) {
-        console.log(`🤖 [Webhook Evolution] Mensaje saliente de IA verificado para +${clientNumber}.`);
+        console.log(`🤖 [Webhook Evolution] Mensaje saliente de IA verificado para +${clientNumber}.${isHandoffAlert ? ' (Defensa determinística de alerta administrativa)' : ''}`);
       } else {
         // Intervención humana real del comerciante desde WhatsApp
         console.log(`👤 [Human Handoff] Intervención humana detectada en +${clientNumber}. Pausando bot 30 min...`);
@@ -1943,7 +1973,7 @@ ${catalogIndexCsv}
               const rawDestPhone = await resolveNotificationPhone(tenant.id, tenantDetails);
               const destPhone = sanitizePhoneForEvo(rawDestPhone);
               if (destPhone) {
-                const alertMessage = `🚨 *ALERTA DE ASESOR REQUERIDO* 🚨\nEl cliente *+${clientNumber}* requiere atención de un asesor humano.\n*Motivo:* ${cleanReason}\n¡Por favor, entra al chat y atiéndelo!`;
+                const alertMessage = buildHumanHandoffAlert(clientNumber, cleanReason);
                 markMessageAsSentByAi(alertMessage, { tenantId: tenant.id });
                 try {
                   const alertMsgId = await gatewaySendText({ tenantId: tenant.id, to: destPhone, text: alertMessage });
@@ -2351,7 +2381,7 @@ Atributos/Tags: ${Array.isArray(product.tags) ? product.tags.join(', ') : ''}
       const destPhone = sanitizePhoneForEvo(rawDestPhone);
       if (destPhone) {
         for (const reason of handoffMatches) {
-          const alertMessage = `🚨 *ALERTA DE ASESOR REQUERIDO* 🚨\nEl cliente *+${clientNumber}* requiere atención de un asesor humano.\n*Motivo / Último mensaje:* ${reason}\n¡Por favor, entra al chat y atiéndelo!`;
+          const alertMessage = buildHumanHandoffAlert(clientNumber, reason);
           try {
             markMessageAsSentByAi(alertMessage, { tenantId: tenant.id });
             const alertMsgId = await gatewaySendText({

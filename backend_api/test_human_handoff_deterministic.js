@@ -1,7 +1,15 @@
 import assert from 'node:assert';
 import { isHandoffActive } from './src/services/humanHandoffGate.js';
-import { isAutomatedMessage, markMessageAsSentByAi } from './src/services/aiMessageTracker.js';
-import { REQUEST_HUMAN_HANDOFF_DECLARATION } from './src/controllers/whatsappController.js';
+import { 
+  isAutomatedMessage, 
+  markMessageAsSentByAi, 
+  normalizeTrackerText, 
+  isVelionHumanHandoffAlert 
+} from './src/services/aiMessageTracker.js';
+import { 
+  REQUEST_HUMAN_HANDOFF_DECLARATION, 
+  buildHumanHandoffAlert 
+} from './src/controllers/whatsappController.js';
 
 console.log('======================================================================');
 console.log('🧪 VELION DETERMINISTIC HUMAN HANDOFF & POST-GEN GATE SUITE');
@@ -1202,6 +1210,192 @@ async function main() {
       handoffTenantB = true;
     }
     assert.strictEqual(handoffTenantB, true, 'Tenant B ejecuta su handoff legítimamente sin contaminación');
+  });
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // TEST 29: Normalización Canónica CRLF vs LF en Tracker
+  // ─────────────────────────────────────────────────────────────────────────
+  await runTest('TEST 29: Normalización Canónica CRLF vs LF -> Registro con \\n y consulta con \\r\\n (y viceversa) se reconocen como automáticos', async () => {
+    const textLf = 'Línea 1 de prueba\nLínea 2 con datos\nLínea 3 final';
+    const textCrlf = 'Línea 1 de prueba\r\nLínea 2 con datos\r\nLínea 3 final';
+
+    // A. Registrar con \n -> consultar con \r\n
+    markMessageAsSentByAi(textLf, { tenantId: tenantA.id });
+    const isAutoFromCrlf = await isAutomatedMessage({
+      tenantId: tenantA.id,
+      chatId: 'chat-crlf-1',
+      msgId: 'msg-crlf-unknown-1',
+      text: textCrlf,
+      phone: '51999290001'
+    });
+    assert.strictEqual(isAutoFromCrlf, true, 'Consulta con CRLF debe coincidir con registro en LF');
+
+    // B. Registrar con \r\n -> consultar con \n
+    const textB_Crlf = 'Línea B inicial\r\nLínea B intermedia\r\nLínea B cierre';
+    const textB_Lf = 'Línea B inicial\nLínea B intermedia\nLínea B cierre';
+    markMessageAsSentByAi(textB_Crlf, { tenantId: tenantA.id });
+    const isAutoFromLf = await isAutomatedMessage({
+      tenantId: tenantA.id,
+      chatId: 'chat-crlf-2',
+      msgId: 'msg-crlf-unknown-2',
+      text: textB_Lf,
+      phone: '51999290002'
+    });
+    assert.strictEqual(isAutoFromLf, true, 'Consulta con LF debe coincidir con registro en CRLF');
+  });
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // TEST 30: Defensa Determinística Stateless sin Dependencia de RAM
+  // ─────────────────────────────────────────────────────────────────────────
+  await runTest('TEST 30: Defensa Stateless -> Alerta administrativa con CRLF y RAM vacía se clasifica como automática sin ejecutar handoff', async () => {
+    const phoneCustomer = '51999300001';
+    const phoneMerchant = '51926246740';
+    const cleanReason = 'Problema de pago en checkout';
+
+    // Alerta construida con CRLF simulando retorno real de red / Baileys
+    const alertTextWithCrlf = `🚨 *ALERTA DE ASESOR REQUERIDO* 🚨\r\nEl cliente *+${phoneCustomer}* requiere atención de un asesor humano.\r\n*Motivo:* ${cleanReason}\r\n¡Por favor, entra al chat y atiéndelo!`;
+
+    // IMPORTANTE: NO llamamos a markMessageAsSentByAi.
+    // Simulamos que el cache RAM en este proceso está 100% vacío.
+    const fromMe = true;
+    const adminPhone = '51926246740'; // notificationPhone configurado
+    const destPhoneClean = phoneMerchant.replace(/\D/g, '');
+
+    // Evaluación determinística A + B + C
+    let isHandoffAlert = false;
+    const isAdminDest = (destPhoneClean === adminPhone);
+    if (fromMe && isAdminDest && isVelionHumanHandoffAlert(alertTextWithCrlf)) {
+      isHandoffAlert = true;
+    }
+
+    // Clasificación final del webhook
+    const isAiMessage = isHandoffAlert || await isAutomatedMessage({
+      tenantId: tenantA.id,
+      chatId: 'chat-merchant-stateless',
+      msgId: 'unregistered-3EB0-stateless-id',
+      text: alertTextWithCrlf,
+      phone: phoneMerchant
+    });
+
+    let handoffExecuted = false;
+    if (!isAiMessage) {
+      handoffExecuted = true;
+    }
+
+    assert.strictEqual(isHandoffAlert, true, 'isVelionHumanHandoffAlert debe validar positivamente la plantilla con CRLF');
+    assert.strictEqual(isAiMessage, true, 'Webhook clasifica como automático sin requerir pre/post-registro en RAM');
+    assert.strictEqual(handoffExecuted, false, 'activateHumanHandoff NUNCA debe ejecutarse (0 ejecuciones)');
+  });
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // TEST 31: Destino Erróneo -> No activa la defensa administrativa
+  // ─────────────────────────────────────────────────────────────────────────
+  await runTest('TEST 31: Destino Erróneo -> Alerta enviada a número que no es notificationPhone no activa la defensa administrativa', async () => {
+    const phoneWrong = '51999999999'; // Número ajeno / cliente ordinario
+    const alertText = buildHumanHandoffAlert('51999310001', 'Consulta general');
+
+    const fromMe = true;
+    const adminPhone = '51926246740'; // notificationPhone legítimo
+    const destPhoneClean = phoneWrong.replace(/\D/g, '');
+
+    // Condición B debe fallar porque destPhone != adminPhone
+    let isHandoffAlert = false;
+    const isAdminDest = (destPhoneClean === adminPhone);
+    if (fromMe && isAdminDest && isVelionHumanHandoffAlert(alertText)) {
+      isHandoffAlert = true;
+    }
+
+    // Como no está registrado en RAM y el destino no es administrativo:
+    const isAiMessage = isHandoffAlert || await isAutomatedMessage({
+      tenantId: tenantA.id,
+      chatId: 'chat-wrong-dest',
+      msgId: 'unregistered-wrong-dest-id',
+      text: alertText,
+      phone: phoneWrong
+    });
+
+    assert.strictEqual(isAdminDest, false, 'Condición B debe ser false para destinatario no administrativo');
+    assert.strictEqual(isHandoffAlert, false, 'isHandoffAlert debe ser false');
+    assert.strictEqual(isAiMessage, false, 'Debe continuar hacia la clasificación normal sin bypass indebido');
+  });
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // TEST 32: Mensaje Humano Real en Teléfono de Notificaciones
+  // ─────────────────────────────────────────────────────────────────────────
+  await runTest('TEST 32: Humano Real -> Mensaje manual en notificationPhone no se clasifica como alerta y SÍ activa handoff', async () => {
+    const phoneMerchant = '51926246740';
+    const humanManualText = 'Hola, te atiendo yo';
+
+    const fromMe = true;
+    const adminPhone = '51926246740';
+    const destPhoneClean = phoneMerchant.replace(/\D/g, '');
+
+    let isHandoffAlert = false;
+    const isAdminDest = (destPhoneClean === adminPhone);
+    if (fromMe && isAdminDest && isVelionHumanHandoffAlert(humanManualText)) {
+      isHandoffAlert = true;
+    }
+
+    const isAiMessage = isHandoffAlert || await isAutomatedMessage({
+      tenantId: tenantA.id,
+      chatId: 'chat-merchant-human',
+      msgId: 'manual-human-3EB0-id',
+      text: humanManualText,
+      phone: phoneMerchant
+    });
+
+    let handoffExecuted = false;
+    if (!isAiMessage) {
+      handoffExecuted = true;
+    }
+
+    assert.strictEqual(isHandoffAlert, false, 'Texto humano manual no debe coincidir con la plantilla de alerta');
+    assert.strictEqual(isAiMessage, false, 'Mensaje manual no debe ser automático');
+    assert.strictEqual(handoffExecuted, true, 'HUMAN_INTERVENTION real SÍ debe ejecutarse ante texto del asesor');
+  });
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // TEST 33: Aislamiento Multi-Tenant de Destinos Administrativos
+  // ─────────────────────────────────────────────────────────────────────────
+  await runTest('TEST 33: Multi-Tenant -> Alerta de Tenant A enviada a su notificationPhone no activa defensa en Tenant B', async () => {
+    const phoneMerchantA = '51926246740';
+    const phoneMerchantB = '51988888888';
+
+    const alertText = buildHumanHandoffAlert('51999330001', 'Alerta multitenant');
+    const fromMe = true;
+
+    // Supongamos que llega un evento evaluado en el contexto de Tenant B,
+    // pero el destinatario en el webhook es el teléfono del comerciante A
+    const adminPhoneB = phoneMerchantB;
+    const incomingPhoneClean = phoneMerchantA.replace(/\D/g, '');
+
+    let isHandoffAlertTenantB = false;
+    const isAdminDestTenantB = (incomingPhoneClean === adminPhoneB);
+    if (fromMe && isAdminDestTenantB && isVelionHumanHandoffAlert(alertText)) {
+      isHandoffAlertTenantB = true;
+    }
+
+    assert.strictEqual(isAdminDestTenantB, false, 'Destino de Tenant A no es adminPhone de Tenant B');
+    assert.strictEqual(isHandoffAlertTenantB, false, 'Defensa de Tenant B rechaza mensaje de Tenant A');
+  });
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // TEST 34: Plantillas Parecidas pero No Exactas son Rechazadas
+  // ─────────────────────────────────────────────────────────────────────────
+  await runTest('TEST 34: Plantillas Parecidas -> Solo la estructura estricta de VELION es aceptada', async () => {
+    const impostor1 = 'ALERTA DE ASESOR: yo escribí esto manualmente';
+    const impostor2 = '🚨 *ALERTA DE ASESOR REQUERIDO* 🚨 pero esto es un texto adulterado';
+    const impostor3 = 'El cliente requiere atención de un asesor humano.';
+    const impostor4 = '¡Por favor, entra al chat y atiéndelo!';
+    const legitimateWithRegexFormat = `🚨 *ALERTA DE ASESOR REQUERIDO* 🚨\nEl cliente *+51999340001* requiere atención de un asesor humano.\n*Motivo / Último mensaje:* Necesito hablar con alguien\n¡Por favor, entra al chat y atiéndelo!`;
+
+    assert.strictEqual(isVelionHumanHandoffAlert(impostor1), false, 'Impostor 1 debe ser false');
+    assert.strictEqual(isVelionHumanHandoffAlert(impostor2), false, 'Impostor 2 debe ser false');
+    assert.strictEqual(isVelionHumanHandoffAlert(impostor3), false, 'Impostor 3 debe ser false');
+    assert.strictEqual(isVelionHumanHandoffAlert(impostor4), false, 'Impostor 4 debe ser false');
+    assert.strictEqual(isVelionHumanHandoffAlert(''), false, 'Texto vacío debe ser false');
+    assert.strictEqual(isVelionHumanHandoffAlert(null), false, 'null debe ser false');
+    assert.strictEqual(isVelionHumanHandoffAlert(legitimateWithRegexFormat), true, 'Formato legítimo con motivo fallback debe ser true');
   });
 
   console.log('\n======================================================================');

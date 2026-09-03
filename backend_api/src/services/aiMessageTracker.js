@@ -30,6 +30,49 @@ const sentTextCache = new Map();
 const CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutos de retención
 
 /**
+ * Normaliza canónicamente texto para el tracker y para comparación de mensajes.
+ * Convierte CRLF / CR en LF y recorta espacios al inicio y final.
+ * NO realiza reemplazos agresivos que unan palabras.
+ *
+ * @param {string} text
+ * @returns {string}
+ */
+export function normalizeTrackerText(text) {
+  return String(text || '')
+    .replace(/\r\n?/g, '\n')
+    .trim();
+}
+
+/**
+ * Detecta si un texto coincide estrictamente con la plantilla oficial de alerta
+ * administrativa de human handoff emitida por el backend de VELION.
+ *
+ * Exige:
+ * 1. Encabezado exacto de alerta
+ * 2. Sufijo exacto de acción
+ * 3. Mención del cliente
+ * 4. Etiqueta de motivo
+ *
+ * @param {string} text
+ * @returns {boolean}
+ */
+export function isVelionHumanHandoffAlert(text) {
+  if (!text) return false;
+  const normalized = normalizeTrackerText(text);
+
+  // 1. Encabezado exacto
+  if (!normalized.startsWith('🚨 *ALERTA DE ASESOR REQUERIDO* 🚨')) return false;
+  // 2. Sufijo exacto
+  if (!normalized.endsWith('¡Por favor, entra al chat y atiéndelo!')) return false;
+  // 3. Estructura intermedia: identificación de cliente
+  if (!normalized.includes('requiere atención de un asesor humano.')) return false;
+  // 4. Estructura intermedia: motivo (soporta tanto tool formal '*Motivo:*' como regex fallback '*Motivo / Último mensaje:*')
+  if (!/\*Motivo( \/ Último mensaje)?:\*/.test(normalized)) return false;
+
+  return true;
+}
+
+/**
  * Registra un mensaje saliente como generado automáticamente por IA/Sistema/Flujo/Campaña.
  *
  * @param {string|object} textOrIdOrOpts - ID del mensaje, texto o payload de opciones
@@ -53,11 +96,11 @@ export function markMessageAsSentByAi(textOrIdOrOpts, opts = {}) {
     chatId = textOrIdOrOpts.chatId || chatId;
     origin = textOrIdOrOpts.origin || origin;
   } else if (typeof textOrIdOrOpts === 'string') {
-    const clean = textOrIdOrOpts.trim();
+    const clean = normalizeTrackerText(textOrIdOrOpts);
     if (!clean) return;
 
-    if (!clean.includes(' ')) {
-      // Sin espacios: puede ser consultado como msgId o como text
+    if (!clean.includes(' ') && !clean.includes('\n')) {
+      // Sin espacios ni saltos de línea: puede ser consultado como msgId o como text
       msgId = clean;
       text = clean;
     } else {
@@ -81,7 +124,7 @@ export function markMessageAsSentByAi(textOrIdOrOpts, opts = {}) {
 
   // Registrar Texto en cache con aislamiento de tenant y chat
   if (text) {
-    const cleanText = String(text).trim();
+    const cleanText = normalizeTrackerText(text);
     if (cleanText) {
       // Clave scoped por tenant y chat
       const scopedKey = `${tenantId || '*'}:${chatId || '*'}:${cleanText}`;
@@ -122,7 +165,7 @@ export function markMessageAsSentByAi(textOrIdOrOpts, opts = {}) {
  */
 export async function isAutomatedMessage({ tenantId, chatId, msgId, text, phone }) {
   const cleanMsgId = msgId ? String(msgId).trim() : '';
-  const cleanText = text ? String(text).trim() : '';
+  const cleanText = normalizeTrackerText(text);
   const cleanPhone = phone ? String(phone).replace(/\D/g, '') : '';
   const now = Date.now();
 
