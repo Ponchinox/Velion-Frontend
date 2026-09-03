@@ -222,8 +222,8 @@ export function incrementTenantAiEpoch(tenantId) {
 
 // ── aiMessageTracker: delegamos al servicio de dos capas (RAM + PostgreSQL) ──
 // markMessageAsSentByAi es exportada para compatibilidad con importaciones externas
-export function markMessageAsSentByAi(textOrId) {
-  _trackerMarkAi(textOrId);
+export function markMessageAsSentByAi(textOrId, opts = {}) {
+  _trackerMarkAi(textOrId, opts);
 }
 
 // Cache para deduplicación de webhooks entrantes (5 minutos de TTL)
@@ -1944,7 +1944,15 @@ ${catalogIndexCsv}
               const destPhone = sanitizePhoneForEvo(rawDestPhone);
               if (destPhone) {
                 const alertMessage = `🚨 *ALERTA DE ASESOR REQUERIDO* 🚨\nEl cliente *+${clientNumber}* requiere atención de un asesor humano.\n*Motivo:* ${cleanReason}\n¡Por favor, entra al chat y atiéndelo!`;
-                gatewaySendText({ tenantId: tenant.id, to: destPhone, text: alertMessage }).catch(() => {});
+                markMessageAsSentByAi(alertMessage, { tenantId: tenant.id });
+                try {
+                  const alertMsgId = await gatewaySendText({ tenantId: tenant.id, to: destPhone, text: alertMessage });
+                  if (alertMsgId) {
+                    markMessageAsSentByAi(alertMsgId, { tenantId: tenant.id });
+                  }
+                } catch (alertSendErr) {
+                  console.warn('⚠️ [Human Handoff] Error al enviar alerta al comerciante vía gateway:', alertSendErr.message);
+                }
               }
             } catch (alertErr) {
               console.error('⚠️ [Human Handoff] Error al notificar al comerciante:', alertErr.message);
@@ -2345,11 +2353,15 @@ Atributos/Tags: ${Array.isArray(product.tags) ? product.tags.join(', ') : ''}
         for (const reason of handoffMatches) {
           const alertMessage = `🚨 *ALERTA DE ASESOR REQUERIDO* 🚨\nEl cliente *+${clientNumber}* requiere atención de un asesor humano.\n*Motivo / Último mensaje:* ${reason}\n¡Por favor, entra al chat y atiéndelo!`;
           try {
-            await gatewaySendText({
+            markMessageAsSentByAi(alertMessage, { tenantId: tenant.id });
+            const alertMsgId = await gatewaySendText({
               tenantId: tenant.id,
               to: destPhone,
               text: alertMessage
             });
+            if (alertMsgId) {
+              markMessageAsSentByAi(alertMsgId, { tenantId: tenant.id });
+            }
             console.log(`🚨 [Human Handoff] Alerta enviada a +${destPhone} vía Gateway para cliente +${clientNumber}`);
           } catch (errHandoff) {
             console.error(`❌ [Human Handoff] Error al enviar alerta a +${destPhone}:`, errHandoff.message);

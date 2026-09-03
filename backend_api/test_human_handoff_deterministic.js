@@ -1052,6 +1052,158 @@ async function main() {
     assert.strictEqual(trailingGeminiSends, 0, 'Post-Gen Gate bloquea texto libre posterior');
   });
 
+  // ─────────────────────────────────────────────────────────────────────────
+  // TEST 25 (TEST A): Alerta automática al comerciante -> isAutomatedMessage=true, NO activa handoff
+  // ─────────────────────────────────────────────────────────────────────────
+  await runTest('TEST 25 (TEST A): Alerta automática al comerciante registrada -> isAutomatedMessage=true y activateHumanHandoff NO se ejecuta', async () => {
+    const phoneCustomer = '51999250001';
+    const phoneMerchant = '51926246740';
+    const alertMsgId = '3EB08BAB64D8F5771E48E7';
+    const cleanReason = 'Cliente solicita asesor humano';
+    const alertMessage = `🚨 *ALERTA DE ASESOR REQUERIDO* 🚨\nEl cliente *+${phoneCustomer}* requiere atención de un asesor humano.\n*Motivo:* ${cleanReason}\n¡Por favor, entra al chat y atiéndelo!`;
+
+    // 1. Simulación del flujo de request_human_handoff:
+    // Pre-registro por texto antes del gateway
+    markMessageAsSentByAi(alertMessage, { tenantId: tenantA.id });
+
+    // Gateway envía y devuelve alertMsgId
+    const gatewaySendText = async () => alertMsgId;
+    const returnedMsgId = await gatewaySendText();
+
+    // Post-registro por messageId
+    if (returnedMsgId) {
+      markMessageAsSentByAi(returnedMsgId, { tenantId: tenantA.id });
+    }
+
+    // 2. Simulación del webhook incoming fromMe de Evolution
+    const isAuto = await isAutomatedMessage({
+      tenantId: tenantA.id,
+      chatId: 'chat-merchant-25',
+      msgId: alertMsgId,
+      text: alertMessage,
+      phone: phoneMerchant
+    });
+
+    let handoffExecuted = false;
+    if (!isAuto) {
+      handoffExecuted = true;
+    }
+
+    assert.strictEqual(isAuto, true, 'La alerta automática debe reconocerse como isAutomatedMessage=true');
+    assert.strictEqual(handoffExecuted, false, 'activateHumanHandoff NUNCA debe ejecutarse para la alerta automática al comerciante');
+  });
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // TEST 26 (TEST B): Webhook fromMe de mensaje humano real -> isAutomatedMessage=false, SÍ activa handoff
+  // ─────────────────────────────────────────────────────────────────────────
+  await runTest('TEST 26 (TEST B): Webhook fromMe de mensaje humano real no registrado -> isAutomatedMessage=false y activateHumanHandoff SÍ se ejecuta', async () => {
+    const phoneCustomer = '51999260001';
+    const contact = await db.contact.create({ data: { tenantId: tenantA.id, phone: phoneCustomer, botPaused: false } });
+    const chat = await db.chat.create({ data: { tenantId: tenantA.id, contactId: contact.id, botPaused: false } });
+
+    const manualHumanText = 'Hola, soy el dueño del negocio y te atiendo yo directamente.';
+    const manualHumanMsgId = '3EB0999999999999999999';
+
+    // Mensaje manual NO está registrado en aiMessageTracker
+    const isAuto = await isAutomatedMessage({
+      tenantId: tenantA.id,
+      chatId: chat.id,
+      msgId: manualHumanMsgId,
+      text: manualHumanText,
+      phone: phoneCustomer
+    });
+
+    let handoffExecuted = false;
+    if (!isAuto) {
+      handoffExecuted = true;
+      contact.botPaused = true;
+      chat.botPaused = true;
+    }
+
+    assert.strictEqual(isAuto, false, 'Mensaje manual debe ser isAutomatedMessage=false');
+    assert.strictEqual(handoffExecuted, true, 'activateHumanHandoff SÍ debe ejecutarse ante intervención humana real');
+    assert.strictEqual(contact.botPaused, true, 'El bot debe quedar pausado');
+    assert.strictEqual(chat.botPaused, true, 'El chat debe quedar pausado');
+  });
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // TEST 27 (TEST C): Gateway de alerta retorna null -> Pre-registro por texto previene handoff falso
+  // ─────────────────────────────────────────────────────────────────────────
+  await runTest('TEST 27 (TEST C): Gateway de alerta retorna null -> Pre-registro por texto previene intervención humana falsa ante race conditions', async () => {
+    const phoneCustomer = '51999270001';
+    const phoneMerchant = '51926246740';
+    const cleanReason = 'Prueba gateway null';
+    const alertMessage = `🚨 *ALERTA DE ASESOR REQUERIDO* 🚨\nEl cliente *+${phoneCustomer}* requiere atención de un asesor humano.\n*Motivo:* ${cleanReason}\n¡Por favor, entra al chat y atiéndelo!`;
+
+    // Pre-registro por texto
+    markMessageAsSentByAi(alertMessage, { tenantId: tenantA.id });
+
+    // Gateway falla o retorna null
+    const gatewaySendText = async () => null;
+    const returnedMsgId = await gatewaySendText();
+    if (returnedMsgId) {
+      markMessageAsSentByAi(returnedMsgId, { tenantId: tenantA.id });
+    }
+
+    // Webhook llega con msgId desconocido o solo texto (race condition o retorno null)
+    const isAuto = await isAutomatedMessage({
+      tenantId: tenantA.id,
+      chatId: 'chat-merchant-27',
+      msgId: 'unknown-early-msg-id-888',
+      text: alertMessage,
+      phone: phoneMerchant
+    });
+
+    let handoffExecuted = false;
+    if (!isAuto) {
+      handoffExecuted = true;
+    }
+
+    assert.strictEqual(isAuto, true, 'El pre-registro por texto protege contra race conditions y retornos null');
+    assert.strictEqual(handoffExecuted, false, 'No debe ejecutarse handoff falso');
+  });
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // TEST 28 (TEST D): Aislamiento Multi-Tenant de alertas automáticas
+  // ─────────────────────────────────────────────────────────────────────────
+  await runTest('TEST 28 (TEST D): Aislamiento Multi-Tenant -> Alerta de Tenant A no contamina a Tenant B ante textos idénticos', async () => {
+    const phoneCustomer = '51999280001';
+    const phoneMerchant = '51926246740';
+    const cleanReason = 'Soporte técnico urgente';
+    const alertMessage = `🚨 *ALERTA DE ASESOR REQUERIDO* 🚨\nEl cliente *+${phoneCustomer}* requiere atención de un asesor humano.\n*Motivo:* ${cleanReason}\n¡Por favor, entra al chat y atiéndelo!`;
+    const alertMsgIdA = '3EB0_TENANT_A_ALERT_999';
+
+    // Tenant A registra su alerta con su tenantId
+    markMessageAsSentByAi(alertMessage, { tenantId: tenantA.id });
+    markMessageAsSentByAi(alertMsgIdA, { tenantId: tenantA.id });
+
+    // Verificación para Tenant A: es automático
+    const isAutoTenantA = await isAutomatedMessage({
+      tenantId: tenantA.id,
+      chatId: 'chat-a',
+      msgId: alertMsgIdA,
+      text: alertMessage,
+      phone: phoneMerchant
+    });
+    assert.strictEqual(isAutoTenantA, true, 'Tenant A reconoce su alerta como automática');
+
+    // Tenant B recibe en su webhook un mensaje idéntico (o manual) que NO fue generado por Tenant B
+    const isAutoTenantB = await isAutomatedMessage({
+      tenantId: tenantB.id,
+      chatId: 'chat-b',
+      msgId: 'manual-merchant-msg-tenant-b',
+      text: alertMessage,
+      phone: phoneMerchant
+    });
+    assert.strictEqual(isAutoTenantB, false, 'Tenant B NO debe clasificar como automática la alerta perteneciente a Tenant A');
+
+    let handoffTenantB = false;
+    if (!isAutoTenantB) {
+      handoffTenantB = true;
+    }
+    assert.strictEqual(handoffTenantB, true, 'Tenant B ejecuta su handoff legítimamente sin contaminación');
+  });
+
   console.log('\n======================================================================');
   console.log(`🎉 SUITE FINALIZADA: ${passedTests}/${totalTests} TESTS PASARON EXITOSAMENTE`);
   console.log('======================================================================\n');
