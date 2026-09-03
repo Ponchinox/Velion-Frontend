@@ -1,5 +1,5 @@
 import assert from 'node:assert';
-import { syncCommercialOrder, getCanonicalProductPrice } from './src/services/orderCommercialService.js';
+import { syncCommercialOrder, getCanonicalProductPrice, cleanCommercialDraft } from './src/services/orderCommercialService.js';
 
 console.log('======================================================================');
 console.log('🧪 VELION DETERMINISTIC ORDER PRICE & TENANT OWNERSHIP SUITE');
@@ -883,6 +883,547 @@ async function main() {
       assert.strictEqual(order.totalAmount, 600.00); // 4 * 150
       assert.strictEqual(order.items[0].quantity, 4);
     }
+  });
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // TEST 14: Post-COMPLETED no duplica orden ante llamadas subsiguientes ("gracias")
+  // ─────────────────────────────────────────────────────────────────────────
+  await runTest('TEST 14: Post-COMPLETED no duplica orden ante llamadas subsiguientes ("gracias")', async () => {
+    const cust14 = await db.customer.create({
+      data: {
+        tenantId: tenantA.id,
+        phone: '51988000014',
+        name: 'Cliente Test 14',
+        commercialState: {}
+      }
+    });
+
+    const resCreate = await syncCommercialOrder({
+      tenant: tenantA,
+      customer: cust14,
+      clientNumber: cust14.phone,
+      currentCommercialState: {},
+      args: {
+        currentStage: 'PAYMENT_PENDING',
+        customerConfirmed: true,
+        productId: productA1.id,
+        quantity: 1,
+        shippingCity: 'Lima',
+        paymentMethod: 'Yape'
+      },
+      prismaClient: db
+    });
+    assert.strictEqual(resCreate.success, true);
+    const order1Id = resCreate.state.activeOrderId;
+    assert.ok(order1Id);
+
+    const countAfterCreate = Array.from(db.orders.values()).filter(o => o.customerId === cust14.id).length;
+    assert.strictEqual(countAfterCreate, 1);
+    const alertsBefore = db.alerts.filter(a => a.type === 'NEW_ORDER').length;
+
+    // Llevar a COMPLETED
+    const resCompleted = await syncCommercialOrder({
+      tenant: tenantA,
+      customer: cust14,
+      clientNumber: cust14.phone,
+      currentCommercialState: resCreate.state,
+      args: {
+        currentStage: 'COMPLETED'
+      },
+      prismaClient: db
+    });
+    assert.strictEqual(resCompleted.success, true);
+
+    // Mensaje subsiguiente del cliente: "gracias" -> Gemini llama con currentStage='COMPLETED', intent='idle'
+    const resGracias = await syncCommercialOrder({
+      tenant: tenantA,
+      customer: cust14,
+      clientNumber: cust14.phone,
+      currentCommercialState: resCompleted.state,
+      args: {
+        currentStage: 'COMPLETED',
+        intent: 'idle'
+      },
+      prismaClient: db
+    });
+    assert.strictEqual(resGracias.success, true);
+
+    // Mensaje subsiguiente: "ok" -> llamada con solo intent='idle'
+    const resOk = await syncCommercialOrder({
+      tenant: tenantA,
+      customer: cust14,
+      clientNumber: cust14.phone,
+      currentCommercialState: resGracias.state,
+      args: {
+        intent: 'idle'
+      },
+      prismaClient: db
+    });
+    assert.strictEqual(resOk.success, true);
+
+    // Assert: cantidad de Orders sigue siendo exactamente 1
+    const countFinal = Array.from(db.orders.values()).filter(o => o.customerId === cust14.id).length;
+    assert.strictEqual(countFinal, 1, 'Debe haber exactamente 1 orden, no duplicada');
+
+    // 0 nuevas alertas NEW_ORDER
+    const alertsAfter = db.alerts.filter(a => a.type === 'NEW_ORDER').length;
+    assert.strictEqual(alertsAfter, alertsBefore, 'No deben haberse emitido nuevas alertas NEW_ORDER');
+  });
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // TEST 15: Draft comercial queda completamente limpio post-COMPLETED
+  // ─────────────────────────────────────────────────────────────────────────
+  await runTest('TEST 15: Draft comercial queda completamente limpio post-COMPLETED', async () => {
+    const cust15 = await db.customer.create({
+      data: {
+        tenantId: tenantA.id,
+        phone: '51988000015',
+        name: 'Cliente Test 15',
+        commercialState: {}
+      }
+    });
+
+    const resCreate = await syncCommercialOrder({
+      tenant: tenantA,
+      customer: cust15,
+      clientNumber: cust15.phone,
+      currentCommercialState: {},
+      args: {
+        currentStage: 'PAYMENT_PENDING',
+        customerConfirmed: true,
+        productId: productA1.id,
+        productName: productA1.name,
+        quantity: 3,
+        variant: 'Rojo',
+        shippingCity: 'Arequipa',
+        shippingAddress: 'Av. Bolognesi 123',
+        paymentMethod: 'Contraentrega',
+        budget: 500,
+        customerNeeds: 'Urgente'
+      },
+      prismaClient: db
+    });
+
+    assert.strictEqual(resCreate.state.customerConfirmed, true);
+    assert.ok(resCreate.state.activeOrderId);
+    assert.ok(resCreate.state.productId);
+
+    // Ejecutar COMPLETED
+    const resCompleted = await syncCommercialOrder({
+      tenant: tenantA,
+      customer: cust15,
+      clientNumber: cust15.phone,
+      currentCommercialState: resCreate.state,
+      args: {
+        currentStage: 'COMPLETED'
+      },
+      prismaClient: db
+    });
+
+    assert.strictEqual(resCompleted.success, true);
+
+    const finalState = (await db.customer.findUnique({ where: { id: cust15.id } })).commercialState;
+
+    // Verificar que los campos efímeros del draft fueron eliminados
+    assert.strictEqual(finalState.activeOrderId, undefined, 'activeOrderId debe ser undefined');
+    assert.strictEqual(finalState.customerConfirmed, undefined, 'customerConfirmed debe ser undefined');
+    assert.strictEqual(finalState.productId, undefined, 'productId debe ser undefined');
+    assert.strictEqual(finalState.productName, undefined, 'productName debe ser undefined');
+    assert.strictEqual(finalState.quantity, undefined, 'quantity debe ser undefined');
+    assert.strictEqual(finalState.variant, undefined, 'variant debe ser undefined');
+    assert.strictEqual(finalState.shippingCity, undefined, 'shippingCity debe ser undefined');
+    assert.strictEqual(finalState.shippingAddress, undefined, 'shippingAddress debe ser undefined');
+    assert.strictEqual(finalState.paymentMethod, undefined, 'paymentMethod debe ser undefined');
+    assert.strictEqual(finalState.budget, undefined, 'budget debe ser undefined');
+    assert.strictEqual(finalState.customerNeeds, undefined, 'customerNeeds debe ser undefined');
+    assert.strictEqual(finalState.missingFields, undefined, 'missingFields debe ser undefined');
+
+    // currentStage se mantiene COMPLETED
+    assert.strictEqual(finalState.currentStage, 'COMPLETED');
+  });
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // TEST 16: Orden PAID no es cancelada al cambiar currentStage a EXPLORING
+  // ─────────────────────────────────────────────────────────────────────────
+  await runTest('TEST 16: Orden PAID no es cancelada al cambiar currentStage a EXPLORING', async () => {
+    const cust16 = await db.customer.create({
+      data: {
+        tenantId: tenantA.id,
+        phone: '51988000016',
+        name: 'Cliente Test 16',
+        commercialState: {}
+      }
+    });
+
+    const orderPaid = await db.order.create({
+      data: {
+        tenantId: tenantA.id,
+        customerId: cust16.id,
+        status: 'PENDING',
+        paymentStatus: 'PAID', // Marcado por humano
+        totalAmount: 200.00
+      }
+    });
+
+    const alertsBefore = db.alerts.filter(a => a.type === 'ORDER_CANCELED').length;
+
+    const resExploring = await syncCommercialOrder({
+      tenant: tenantA,
+      customer: cust16,
+      clientNumber: cust16.phone,
+      currentCommercialState: { activeOrderId: orderPaid.id, productId: productA1.id, customerConfirmed: true },
+      args: {
+        currentStage: 'EXPLORING'
+      },
+      prismaClient: db
+    });
+
+    assert.strictEqual(resExploring.success, true);
+
+    const checkOrder = await db.order.findUnique({ where: { id: orderPaid.id } });
+    assert.strictEqual(checkOrder.status, 'PENDING', 'status no debe cambiar a CANCELED');
+    assert.strictEqual(checkOrder.paymentStatus, 'PAID', 'paymentStatus debe seguir PAID');
+
+    const alertsAfter = db.alerts.filter(a => a.type === 'ORDER_CANCELED').length;
+    assert.strictEqual(alertsAfter, alertsBefore, '0 ORDER_CANCELED alerts para orden PAID');
+
+    assert.strictEqual(resExploring.state.activeOrderId, undefined);
+    assert.strictEqual(resExploring.state.customerConfirmed, undefined);
+    assert.strictEqual(resExploring.state.productId, undefined);
+    assert.strictEqual(resExploring.state.currentStage, 'EXPLORING');
+  });
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // TEST 17: Orden COMPLETED no es cancelada al cambiar currentStage a EXPLORING
+  // ─────────────────────────────────────────────────────────────────────────
+  await runTest('TEST 17: Orden COMPLETED no es cancelada al cambiar currentStage a EXPLORING', async () => {
+    const cust17 = await db.customer.create({
+      data: {
+        tenantId: tenantA.id,
+        phone: '51988000017',
+        name: 'Cliente Test 17',
+        commercialState: {}
+      }
+    });
+
+    const orderCompleted = await db.order.create({
+      data: {
+        tenantId: tenantA.id,
+        customerId: cust17.id,
+        status: 'COMPLETED',
+        paymentStatus: 'PAID',
+        totalAmount: 200.00
+      }
+    });
+
+    const alertsBefore = db.alerts.filter(a => a.type === 'ORDER_CANCELED').length;
+
+    const resExploring = await syncCommercialOrder({
+      tenant: tenantA,
+      customer: cust17,
+      clientNumber: cust17.phone,
+      currentCommercialState: { activeOrderId: orderCompleted.id },
+      args: {
+        currentStage: 'EXPLORING'
+      },
+      prismaClient: db
+    });
+
+    assert.strictEqual(resExploring.success, true);
+
+    const checkOrder = await db.order.findUnique({ where: { id: orderCompleted.id } });
+    assert.strictEqual(checkOrder.status, 'COMPLETED', 'status debe permanecer COMPLETED');
+    assert.strictEqual(checkOrder.paymentStatus, 'PAID');
+
+    const alertsAfter = db.alerts.filter(a => a.type === 'ORDER_CANCELED').length;
+    assert.strictEqual(alertsAfter, alertsBefore, '0 ORDER_CANCELED alerts para orden COMPLETED');
+    assert.strictEqual(resExploring.state.activeOrderId, undefined);
+    assert.strictEqual(resExploring.state.currentStage, 'EXPLORING');
+  });
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // TEST 18: Orden VERIFYING no es cancelada al cambiar currentStage a EXPLORING
+  // ─────────────────────────────────────────────────────────────────────────
+  await runTest('TEST 18: Orden VERIFYING no es cancelada al cambiar currentStage a EXPLORING', async () => {
+    const cust18 = await db.customer.create({
+      data: {
+        tenantId: tenantA.id,
+        phone: '51988000018',
+        name: 'Cliente Test 18',
+        commercialState: {}
+      }
+    });
+
+    const orderVerifying = await db.order.create({
+      data: {
+        tenantId: tenantA.id,
+        customerId: cust18.id,
+        status: 'PENDING',
+        paymentStatus: 'VERIFYING',
+        totalAmount: 200.00
+      }
+    });
+
+    const alertsBefore = db.alerts.filter(a => a.type === 'ORDER_CANCELED').length;
+
+    const resExploring = await syncCommercialOrder({
+      tenant: tenantA,
+      customer: cust18,
+      clientNumber: cust18.phone,
+      currentCommercialState: { activeOrderId: orderVerifying.id },
+      args: {
+        currentStage: 'EXPLORING'
+      },
+      prismaClient: db
+    });
+
+    assert.strictEqual(resExploring.success, true);
+
+    const checkOrder = await db.order.findUnique({ where: { id: orderVerifying.id } });
+    assert.strictEqual(checkOrder.status, 'PENDING', 'status debe mantenerse PENDING');
+    assert.strictEqual(checkOrder.paymentStatus, 'VERIFYING', 'paymentStatus debe mantenerse VERIFYING');
+
+    const alertsAfter = db.alerts.filter(a => a.type === 'ORDER_CANCELED').length;
+    assert.strictEqual(alertsAfter, alertsBefore, '0 ORDER_CANCELED alerts para orden VERIFYING');
+    assert.strictEqual(resExploring.state.activeOrderId, undefined);
+    assert.strictEqual(resExploring.state.currentStage, 'EXPLORING');
+  });
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // TEST 19: Orden UNPAID/PENDING abandonada SI pasa a CANCELED en EXPLORING
+  // ─────────────────────────────────────────────────────────────────────────
+  await runTest('TEST 19: Orden UNPAID/PENDING abandonada SI pasa a CANCELED en EXPLORING', async () => {
+    const cust19 = await db.customer.create({
+      data: {
+        tenantId: tenantA.id,
+        phone: '51988000019',
+        name: 'Cliente Test 19',
+        commercialState: {}
+      }
+    });
+
+    const orderUnpaid = await db.order.create({
+      data: {
+        tenantId: tenantA.id,
+        customerId: cust19.id,
+        status: 'PENDING',
+        paymentStatus: 'UNPAID',
+        totalAmount: 200.00
+      }
+    });
+
+    const alertsBefore = db.alerts.filter(a => a.type === 'ORDER_CANCELED').length;
+
+    const resExploring = await syncCommercialOrder({
+      tenant: tenantA,
+      customer: cust19,
+      clientNumber: cust19.phone,
+      currentCommercialState: { activeOrderId: orderUnpaid.id, productId: productA1.id, customerConfirmed: true },
+      args: {
+        currentStage: 'EXPLORING'
+      },
+      prismaClient: db
+    });
+
+    assert.strictEqual(resExploring.success, true);
+
+    const checkOrder = await db.order.findUnique({ where: { id: orderUnpaid.id } });
+    assert.strictEqual(checkOrder.status, 'CANCELED', 'Orden UNPAID debe cancelarse');
+
+    const alertsAfter = db.alerts.filter(a => a.type === 'ORDER_CANCELED').length;
+    assert.strictEqual(alertsAfter, alertsBefore + 1, 'Debe crearse exactamente 1 alerta ORDER_CANCELED');
+
+    assert.strictEqual(resExploring.state.activeOrderId, undefined);
+    assert.strictEqual(resExploring.state.customerConfirmed, undefined);
+    assert.strictEqual(resExploring.state.productId, undefined);
+    assert.strictEqual(resExploring.state.currentStage, 'EXPLORING');
+  });
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // TEST 20: Orden ya CANCELED es NO-OP y no genera alertas duplicadas en EXPLORING
+  // ─────────────────────────────────────────────────────────────────────────
+  await runTest('TEST 20: Orden ya CANCELED es NO-OP y no genera alertas duplicadas en EXPLORING', async () => {
+    const cust20 = await db.customer.create({
+      data: {
+        tenantId: tenantA.id,
+        phone: '51988000020',
+        name: 'Cliente Test 20',
+        commercialState: {}
+      }
+    });
+
+    const orderCanceled = await db.order.create({
+      data: {
+        tenantId: tenantA.id,
+        customerId: cust20.id,
+        status: 'CANCELED',
+        paymentStatus: 'UNPAID',
+        totalAmount: 200.00
+      }
+    });
+
+    const alertsBefore = db.alerts.filter(a => a.type === 'ORDER_CANCELED').length;
+
+    for (let i = 0; i < 3; i++) {
+      const resExploring = await syncCommercialOrder({
+        tenant: tenantA,
+        customer: cust20,
+        clientNumber: cust20.phone,
+        currentCommercialState: { activeOrderId: orderCanceled.id },
+        args: {
+          currentStage: 'EXPLORING'
+        },
+        prismaClient: db
+      });
+      assert.strictEqual(resExploring.success, true);
+    }
+
+    const checkOrder = await db.order.findUnique({ where: { id: orderCanceled.id } });
+    assert.strictEqual(checkOrder.status, 'CANCELED');
+
+    const alertsAfter = db.alerts.filter(a => a.type === 'ORDER_CANCELED').length;
+    assert.strictEqual(alertsAfter, alertsBefore, '0 alertas adicionales para orden ya CANCELED');
+  });
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // TEST 21: Nueva compra legítima tras COMPLETED crea exactamente Order 2 sin afectar Order 1
+  // ─────────────────────────────────────────────────────────────────────────
+  await runTest('TEST 21: Nueva compra legitima tras COMPLETED crea Order 2 sin afectar Order 1', async () => {
+    const cust21 = await db.customer.create({
+      data: {
+        tenantId: tenantA.id,
+        phone: '51988000021',
+        name: 'Cliente Test 21',
+        commercialState: {}
+      }
+    });
+
+    // 1. Crear y completar Order 1 con Product A1 (S/ 200)
+    const resCreate1 = await syncCommercialOrder({
+      tenant: tenantA,
+      customer: cust21,
+      clientNumber: cust21.phone,
+      currentCommercialState: {},
+      args: {
+        currentStage: 'PAYMENT_PENDING',
+        customerConfirmed: true,
+        productId: productA1.id,
+        quantity: 1,
+        shippingCity: 'Lima',
+        paymentMethod: 'Yape'
+      },
+      prismaClient: db
+    });
+
+    const order1Id = resCreate1.state.activeOrderId;
+    assert.ok(order1Id);
+
+    const resComplete1 = await syncCommercialOrder({
+      tenant: tenantA,
+      customer: cust21,
+      clientNumber: cust21.phone,
+      currentCommercialState: resCreate1.state,
+      args: {
+        currentStage: 'COMPLETED'
+      },
+      prismaClient: db
+    });
+
+    // Verificar que el draft de Order 1 está limpio
+    assert.strictEqual(resComplete1.state.activeOrderId, undefined);
+    assert.strictEqual(resComplete1.state.productId, undefined);
+
+    // 2. Cliente inicia nueva compra legítima con Product A2 (S/ 150)
+    const resCreate2 = await syncCommercialOrder({
+      tenant: tenantA,
+      customer: cust21,
+      clientNumber: cust21.phone,
+      currentCommercialState: resComplete1.state,
+      args: {
+        currentStage: 'PAYMENT_PENDING',
+        customerConfirmed: true,
+        productId: productA2.id,
+        quantity: 2,
+        shippingCity: 'Trujillo',
+        paymentMethod: 'Contraentrega'
+      },
+      prismaClient: db
+    });
+
+    assert.strictEqual(resCreate2.success, true);
+    const order2Id = resCreate2.state.activeOrderId;
+    assert.ok(order2Id);
+    assert.notStrictEqual(order2Id, order1Id, 'Order 2 debe tener ID distinto a Order 1');
+
+    // Comprobar Order 1 (100% intacta)
+    const order1 = await db.order.findUnique({ where: { id: order1Id }, include: { items: true } });
+    assert.strictEqual(order1.items[0].productId, productA1.id);
+    assert.strictEqual(order1.totalAmount, 200.00);
+    assert.strictEqual(order1.shippingCity, 'Lima');
+    assert.strictEqual(order1.paymentMethod, 'Yape');
+
+    // Comprobar Order 2
+    const order2 = await db.order.findUnique({ where: { id: order2Id }, include: { items: true } });
+    assert.strictEqual(order2.tenantId, tenantA.id);
+    assert.strictEqual(order2.items[0].productId, productA2.id);
+    assert.strictEqual(order2.items[0].price, 150.00, 'Precio canónico de Product A2');
+    assert.strictEqual(order2.totalAmount, 300.00, 'Total 2 * 150 = 300');
+    assert.strictEqual(order2.shippingCity, 'Trujillo');
+    assert.strictEqual(order2.paymentMethod, 'Contraentrega');
+  });
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // TEST 22: Payment Guard: IA no puede establecer paymentStatus=PAID ni status=COMPLETED
+  // ─────────────────────────────────────────────────────────────────────────
+  await runTest('TEST 22: Payment Guard - IA no puede establecer paymentStatus=PAID ni status=COMPLETED', async () => {
+    const cust22 = await db.customer.create({
+      data: {
+        tenantId: tenantA.id,
+        phone: '51988000022',
+        name: 'Cliente Test 22',
+        commercialState: {}
+      }
+    });
+
+    const resCreate = await syncCommercialOrder({
+      tenant: tenantA,
+      customer: cust22,
+      clientNumber: cust22.phone,
+      currentCommercialState: {},
+      args: {
+        currentStage: 'PAYMENT_PENDING',
+        customerConfirmed: true,
+        productId: productA1.id,
+        quantity: 1,
+        shippingCity: 'Cusco',
+        paymentMethod: 'Yape'
+      },
+      prismaClient: db
+    });
+
+    const orderId = resCreate.state.activeOrderId;
+
+    // Intento con argumentos arbitrarios maliciosos forzando PAID y COMPLETED
+    const maliciousRes = await syncCommercialOrder({
+      tenant: tenantA,
+      customer: cust22,
+      clientNumber: cust22.phone,
+      currentCommercialState: resCreate.state,
+      args: {
+        currentStage: 'COMPLETED',
+        paymentStatus: 'PAID',
+        status: 'COMPLETED'
+      },
+      prismaClient: db
+    });
+
+    assert.strictEqual(maliciousRes.success, true);
+
+    const checkOrder = await db.order.findUnique({ where: { id: orderId } });
+    assert.notStrictEqual(checkOrder.paymentStatus, 'PAID', 'NUNCA debe ser PAID por la IA');
+    assert.notStrictEqual(checkOrder.status, 'COMPLETED', 'NUNCA debe ser COMPLETED por la IA');
+    assert.strictEqual(checkOrder.paymentStatus, 'VERIFYING', 'Debe degradar a VERIFYING');
+    assert.strictEqual(checkOrder.status, 'PENDING', 'Debe mantenerse en PENDING');
   });
 
   console.log('\n======================================================================');

@@ -18,6 +18,27 @@ export function getCanonicalProductPrice(product) {
 }
 
 /**
+ * Limpia los campos efímeros del borrador de compra en commercialState.
+ * Conserva currentStage, intent y cualquier dato permanente o no perteneciente al draft.
+ */
+export function cleanCommercialDraft(state) {
+  const cleaned = { ...state };
+  delete cleaned.activeOrderId;
+  delete cleaned.customerConfirmed;
+  delete cleaned.productId;
+  delete cleaned.productName;
+  delete cleaned.quantity;
+  delete cleaned.variant;
+  delete cleaned.shippingCity;
+  delete cleaned.shippingAddress;
+  delete cleaned.paymentMethod;
+  delete cleaned.budget;
+  delete cleaned.customerNeeds;
+  delete cleaned.missingFields;
+  return cleaned;
+}
+
+/**
  * Sincroniza el estado comercial y la orden (Order / OrderItem) de forma determinista y multi-tenant.
  *
  * @param {object} params
@@ -85,80 +106,90 @@ export async function syncCommercialOrder({
       // ─────────────────────────────────────────────────────────────────────────
       // CREACIÓN DE NUEVA ORDEN
       // ─────────────────────────────────────────────────────────────────────────
-      let verifiedProduct = null;
-      let productPrice = 0;
-
-      if (updatedState.productId) {
-        verifiedProduct = await db.product.findFirst({
-          where: {
-            id: updatedState.productId,
-            user: { tenantId: tenant.id }
-          },
-          select: { id: true, name: true, price: true, promotionalPrice: true, promoStartDate: true, promoEndDate: true }
-        });
-        if (verifiedProduct) {
-          productPrice = getCanonicalProductPrice(verifiedProduct);
-        }
-      }
-
-      const isConfirmed = Boolean(updatedState.customerConfirmed === true);
-      const hasValidProduct = Boolean(verifiedProduct);
-      const hasShippingDestination = Boolean(updatedState.shippingCity || updatedState.shippingAddress);
-      const hasPaymentMethod = Boolean(updatedState.paymentMethod);
-      const hasLogistics = hasShippingDestination && hasPaymentMethod;
-      const canCreateOrder = isConfirmed && isQtyValid && hasValidProduct && hasLogistics;
-
-      if (canCreateOrder) {
-        const quantity = parsedQty;
-        const total = quantity * productPrice;
-
-        const newOrder = await db.order.create({
-          data: {
-            tenantId: tenant.id,
-            customerId: customer.id,
-            status: orderStatus,
-            paymentStatus: payStatus,
-            paymentMethod: updatedState.paymentMethod || null,
-            shippingCity: updatedState.shippingCity || null,
-            shippingAddress: updatedState.shippingAddress || null,
-            customerNeeds: updatedState.customerNeeds || null,
-            totalAmount: total,
-            items: {
-              create: [{
-                productId: verifiedProduct.id,
-                name: verifiedProduct.name,
-                quantity: quantity,
-                price: productPrice,
-                variant: updatedState.variant || null
-              }]
-            }
-          }
-        });
-
-        updatedState.activeOrderId = newOrder.id;
-
-        await db.alert.create({
-          data: {
-            type: 'NEW_ORDER',
-            severity: 'INFO',
-            message: `📦 PEDIDO CREADO | Cliente: +${clientNumber} (${customer.name || 'Sin Nombre'}) | ${verifiedProduct.name} x${quantity}`,
-            tenantId: tenant.id
-          }
-        });
-
-        if (typeof onNotification === 'function') {
-          await onNotification({
-            type: 'NEW_ORDER',
-            orderId: newOrder.id,
-            total,
-            quantity,
-            productName: verifiedProduct.name,
-            shippingCity: updatedState.shippingCity,
-            shippingAddress: updatedState.shippingAddress
-          });
+      // COMPLETED NUNCA es trigger de creación de nueva orden
+      const creationStages = ['PAYMENT_PENDING', 'PAYMENT_VERIFIED'];
+      if (!creationStages.includes(updatedState.currentStage)) {
+        if (updatedState.currentStage === 'COMPLETED') {
+          console.log(`ℹ️ [FC update_commercial_state] Etapa COMPLETED sin activeOrderId. Limpiando draft comercial sin crear nueva orden.`);
+          updatedState = cleanCommercialDraft(updatedState);
+          updatedState.currentStage = 'COMPLETED';
         }
       } else {
-        console.log(`ℹ️ [FC update_commercial_state] Draft comercial en memoria (Requisitos Order: confirmed=${isConfirmed}, qty=${isQtyValid}, prod=${hasValidProduct}, dest=${hasShippingDestination}, pay=${hasPaymentMethod}).`);
+        let verifiedProduct = null;
+        let productPrice = 0;
+
+        if (updatedState.productId) {
+          verifiedProduct = await db.product.findFirst({
+            where: {
+              id: updatedState.productId,
+              user: { tenantId: tenant.id }
+            },
+            select: { id: true, name: true, price: true, promotionalPrice: true, promoStartDate: true, promoEndDate: true }
+          });
+          if (verifiedProduct) {
+            productPrice = getCanonicalProductPrice(verifiedProduct);
+          }
+        }
+
+        const isConfirmed = Boolean(updatedState.customerConfirmed === true);
+        const hasValidProduct = Boolean(verifiedProduct);
+        const hasShippingDestination = Boolean(updatedState.shippingCity || updatedState.shippingAddress);
+        const hasPaymentMethod = Boolean(updatedState.paymentMethod);
+        const hasLogistics = hasShippingDestination && hasPaymentMethod;
+        const canCreateOrder = isConfirmed && isQtyValid && hasValidProduct && hasLogistics;
+
+        if (canCreateOrder) {
+          const quantity = parsedQty;
+          const total = quantity * productPrice;
+
+          const newOrder = await db.order.create({
+            data: {
+              tenantId: tenant.id,
+              customerId: customer.id,
+              status: orderStatus,
+              paymentStatus: payStatus,
+              paymentMethod: updatedState.paymentMethod || null,
+              shippingCity: updatedState.shippingCity || null,
+              shippingAddress: updatedState.shippingAddress || null,
+              customerNeeds: updatedState.customerNeeds || null,
+              totalAmount: total,
+              items: {
+                create: [{
+                  productId: verifiedProduct.id,
+                  name: verifiedProduct.name,
+                  quantity: quantity,
+                  price: productPrice,
+                  variant: updatedState.variant || null
+                }]
+              }
+            }
+          });
+
+          updatedState.activeOrderId = newOrder.id;
+
+          await db.alert.create({
+            data: {
+              type: 'NEW_ORDER',
+              severity: 'INFO',
+              message: `📦 PEDIDO CREADO | Cliente: +${clientNumber} (${customer.name || 'Sin Nombre'}) | ${verifiedProduct.name} x${quantity}`,
+              tenantId: tenant.id
+            }
+          });
+
+          if (typeof onNotification === 'function') {
+            await onNotification({
+              type: 'NEW_ORDER',
+              orderId: newOrder.id,
+              total,
+              quantity,
+              productName: verifiedProduct.name,
+              shippingCity: updatedState.shippingCity,
+              shippingAddress: updatedState.shippingAddress
+            });
+          }
+        } else {
+          console.log(`ℹ️ [FC update_commercial_state] Draft comercial en memoria (Requisitos Order: confirmed=${isConfirmed}, qty=${isQtyValid}, prod=${hasValidProduct}, dest=${hasShippingDestination}, pay=${hasPaymentMethod}).`);
+        }
       }
     } else {
       // ─────────────────────────────────────────────────────────────────────────
@@ -310,39 +341,54 @@ export async function syncCommercialOrder({
       }
 
       if (updatedState.currentStage === 'COMPLETED') {
-        delete updatedState.activeOrderId;
+        updatedState = cleanCommercialDraft(updatedState);
+        updatedState.currentStage = 'COMPLETED';
       }
     }
-  } else if (updatedState.currentStage === 'EXPLORING' && updatedState.activeOrderId) {
-    // Cancelación segura con scoping multi-tenant (conservando paridad de reglas con HEAD)
-    const orderToCancel = await db.order.findFirst({
-      where: {
-        id: updatedState.activeOrderId,
-        tenantId: tenant.id
-      },
-      select: { id: true }
-    });
-
-    if (orderToCancel) {
-      console.log(`⚠️ [FC] Orden cancelada por el usuario o la IA. Actualizando estado de la orden ${orderToCancel.id} a CANCELED.`);
-      await db.order.update({
-        where: { id: orderToCancel.id },
-        data: { status: 'CANCELED' }
-      });
-
-      await db.alert.create({
-        data: {
-          type: 'ORDER_CANCELED',
-          severity: 'WARNING',
-          message: `🚫 PEDIDO CANCELADO | Cliente: +${clientNumber} (${customer.name || 'Sin Nombre'})`,
+  } else if (updatedState.currentStage === 'EXPLORING') {
+    if (updatedState.activeOrderId) {
+      // Cancelación segura con scoping multi-tenant y matriz determinística de autoridad
+      const orderToCancel = await db.order.findFirst({
+        where: {
+          id: updatedState.activeOrderId,
           tenantId: tenant.id
-        }
+        },
+        select: { id: true, status: true, paymentStatus: true }
       });
-    } else {
-      console.warn(`⚠️ [Order Security] Intento de cancelar orden inexistente o ajena al tenant ${tenant.id.slice(0, 8)}: ${updatedState.activeOrderId}`);
+
+      if (orderToCancel) {
+        // MATRIZ DE AUTORIDAD DE CANCELACIÓN:
+        // CASO A: ÚNICAMENTE si la orden está PENDING y UNPAID se autoriza la cancelación por IA
+        if (orderToCancel.status === 'PENDING' && orderToCancel.paymentStatus === 'UNPAID') {
+          console.log(`⚠️ [FC] Orden cancelada por el usuario o la IA. Actualizando estado de la orden ${orderToCancel.id} a CANCELED.`);
+          await db.order.update({
+            where: { id: orderToCancel.id },
+            data: { status: 'CANCELED' }
+          });
+
+          await db.alert.create({
+            data: {
+              type: 'ORDER_CANCELED',
+              severity: 'WARNING',
+              message: `🚫 PEDIDO CANCELADO | Cliente: +${clientNumber} (${customer.name || 'Sin Nombre'})`,
+              tenantId: tenant.id
+            }
+          });
+        } else {
+          // CASO B (VERIFYING): NO cancelar, NO modificar Order, NO alerta
+          // CASO C (PAID): PROHIBIDO cancelar automáticamente, NO modificar Order, NO alerta
+          // CASO D (COMPLETED): PROHIBIDO cancelar automáticamente, NO modificar Order, NO alerta
+          // CASO E (CANCELED): NO-OP, no volver a actualizar, no segunda alerta
+          console.log(`🛡️ [Order Security] Orden ${orderToCancel.id} en estado status="${orderToCancel.status}", paymentStatus="${orderToCancel.paymentStatus}". Cancelación automática deshabilitada. Desvinculando del draft.`);
+        }
+      } else {
+        console.warn(`⚠️ [Order Security] Intento de cancelar orden inexistente o ajena al tenant ${tenant.id.slice(0, 8)}: ${updatedState.activeOrderId}`);
+      }
     }
 
-    delete updatedState.activeOrderId;
+    // PARTE 6: Al volver a EXPLORING, limpiar siempre los campos del draft para evitar contaminar una nueva compra
+    updatedState = cleanCommercialDraft(updatedState);
+    updatedState.currentStage = 'EXPLORING';
   }
 
   // Persistir estado en el Customer
