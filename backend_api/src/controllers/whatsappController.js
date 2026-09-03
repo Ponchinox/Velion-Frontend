@@ -17,6 +17,7 @@ import {
   isAutomatedMessage,
 } from '../services/aiMessageTracker.js';
 import { activateHumanHandoff } from '../services/humanHandoffService.js';
+import { isHandoffActive } from '../services/humanHandoffGate.js';
 import { syncCommercialOrder } from '../services/orderCommercialService.js';
 
 // ── HUMAN HANDOFF: ventana de pausa manual (30 minutos) ──────────────────────
@@ -1581,9 +1582,17 @@ async function processBufferedMessage(bufferKey) {
       customer.isBotPaused = true;
     }
 
-    // --- SEGURO DE ATENCIÓN HUMANA (HUMAN HANDOFF) ---
-    if (customer.isBotPaused) {
-      console.log(`👥 [Human Handoff] Bot pausado para +${clientNumber}. Conversación atendida por asesor.`);
+    // ─── HUMAN HANDOFF PRE-GENERATION GATE ───
+    const isPreGenHandoff = await isHandoffActive({
+      tenantId: tenant.id,
+      contactId: contact?.id,
+      chatId: chat?.id,
+      phone: cleanJid || clientNumber,
+      prismaClient: prisma
+    });
+    if (isPreGenHandoff) {
+      console.log(`👥 [Human Handoff Pre-Gate] Bot pausado para +${clientNumber} (tenant: ${tenant.id.slice(0, 8)}). Cancelando generación de IA.`);
+      pendingQueues.delete(bufferKey);
       return;
     }
 
@@ -2084,6 +2093,36 @@ Atributos/Tags: ${Array.isArray(product.tags) ? product.tags.join(', ') : ''}
       return;
     }
 
+    // ─── HUMAN HANDOFF POST-GENERATION GATE (Post-Gemini) ───
+    const isPostGenHandoff = await isHandoffActive({
+      tenantId: tenant.id,
+      contactId: contact?.id,
+      chatId: chat?.id,
+      phone: cleanJid || clientNumber,
+      prismaClient: prisma
+    });
+    if (isPostGenHandoff) {
+      console.log(`👥 [Human Handoff Post-Gate] Respuesta de IA descartada porque un asesor humano tomó control para +${clientNumber} (tenant: ${tenant.id.slice(0, 8)}).`);
+      pendingQueues.delete(bufferKey);
+      if (chat?.id) {
+        try {
+          await prisma.message.create({
+            data: {
+              content: '[Respuesta de IA descartada: conversación pausada por asesor humano]',
+              senderRole: 'model',
+              status: 'ai_cancelled',
+              chatId: chat.id,
+              tenantId: tenant.id
+            }
+          });
+          console.log(`🚫 [Human Handoff Marker] Marcador ai_cancelled persistido en DB para chat ${chat.id}.`);
+        } catch (markerErr) {
+          console.error(`⚠️ [Human Handoff Marker] Error al persistir marcador:`, markerErr.message);
+        }
+      }
+      return;
+    }
+
     if (!aiResponse || aiResponse === '...') {
       // Fallback de contingencia ante caída o timeout de IA
       const timeoutFallbackText = 'Estoy teniendo una pequeña demora en este momento. Escríbeme nuevamente en unos segundos, por favor 🙏';
@@ -2358,6 +2397,20 @@ Atributos/Tags: ${Array.isArray(product.tags) ? product.tags.join(', ') : ''}
           console.log(`🤖 [AI Final Gate] Fragment discarded after typing delay because AI was disabled for +${clientNumber} (tenant: ${tenant.id}).`);
           break; // Rompe el bucle de despacho; no se envían más fragmentos
         }
+
+        // ─── HUMAN HANDOFF PRE-DISPATCH GATE (Post-Typing Check) ───
+        const isPreDispatchHandoff = await isHandoffActive({
+          tenantId: tenant.id,
+          contactId: contact?.id,
+          chatId: chat?.id,
+          phone: cleanJid || clientNumber,
+          prismaClient: prisma
+        });
+        if (isPreDispatchHandoff) {
+          console.log(`👥 [Human Handoff Pre-Dispatch Gate] Despacho interrumpido tras delay de tipeo: asesor humano intervino para +${clientNumber} (tenant: ${tenant.id.slice(0, 8)}). Abortando fragmentos restantes.`);
+          pendingQueues.delete(bufferKey);
+          break; // Rompe el bucle de despacho; no se envían más fragmentos
+        }
         
         if (item.type === 'text') {
           try {
@@ -2465,6 +2518,19 @@ Atributos/Tags: ${Array.isArray(product.tags) ? product.tags.join(', ') : ''}
       const reInjectEpoch = getTenantAiEpoch(pending.tenant?.id);
       if ((pending.epochAtCreation ?? 0) < reInjectEpoch) {
         console.log(`🚫 [AI Epoch] PendingQueue OBSOLETA para +${pending.clientNumber} (epoch=${pending.epochAtCreation ?? 0} < ${reInjectEpoch}). Descartando sin re-inyectar.`);
+        return;
+      }
+
+      // ─── HUMAN HANDOFF CHECK en re-inyección de pendingQueue ───
+      const isPendingHandoff = await isHandoffActive({
+        tenantId: pending.tenant?.id,
+        contactId: pending.contact?.id,
+        chatId: pending.chat?.id,
+        phone: pending.remoteJid || pending.clientNumber,
+        prismaClient: prisma
+      });
+      if (isPendingHandoff) {
+        console.log(`👥 [Human Handoff] PendingQueue DESCARTADA para +${pending.clientNumber} porque el bot está pausado por asesor humano.`);
         return;
       }
 
