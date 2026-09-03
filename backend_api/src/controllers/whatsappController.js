@@ -24,6 +24,22 @@ import { syncCommercialOrder } from '../services/orderCommercialService.js';
 export const HUMAN_HANDOFF_MINUTES = 30;
 export const HUMAN_HANDOFF_MS = HUMAN_HANDOFF_MINUTES * 60 * 1000;
 
+// ── DEFINICIÓN FORMAL DE FUNCTION TOOL: request_human_handoff (FASE 2) ────────
+export const REQUEST_HUMAN_HANDOFF_DECLARATION = {
+  name: 'request_human_handoff',
+  description: 'Solicita la transferencia de esta conversación a un asesor humano y pausa la automatización. Úsala cuando el cliente solicite explícitamente una persona/asesor, exista un reclamo o disputa que requiera intervención humana, o el caso quede fuera del alcance seguro del asistente.',
+  parameters: {
+    type: 'OBJECT',
+    properties: {
+      reason: {
+        type: 'STRING',
+        description: 'Motivo breve de la transferencia a un asesor humano.'
+      }
+    },
+    required: ['reason']
+  }
+};
+
 /**
  * Helper para generar los headers de autenticación del Evolution API
  */
@@ -1794,7 +1810,7 @@ Puedes usar las siguientes etiquetas dentro de tu respuesta para ejecutar accion
 
 
     
-    systemCommands += `- [HUMAN_HANDOFF: Motivo]: Transfiere a un humano si el cliente insiste agresivamente o presenta quejas complejas, pero SOLO después de haber ofrecido tu ayuda primero.\n`;
+    systemCommands += `- Transferencia a asesor humano: Llama a la herramienta 'request_human_handoff' con el motivo si el cliente solicita explícitamente hablar con una persona/asesor, presenta reclamos o quejas complejas, o el caso está fuera de tu alcance seguro. (Compatibilidad fallback: [HUMAN_HANDOFF: Motivo]).\n`;
     systemCommands += `- [BAN_USER]: Usa ESTA etiqueta como tu ÚNICA respuesta si el cliente te envía groserías o contenido inapropiado.\n`;
 
     // ENSAMBLAJE FINAL - Orden critico para maximizar la atencion del LLM
@@ -1834,9 +1850,15 @@ ${catalogIndexCsv}
 
     const systemPrompt = finalPrompt;
 
+    // ─── FLAGS DE SESIÓN PARA HUMAN HANDOFF DETERMINÍSTICO (FASE 2) ──────
+    let handoffRequestedInSession = false;
+    let handoffActivatedInSession = false;
+    let handoffConfirmationSentInSession = false;
+
     // ─── DEFINICIÓN DE HERRAMIENTAS (FUNCTION CALLING) ───────────────────
     const tools = [{
       functionDeclarations: [
+        REQUEST_HUMAN_HANDOFF_DECLARATION,
         {
           name: 'get_product_details',
           description: 'Obtiene detalles profundos de un producto (descripción larga, stock, variantes, características). Úsala ÚNICAMENTE cuando el cliente pida información específica sobre un producto que encontraste en el <catalog_index>.',
@@ -1893,6 +1915,111 @@ ${catalogIndexCsv}
 
     // ─── MANEJADOR DE HERRAMIENTAS (CALLBACK) ────────────────────────────────
     const toolsHandler = async (funcName, args) => {
+      if (funcName === 'request_human_handoff') {
+        handoffRequestedInSession = true;
+        const cleanReason = String(args?.reason || 'Solicitud de asesor humano').trim().slice(0, 120);
+        console.log(`👤 [FC] request_human_handoff invocado para +${clientNumber}. Motivo: "${cleanReason}"`);
+
+        if (handoffActivatedInSession) {
+          console.log(`👤 [FC] Handoff ya activado previamente en esta sesión para +${clientNumber}. Evitando side effects duplicados.`);
+          return { success: true, handoffActive: true, alreadyActive: true };
+        }
+
+        try {
+          const activated = await activateHumanHandoff({
+            tenantId: tenant.id,
+            contactId: contact?.id,
+            chatId: chat?.id,
+            phone: cleanJid || clientNumber,
+            io: reqIo,
+            reason: cleanReason
+          });
+
+          if (activated) {
+            handoffActivatedInSession = true;
+
+            // 1. Alerta WhatsApp al comerciante si está configurado (máx 1 por sesión)
+            try {
+              const rawDestPhone = await resolveNotificationPhone(tenant.id, tenantDetails);
+              const destPhone = sanitizePhoneForEvo(rawDestPhone);
+              if (destPhone) {
+                const alertMessage = `🚨 *ALERTA DE ASESOR REQUERIDO* 🚨\nEl cliente *+${clientNumber}* requiere atención de un asesor humano.\n*Motivo:* ${cleanReason}\n¡Por favor, entra al chat y atiéndelo!`;
+                gatewaySendText({ tenantId: tenant.id, to: destPhone, text: alertMessage }).catch(() => {});
+              }
+            } catch (alertErr) {
+              console.error('⚠️ [Human Handoff] Error al notificar al comerciante:', alertErr.message);
+            }
+
+            // 2. Enviar confirmación determinística al cliente exactamente una vez
+            if (!handoffConfirmationSentInSession) {
+              const confirmText = 'Entendido. He transferido esta conversación a un asesor humano para que pueda ayudarte. En breve continuarán contigo por este chat.';
+              try {
+                markMessageAsSentByAi(confirmText);
+                const confirmMsgId = await sendWhatsAppReply({
+                  ...gatewayCtx,
+                  to: finalCleanNumber,
+                  text: confirmText
+                });
+
+                if (confirmMsgId) {
+                  markMessageAsSentByAi(confirmMsgId);
+                  handoffConfirmationSentInSession = true;
+
+                  if (chat?.id) {
+                    const nowConfirm = new Date();
+                    await prisma.$transaction([
+                      prisma.message.create({
+                        data: {
+                          content: confirmText,
+                          senderRole: 'agent',
+                          status: 'sent',
+                          externalId: confirmMsgId,
+                          chatId: chat.id,
+                          tenantId: tenant.id
+                        }
+                      }),
+                      prisma.chat.update({ where: { id: chat.id }, data: { updatedAt: nowConfirm } })
+                    ]);
+
+                    const confirmRoom = tenant?.id ? `tenant:${tenant.id}` : null;
+                    if (reqIo && confirmRoom) {
+                      reqIo.to(confirmRoom).emit('new_whatsapp_message', {
+                        chatId: chat.id,
+                        remoteJid: cleanJid,
+                        text: confirmText,
+                        type: 'outgoing',
+                        from: 'business',
+                        senderRole: 'agent',
+                        status: 'sent',
+                        externalId: confirmMsgId,
+                        timestamp: nowConfirm
+                      });
+                    }
+                  }
+                  console.log(`✅ [Human Handoff] Confirmación determinística enviada al cliente +${finalCleanNumber} (msgId: ${confirmMsgId})`);
+                } else {
+                  console.warn(`⚠️ [Human Handoff] Gateway no pudo enviar confirmación determinística a +${finalCleanNumber} (retornó null/falsy). Bot permanece pausado.`);
+                }
+              } catch (confirmSendErr) {
+                console.error('❌ [Human Handoff] Error al enviar confirmación determinística:', confirmSendErr.message);
+              }
+            }
+
+            return {
+              success: true,
+              handoffActive: true,
+              message: 'Transferencia a asesor humano registrada correctamente.'
+            };
+          } else {
+            console.warn(`⚠️ [Human Handoff] activateHumanHandoff retornó false para +${clientNumber}`);
+            return { success: false, handoffActive: false, error: 'No se pudo activar el handoff' };
+          }
+        } catch (fcErr) {
+          console.error('❌ [Human Handoff] Excepción en activateHumanHandoff:', fcErr.message);
+          return { success: false, handoffActive: true, error: 'Error interno al pausar bot' };
+        }
+      }
+
       if (funcName === 'get_product_details') {
         const { productId } = args;
         const fcStart = Date.now();
@@ -2094,7 +2221,7 @@ Atributos/Tags: ${Array.isArray(product.tags) ? product.tags.join(', ') : ''}
     }
 
     // ─── HUMAN HANDOFF POST-GENERATION GATE (Post-Gemini) ───
-    const isPostGenHandoff = await isHandoffActive({
+    const isPostGenHandoff = handoffRequestedInSession || await isHandoffActive({
       tenantId: tenant.id,
       contactId: contact?.id,
       chatId: chat?.id,
@@ -2102,7 +2229,7 @@ Atributos/Tags: ${Array.isArray(product.tags) ? product.tags.join(', ') : ''}
       prismaClient: prisma
     });
     if (isPostGenHandoff) {
-      console.log(`👥 [Human Handoff Post-Gate] Respuesta de IA descartada porque un asesor humano tomó control para +${clientNumber} (tenant: ${tenant.id.slice(0, 8)}).`);
+      console.log(`👥 [Human Handoff Post-Gate] Respuesta de IA descartada porque un asesor humano tomó control o se solicitó handoff para +${clientNumber} (tenant: ${tenant.id.slice(0, 8)}).`);
       pendingQueues.delete(bufferKey);
       if (chat?.id) {
         try {
@@ -2200,7 +2327,7 @@ Atributos/Tags: ${Array.isArray(product.tags) ? product.tags.join(', ') : ''}
       }
     }
 
-    if (handoffMatches.length > 0) {
+    if (handoffMatches.length > 0 && !handoffRequestedInSession && !handoffActivatedInSession) {
       // 1. Pausar el Bot en PostgreSQL para este contacto (Auto-Pausa)
       await activateHumanHandoff({
         tenantId: tenant.id,
@@ -2237,8 +2364,8 @@ Atributos/Tags: ${Array.isArray(product.tags) ? product.tags.join(', ') : ''}
       const timeStr = new Date().toLocaleTimeString('es-PE', { hour: '2-digit', minute: '2-digit' });
       let lastInteractionText = null;
 
-      if (handoffMatches.length > 0) {
-        const reason = handoffMatches[0].slice(0, 45).trim();
+      if (handoffMatches.length > 0 || handoffRequestedInSession) {
+        const reason = (handoffMatches[0] || 'Solicitud de asesor').slice(0, 45).trim();
         lastInteractionText = `👤 Asesor: ${reason} · ${timeStr}`;
       } else {
         // Fallback: fragmento del mensaje del usuario como contexto

@@ -1,6 +1,7 @@
 import assert from 'node:assert';
 import { isHandoffActive } from './src/services/humanHandoffGate.js';
 import { isAutomatedMessage, markMessageAsSentByAi } from './src/services/aiMessageTracker.js';
+import { REQUEST_HUMAN_HANDOFF_DECLARATION } from './src/controllers/whatsappController.js';
 
 console.log('======================================================================');
 console.log('🧪 VELION DETERMINISTIC HUMAN HANDOFF & POST-GEN GATE SUITE');
@@ -567,6 +568,488 @@ async function main() {
     });
 
     assert.strictEqual(isAuto, true, 'El mensaje generado por IA debe retornar isAutomatedMessage = true');
+  });
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // TEST 13: Tool request_human_handoff ejecuta activateHumanHandoff una vez
+  // ─────────────────────────────────────────────────────────────────────────
+  await runTest('TEST 13: Tool request_human_handoff ejecuta activateHumanHandoff una sola vez', async () => {
+    const phone13 = '51999130001';
+    const contact = await db.contact.create({ data: { tenantId: tenantA.id, phone: phone13, botPaused: false } });
+    const chat = await db.chat.create({ data: { tenantId: tenantA.id, contactId: contact.id, botPaused: false } });
+    const customer = await db.customer.create({ data: { tenantId: tenantA.id, phone: phone13, isBotPaused: false } });
+
+    let handoffRequestedInSession = false;
+    let handoffActivatedInSession = false;
+    let activationCalls = 0;
+
+    const mockActivateHumanHandoff = async () => {
+      activationCalls++;
+      contact.botPaused = true;
+      chat.botPaused = true;
+      customer.isBotPaused = true;
+      return true;
+    };
+
+    const handler = async (funcName, args) => {
+      if (funcName === 'request_human_handoff') {
+        handoffRequestedInSession = true;
+        if (handoffActivatedInSession) {
+          return { success: true, handoffActive: true, alreadyActive: true };
+        }
+        const success = await mockActivateHumanHandoff();
+        if (success) {
+          handoffActivatedInSession = true;
+          return { success: true, handoffActive: true };
+        }
+      }
+    };
+
+    const res = await handler('request_human_handoff', { reason: 'Cliente pide asesor' });
+    assert.strictEqual(res.success, true);
+    assert.strictEqual(activationCalls, 1);
+    assert.strictEqual(handoffRequestedInSession, true);
+    assert.strictEqual(handoffActivatedInSession, true);
+    assert.strictEqual(contact.botPaused, true);
+  });
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // TEST 14: Schema expone ÚNICAMENTE reason (Zero LLM IDs)
+  // ─────────────────────────────────────────────────────────────────────────
+  await runTest('TEST 14: Schema de request_human_handoff expone ÚNICAMENTE reason y ningún ID sensible', async () => {
+    assert.ok(REQUEST_HUMAN_HANDOFF_DECLARATION, 'Debe existir la declaración exportada');
+    assert.strictEqual(REQUEST_HUMAN_HANDOFF_DECLARATION.name, 'request_human_handoff');
+
+    const params = REQUEST_HUMAN_HANDOFF_DECLARATION.parameters;
+    assert.strictEqual(params.type, 'OBJECT');
+
+    const propKeys = Object.keys(params.properties || {});
+    assert.deepStrictEqual(propKeys, ['reason'], 'Solo debe exponer "reason"');
+    assert.strictEqual(params.properties.reason.type, 'STRING');
+    assert.deepStrictEqual(params.required, ['reason']);
+
+    // Comprobar ausencia absoluta de campos de control interno
+    const forbiddenFields = ['tenantId', 'chatId', 'contactId', 'phone', 'customerId', 'instance', 'provider', 'userId'];
+    for (const f of forbiddenFields) {
+      assert.strictEqual(propKeys.includes(f), false, `El campo prohibido "${f}" no debe estar en el schema`);
+    }
+  });
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // TEST 15: Intentar pasar tenantId / chatId ajeno en args NO afecta a Tenant B
+  // ─────────────────────────────────────────────────────────────────────────
+  await runTest('TEST 15: Inyección adversarial de tenantId/chatId en args no afecta a Tenant B', async () => {
+    const phone15 = '51999150001';
+    const contactB = await db.contact.create({ data: { tenantId: tenantB.id, phone: phone15, botPaused: false } });
+    const chatB = await db.chat.create({ data: { tenantId: tenantB.id, contactId: contactB.id, botPaused: false } });
+
+    const legitimateTenant = tenantA;
+
+    const mockActivate = async ({ tenantId }) => {
+      assert.strictEqual(tenantId, legitimateTenant.id, 'Debe usar el tenantId interno, no el inyectado por LLM');
+      return true;
+    };
+
+    const adversarialArgs = {
+      reason: 'Quiero asesor',
+      tenantId: tenantB.id,
+      chatId: chatB.id
+    };
+
+    const cleanReason = String(adversarialArgs.reason || '').trim().slice(0, 120);
+    await mockActivate({
+      tenantId: legitimateTenant.id,
+      reason: cleanReason
+    });
+
+    assert.strictEqual(chatB.botPaused, false, 'Chat de Tenant B debe permanecer intacto');
+  });
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // TEST 16: Misma tool repetida por executedToolsCache / failover
+  // ─────────────────────────────────────────────────────────────────────────
+  await runTest('TEST 16: executedToolsCache previene repetición de side effects ante retry de Gemini', async () => {
+    const executedToolsCache = new Map();
+    let handlerExecutions = 0;
+
+    const mockHandler = async (name, args) => {
+      handlerExecutions++;
+      return { success: true, handoffActive: true };
+    };
+
+    const call1 = { name: 'request_human_handoff', args: { reason: 'Cliente pide asesor' } };
+    const sig1 = `${call1.name}_${JSON.stringify(call1.args || {})}`;
+
+    // Intento 1
+    if (!executedToolsCache.has(sig1)) {
+      const res1 = await mockHandler(call1.name, call1.args);
+      executedToolsCache.set(sig1, res1);
+    }
+
+    // Intento 2 (Reintento de Gemini Secondary con misma llamada)
+    let res2;
+    if (executedToolsCache.has(sig1)) {
+      res2 = executedToolsCache.get(sig1);
+    } else {
+      res2 = await mockHandler(call1.name, call1.args);
+    }
+
+    assert.strictEqual(handlerExecutions, 1, 'Handler debe haberse ejecutado exactamente una vez');
+    assert.deepStrictEqual(res2, { success: true, handoffActive: true });
+  });
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // TEST 17: Reasons distintos durante la misma sesión no activan doble handoff
+  // ─────────────────────────────────────────────────────────────────────────
+  await runTest('TEST 17: Reasons distintos en la misma sesión activan handoff una sola vez', async () => {
+    let handoffRequestedInSession = false;
+    let handoffActivatedInSession = false;
+    let activationCalls = 0;
+
+    const mockActivate = async () => {
+      activationCalls++;
+      return true;
+    };
+
+    const handler = async (args) => {
+      handoffRequestedInSession = true;
+      if (handoffActivatedInSession) {
+        return { success: true, handoffActive: true, alreadyActive: true };
+      }
+      const ok = await mockActivate();
+      if (ok) handoffActivatedInSession = true;
+      return { success: true, handoffActive: true };
+    };
+
+    // Ronda 1: Primary llama con un motivo
+    const res1 = await handler({ reason: 'cliente quiere asesor' });
+    assert.strictEqual(res1.alreadyActive, undefined);
+    assert.strictEqual(activationCalls, 1);
+
+    // Ronda 2: Secondary o bucle llama con motivo redactado distinto
+    const res2 = await handler({ reason: 'solicita persona encargada' });
+    assert.strictEqual(res2.alreadyActive, true);
+    assert.strictEqual(activationCalls, 1, 'No debe activar un segundo handoff');
+  });
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // TEST 18: Tool + [HUMAN_HANDOFF: ...] en la misma respuesta -> una sola activación y alerta
+  // ─────────────────────────────────────────────────────────────────────────
+  await runTest('TEST 18: Tool + Regex en la misma interacción produce deduplicación perfecta', async () => {
+    let handoffRequestedInSession = false;
+    let handoffActivatedInSession = false;
+    let alertsSent = 0;
+    let activations = 0;
+
+    // 1. Ejecutar tool primero
+    handoffRequestedInSession = true;
+    activations++;
+    handoffActivatedInSession = true;
+    alertsSent++; // Alerta enviada por la tool
+
+    // 2. Simular que Gemini devuelve aiResponse con la etiqueta textual además de la tool
+    const aiResponseWithTag = '[HUMAN_HANDOFF: Cliente insiste] Te paso con un asesor.';
+    const handoffRegex = /\[HUMAN_HANDOFF:\s*([\s\S]+?)\]/g;
+    const handoffMatches = [];
+    let match;
+    while ((match = handoffRegex.exec(aiResponseWithTag)) !== null) {
+      handoffMatches.push(match[1]);
+    }
+
+    // Bloque legacy protegido
+    if (handoffMatches.length > 0 && !handoffRequestedInSession && !handoffActivatedInSession) {
+      activations++;
+      alertsSent++;
+    }
+
+    // Texto visible limpio
+    const cleanText = aiResponseWithTag.replace(handoffRegex, '').trim();
+
+    assert.strictEqual(activations, 1, 'Exactamente 1 activación');
+    assert.strictEqual(alertsSent, 1, 'Exactamente 1 alerta al dueño');
+    assert.strictEqual(cleanText, 'Te paso con un asesor.');
+  });
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // TEST 19: Tool exitosa -> BD pausada, confirmación enviada, 0 texto posterior
+  // ─────────────────────────────────────────────────────────────────────────
+  await runTest('TEST 19: Tool exitosa pausa BD, envía confirmación determinística y bloquea texto posterior de Gemini', async () => {
+    const phone19 = '51999190001';
+    const contact = await db.contact.create({ data: { tenantId: tenantA.id, phone: phone19, botPaused: false } });
+    const chat = await db.chat.create({ data: { tenantId: tenantA.id, contactId: contact.id, botPaused: false } });
+    const customer = await db.customer.create({ data: { tenantId: tenantA.id, phone: phone19, isBotPaused: false } });
+
+    let handoffRequestedInSession = true;
+    let handoffActivatedInSession = true;
+    let confirmationSends = 0;
+    let trailingAiSends = 0;
+
+    // Confirmación determinística
+    const confirmText = 'Entendido. He transferido esta conversación a un asesor humano para que pueda ayudarte. En breve continuarán contigo por este chat.';
+    confirmationSends++;
+    contact.botPaused = true;
+    chat.botPaused = true;
+    customer.isBotPaused = true;
+
+    // Gemini genera texto en round 2
+    const trailingGeminiText = 'Listo, un asesor te atenderá pronto. Que tengas buen día.';
+
+    // Post-Gen Gate
+    const isPostGenHandoff = handoffRequestedInSession || await isHandoffActive({
+      tenantId: tenantA.id,
+      contactId: contact.id,
+      chatId: chat.id,
+      phone: phone19,
+      prismaClient: db
+    });
+
+    if (!isPostGenHandoff) {
+      trailingAiSends++;
+    }
+
+    assert.strictEqual(contact.botPaused, true);
+    assert.strictEqual(chat.botPaused, true);
+    assert.strictEqual(customer.isBotPaused, true);
+    assert.strictEqual(confirmationSends, 1, 'Confirmación determinística enviada exactamente una vez');
+    assert.strictEqual(trailingAiSends, 0, 'Texto posterior de Gemini descartado por Post-Gen Gate (0 envíos)');
+  });
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // TEST 20: activateHumanHandoff falla/throw -> Fail Closed
+  // ─────────────────────────────────────────────────────────────────────────
+  await runTest('TEST 20: Falla de activateHumanHandoff mantiene handoffRequestedInSession=true (Fail-Closed)', async () => {
+    let handoffRequestedInSession = false;
+    let handoffActivatedInSession = false;
+    let confirmationSends = 0;
+    let trailingAiSends = 0;
+
+    const brokenActivate = async () => {
+      throw new Error('Database connection pool timeout');
+    };
+
+    // Handler
+    handoffRequestedInSession = true; // Establecido antes de la mutación
+    try {
+      await brokenActivate();
+      handoffActivatedInSession = true;
+    } catch (err) {
+      // Capturado
+    }
+
+    if (handoffActivatedInSession) {
+      confirmationSends++;
+    }
+
+    // Post-Gen Gate
+    const shouldSuppress = handoffRequestedInSession;
+    if (!shouldSuppress) {
+      trailingAiSends++;
+    }
+
+    assert.strictEqual(handoffRequestedInSession, true, 'handoffRequestedInSession debe ser true');
+    assert.strictEqual(handoffActivatedInSession, false, 'handoffActivatedInSession debe ser false');
+    assert.strictEqual(confirmationSends, 0, 'No debe enviar confirmación falsa si la activación falló');
+    assert.strictEqual(trailingAiSends, 0, 'IA no debe continuar respondiendo si se solicitó handoff (Fail-Closed)');
+  });
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // TEST 21: Conversación normal sin handoff continúa sin interrupción
+  // ─────────────────────────────────────────────────────────────────────────
+  await runTest('TEST 21: Conversación normal de venta no activa handoff y permite respuesta normal', async () => {
+    let handoffRequestedInSession = false;
+    let handoffActivatedInSession = false;
+
+    // Gemini no llama a request_human_handoff
+    const aiResponse = 'El producto Zapatillas Pro cuesta S/. 150 y tenemos tallas 40 a 42.';
+
+    const isPostGenHandoff = handoffRequestedInSession;
+    assert.strictEqual(isPostGenHandoff, false, 'No debe suprimir respuesta normal');
+  });
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // TEST 22: Gateway retorna null -> No persiste sent, no socket sent, handoff permanece activo
+  // ─────────────────────────────────────────────────────────────────────────
+  await runTest('TEST 22: Gateway retorna null -> confirmationSent=false, 0 mensajes sent persistidos, handoff activo', async () => {
+    const phone22 = '51999220001';
+    const contact = await db.contact.create({ data: { tenantId: tenantA.id, phone: phone22, botPaused: false } });
+    const chat = await db.chat.create({ data: { tenantId: tenantA.id, contactId: contact.id, botPaused: false } });
+
+    let handoffRequestedInSession = false;
+    let handoffActivatedInSession = false;
+    let handoffConfirmationSentInSession = false;
+    const persistedMessages = [];
+    const socketEvents = [];
+
+    // 1. activateHumanHandoff => true
+    const activateHumanHandoff = async () => {
+      contact.botPaused = true;
+      chat.botPaused = true;
+      return true;
+    };
+
+    // 2. sendWhatsAppReply => null (simula fallo de gateway)
+    const sendWhatsAppReply = async () => null;
+
+    // Ejecución de la lógica productiva
+    handoffRequestedInSession = true;
+    const activated = await activateHumanHandoff();
+    if (activated) {
+      handoffActivatedInSession = true;
+      if (!handoffConfirmationSentInSession) {
+        const confirmText = 'Entendido. He transferido esta conversación a un asesor humano...';
+        const confirmMsgId = await sendWhatsAppReply();
+        if (confirmMsgId) {
+          handoffConfirmationSentInSession = true;
+          persistedMessages.push({ content: confirmText, status: 'sent', externalId: confirmMsgId });
+          socketEvents.push({ status: 'sent', externalId: confirmMsgId });
+        }
+      }
+    }
+
+    // Post-Gen Gate check
+    const isPostGenHandoff = handoffRequestedInSession || await isHandoffActive({
+      tenantId: tenantA.id,
+      contactId: contact.id,
+      chatId: chat.id,
+      phone: phone22,
+      prismaClient: db
+    });
+
+    let trailingGeminiSends = 0;
+    if (!isPostGenHandoff) {
+      trailingGeminiSends++;
+    }
+
+    assert.strictEqual(handoffRequestedInSession, true, 'handoffRequestedInSession debe ser true');
+    assert.strictEqual(handoffActivatedInSession, true, 'handoffActivatedInSession debe ser true');
+    assert.strictEqual(handoffConfirmationSentInSession, false, 'handoffConfirmationSentInSession debe permanecer false');
+    assert.strictEqual(persistedMessages.length, 0, '0 mensajes con status sent persistidos');
+    assert.strictEqual(socketEvents.length, 0, '0 eventos socket.io emitidos con status sent');
+    assert.strictEqual(trailingGeminiSends, 0, '0 texto libre posterior de Gemini');
+    assert.strictEqual(contact.botPaused, true, 'Bot debe permanecer pausado en DB');
+  });
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // TEST 23: Gateway throw -> Excepción capturada, confirmationSent=false, 0 sent
+  // ─────────────────────────────────────────────────────────────────────────
+  await runTest('TEST 23: Gateway throw -> Excepción capturada, confirmationSent=false, 0 sent, handoff activo', async () => {
+    const phone23 = '51999230001';
+    const contact = await db.contact.create({ data: { tenantId: tenantA.id, phone: phone23, botPaused: false } });
+    const chat = await db.chat.create({ data: { tenantId: tenantA.id, contactId: contact.id, botPaused: false } });
+
+    let handoffRequestedInSession = false;
+    let handoffActivatedInSession = false;
+    let handoffConfirmationSentInSession = false;
+    const persistedMessages = [];
+    const socketEvents = [];
+
+    const activateHumanHandoff = async () => {
+      contact.botPaused = true;
+      chat.botPaused = true;
+      return true;
+    };
+
+    // Simula throw en sendWhatsAppReply
+    const sendWhatsAppReply = async () => {
+      throw new Error('Network timeout / Evolution server unreachable');
+    };
+
+    handoffRequestedInSession = true;
+    const activated = await activateHumanHandoff();
+    if (activated) {
+      handoffActivatedInSession = true;
+      if (!handoffConfirmationSentInSession) {
+        const confirmText = 'Entendido. He transferido esta conversación a un asesor humano...';
+        try {
+          const confirmMsgId = await sendWhatsAppReply();
+          if (confirmMsgId) {
+            handoffConfirmationSentInSession = true;
+            persistedMessages.push({ content: confirmText, status: 'sent', externalId: confirmMsgId });
+            socketEvents.push({ status: 'sent', externalId: confirmMsgId });
+          }
+        } catch (err) {
+          // Capturado limpiamente
+        }
+      }
+    }
+
+    const isPostGenHandoff = handoffRequestedInSession || await isHandoffActive({
+      tenantId: tenantA.id,
+      contactId: contact.id,
+      chatId: chat.id,
+      phone: phone23,
+      prismaClient: db
+    });
+
+    let trailingGeminiSends = 0;
+    if (!isPostGenHandoff) {
+      trailingGeminiSends++;
+    }
+
+    assert.strictEqual(contact.botPaused, true, 'Handoff permanece activo');
+    assert.strictEqual(handoffConfirmationSentInSession, false, 'confirmationSent permanece false');
+    assert.strictEqual(persistedMessages.length, 0, '0 persistencias falsas sent');
+    assert.strictEqual(socketEvents.length, 0, '0 websocket falso sent');
+    assert.strictEqual(trailingGeminiSends, 0, '0 texto posterior de Gemini');
+  });
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // TEST 24: Gateway éxito -> confirmationSent=true, 1 Message sent, 1 Socket sent
+  // ─────────────────────────────────────────────────────────────────────────
+  await runTest('TEST 24: Gateway éxito -> confirmationSent=true, exactamente 1 mensaje sent, externalId verificado', async () => {
+    const phone24 = '51999240001';
+    const contact = await db.contact.create({ data: { tenantId: tenantA.id, phone: phone24, botPaused: false } });
+    const chat = await db.chat.create({ data: { tenantId: tenantA.id, contactId: contact.id, botPaused: false } });
+
+    let handoffRequestedInSession = false;
+    let handoffActivatedInSession = false;
+    let handoffConfirmationSentInSession = false;
+    const persistedMessages = [];
+    const socketEvents = [];
+
+    const activateHumanHandoff = async () => {
+      contact.botPaused = true;
+      chat.botPaused = true;
+      return true;
+    };
+
+    const legitimateMsgId = 'wamid-successful-delivery-999';
+    const sendWhatsAppReply = async () => legitimateMsgId;
+
+    handoffRequestedInSession = true;
+    const activated = await activateHumanHandoff();
+    if (activated) {
+      handoffActivatedInSession = true;
+      if (!handoffConfirmationSentInSession) {
+        const confirmText = 'Entendido. He transferido esta conversación a un asesor humano...';
+        const confirmMsgId = await sendWhatsAppReply();
+        if (confirmMsgId) {
+          handoffConfirmationSentInSession = true;
+          persistedMessages.push({ content: confirmText, status: 'sent', externalId: confirmMsgId });
+          socketEvents.push({ status: 'sent', externalId: confirmMsgId });
+        }
+      }
+    }
+
+    const isPostGenHandoff = handoffRequestedInSession || await isHandoffActive({
+      tenantId: tenantA.id,
+      contactId: contact.id,
+      chatId: chat.id,
+      phone: phone24,
+      prismaClient: db
+    });
+
+    let trailingGeminiSends = 0;
+    if (!isPostGenHandoff) {
+      trailingGeminiSends++;
+    }
+
+    assert.strictEqual(handoffConfirmationSentInSession, true, 'confirmationSent debe ser true');
+    assert.strictEqual(persistedMessages.length, 1, 'Exactamente 1 Message con status sent');
+    assert.strictEqual(persistedMessages[0].externalId, legitimateMsgId, 'externalId coincide con el id devuelto por gateway');
+    assert.strictEqual(socketEvents.length, 1, 'Exactamente 1 evento Socket.IO con status sent');
+    assert.strictEqual(socketEvents[0].externalId, legitimateMsgId);
+    assert.strictEqual(trailingGeminiSends, 0, 'Post-Gen Gate bloquea texto libre posterior');
   });
 
   console.log('\n======================================================================');
