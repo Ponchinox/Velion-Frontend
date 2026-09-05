@@ -16,6 +16,12 @@ function getEvoInstanceName(tenantId) {
   return `bot_prod_${tenantId}`;
 }
 
+function assertNotInTestMode(operation, target) {
+  if (process.env.NODE_ENV === 'test' || process.env.CAMPAIGN_TEST_MODE === '1') {
+    throw new Error(`[WA Gateway Guard] External WhatsApp HTTP call blocked in test mode (op: ${operation}, target: ${target || 'unknown'})`);
+  }
+}
+
 /**
  * Resuelve el contexto del Gateway (proveedor + credenciales) desde la BD.
  */
@@ -55,6 +61,7 @@ export async function resolveGatewayCtx(tenantId) {
  * @returns {Promise<{ dataUrl: string, mimeType: string }|null>}
  */
 export async function downloadMetaMedia(mediaId, token) {
+  assertNotInTestMode('downloadMetaMedia', mediaId);
   if (!mediaId || !token) return null;
   try {
     // 1. Obtener la URL temporal de descarga del archivo
@@ -90,6 +97,7 @@ export async function downloadMetaMedia(mediaId, token) {
  * @returns {Promise<string|null>} msgId (Evolution / Meta wamid) o null
  */
 export async function sendText(opts) {
+  assertNotInTestMode('sendText', opts?.to);
   let { tenantId, provider, instance, apiKey, metaPhoneNumberId, metaAccessToken, to, text, isAutomated, origin } = opts;
 
   if (!provider && tenantId) {
@@ -181,6 +189,7 @@ export async function sendText(opts) {
  * Detecta automáticamente si es video por extensión o parámetro mediaType.
  */
 export async function sendMedia(opts) {
+  assertNotInTestMode('sendMedia', opts?.to);
   let { tenantId, provider, instance, apiKey, metaPhoneNumberId, metaAccessToken, to, url, caption, mediaType, isAutomated, origin } = opts;
 
   if (!url) {
@@ -208,7 +217,15 @@ export async function sendMedia(opts) {
 
   // Detectar si es video según mediaType o extensión de URL
   const lowerUrl = url.toLowerCase();
-  const isVideo = mediaType === 'video' || lowerUrl.includes('.mp4') || lowerUrl.includes('.mov') || lowerUrl.includes('.webm') || lowerUrl.includes('.m4v') || lowerUrl.includes('/video/upload/');
+  const isVideo = mediaType === 'video' ||
+    lowerUrl.startsWith('data:video/') ||
+    lowerUrl.includes('video/mp4') ||
+    lowerUrl.includes('video/webm') ||
+    lowerUrl.includes('.mp4') ||
+    lowerUrl.includes('.mov') ||
+    lowerUrl.includes('.webm') ||
+    lowerUrl.includes('.m4v') ||
+    lowerUrl.includes('/video/upload/');
 
   if (provider === 'META') {
     const token = metaAccessToken || process.env.META_ACCESS_TOKEN;

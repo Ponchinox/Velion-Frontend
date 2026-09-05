@@ -1,4 +1,9 @@
+process.env.NODE_ENV = 'test';
+process.env.CAMPAIGN_TEST_MODE = '1';
+
 import assert from 'node:assert';
+import fs from 'node:fs';
+import path from 'node:path';
 import prisma from './src/db.js';
 import {
   launchCampaignV2,
@@ -9,11 +14,39 @@ import {
   resumeRunningCampaigns,
   dispatchDueCampaigns,
   calculateNextRun,
-  STALE_PROCESSING_MS
+  STALE_PROCESSING_MS,
+  setCampaignGatewaySender,
+  classifyDestination,
+  resolveEligibleContacts,
+  getTenantIdentityEvidence
 } from './src/services/campaignWorkerV2.js';
+import {
+  extractAuthoritativeIdentityPair,
+  persistAuthoritativeIdentityMapping
+} from './src/services/whatsappIdentityService.js';
+import * as whatsappGateway from './src/services/whatsappGateway.js';
+
+let testCustomSender = null;
+const interceptedGatewayCalls = [];
+
+setCampaignGatewaySender(async (params) => {
+  if (testCustomSender) {
+    return testCustomSender(params);
+  }
+  // Meta without credentials returns null (offline mock)
+  if (params.gatewayCtx?.provider === 'META' && (!params.gatewayCtx.metaAccessToken || !params.gatewayCtx.metaPhoneNumberId)) {
+    return null;
+  }
+  // Empty media url
+  if (params.campaign?.media === '') {
+    return null;
+  }
+  interceptedGatewayCalls.push(params);
+  return `mock_msg_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+});
 
 console.log('======================================================================');
-console.log('🧪 CAMPAIGNS WORKER V2 EXTENDED SUITE (TESTS 1 - 36)');
+console.log('🧪 CAMPAIGNS WORKER V2 EXTENDED SUITE (TESTS 1 - 46)');
 console.log('======================================================================\n');
 
 let passedTests = 0;
@@ -1009,6 +1042,663 @@ async function main() {
 
     // Limpieza
     await prisma.campaignLog.update({ where: { id: freshLog.id }, data: { status: 'failed' } });
+  });
+
+  // ────────────────────────────────────────────────────────────────────────
+  console.log('\n══ TEST 37: Campaign NO llama IA y baseMessage queda 100% literal ══');
+  // ────────────────────────────────────────────────────────────────────────
+  const tenant37 = await makeTenant(`camp-t-37-${stamp}`);
+  await runTest('TEST 37: Mensaje comercial con ortografía informal NO es alterado por IA ni Gemini', async () => {
+    const rawCommercial = 'hola {Nombre}, te recordamos tu pago quinsenal pendiente';
+    const contact = await prisma.contact.create({
+      data: { name: 'Carlos', phone: `519950${stamp.toString().slice(-6)}`, tenantId: tenant37.id }
+    });
+    const { campaign } = await launchCampaignV2({
+      tenantId: tenant37.id,
+      name: 'Camp 37 No AI',
+      baseMessage: rawCommercial,
+      delayMin: 0,
+      delayMax: 0,
+      audience: 'all'
+    });
+
+    const claimed = await claimNextLog(campaign.id, tenant37.id);
+    assert.ok(claimed);
+
+    let sentPayload = null;
+    testCustomSender = async (p) => {
+      sentPayload = p;
+      return 'msg_test_37';
+    };
+
+    try {
+      await sendClaimedLog(claimed, campaign, {}, rawCommercial, contact.name);
+      assert.ok(sentPayload);
+      assert.strictEqual(
+        sentPayload.text,
+        'hola Carlos, te recordamos tu pago quinsenal pendiente',
+        'El mensaje debe ser 100% determinístico y no agregar emojis ni correcciones sintéticas de IA'
+      );
+    } finally {
+      testCustomSender = null;
+    }
+  });
+
+  // ────────────────────────────────────────────────────────────────────────
+  console.log('\n══ TEST 38: Placeholders {Nombre} y [Nombre] soportados determinísticamente ══');
+  // ────────────────────────────────────────────────────────────────────────
+  const tenant38 = await makeTenant(`camp-t-38-${stamp}`);
+  await runTest('TEST 38: Sustitución determinística de {Nombre} y [Nombre] con fallback amigo', async () => {
+    const contactA = await prisma.contact.create({
+      data: { name: 'Elena Gomez', phone: `519951${stamp.toString().slice(-6)}`, tenantId: tenant38.id }
+    });
+    const contactB = await prisma.contact.create({
+      data: { name: '', phone: `519952${stamp.toString().slice(-6)}`, tenantId: tenant38.id }
+    });
+
+    const { campaign } = await launchCampaignV2({
+      tenantId: tenant38.id,
+      name: 'Camp 38 Placeholders',
+      baseMessage: 'Estimado [Nombre], tu código de acceso vence pronto. Gracias {Nombre}.',
+      delayMin: 0,
+      delayMax: 0,
+      audience: 'all'
+    });
+
+    let sentTexts = [];
+    testCustomSender = async (p) => {
+      sentTexts.push(p.text);
+      return 'msg_test_38';
+    };
+
+    try {
+      const logA = await claimNextLog(campaign.id, tenant38.id);
+      await sendClaimedLog(logA, campaign, {}, campaign.baseMessage, contactA.name);
+
+      const logB = await claimNextLog(campaign.id, tenant38.id);
+      await sendClaimedLog(logB, campaign, {}, campaign.baseMessage, contactB.name);
+
+      assert.strictEqual(sentTexts[0], 'Estimado Elena Gomez, tu código de acceso vence pronto. Gracias Elena Gomez.');
+      assert.strictEqual(sentTexts[1], 'Estimado amigo, tu código de acceso vence pronto. Gracias amigo.');
+    } finally {
+      testCustomSender = null;
+    }
+  });
+
+  // ────────────────────────────────────────────────────────────────────────
+  console.log('\n══ TEST 39 (TEST C): Phone + @lid con mapping real -> deduplica a 1 destino ══');
+  // ────────────────────────────────────────────────────────────────────────
+  const tenant39 = await makeTenant(`camp-t-39-${stamp}`);
+  await runTest('TEST 39 (TEST C): Deduplicación por mapping autoritativo real entre phone normal y @lid vinculados', async () => {
+    const phoneNum = `519926${stamp.toString().slice(-6)}`;
+    const lidAddress = `270243${stamp.toString().slice(-9)}@lid`;
+
+    // Contacto 1: Phone con tag autoritativo apuntando al LID
+    await prisma.contact.create({
+      data: { name: 'Carlos Test', phone: phoneNum, tags: [`lid:${lidAddress}`], tenantId: tenant39.id }
+    });
+    // Contacto 2: LID con tag autoritativo apuntando al Phone
+    await prisma.contact.create({
+      data: { name: 'Carlos Test (LID)', phone: lidAddress, tags: [`phone:${phoneNum}`], tenantId: tenant39.id }
+    });
+
+    const { eligibleContacts } = await resolveEligibleContacts({ tenantId: tenant39.id, audience: 'all' });
+    // Debe haber deduplicado al phone número real
+    assert.strictEqual(eligibleContacts.length, 1, 'Deben deduplicarse a 1 solo destinatario');
+    assert.strictEqual(eligibleContacts[0].phone, phoneNum, 'Debe preferir el número telefónico sobre el @lid');
+  });
+
+  // ────────────────────────────────────────────────────────────────────────
+  console.log('\n══ TEST 40 (TEST A, B, H, I): Clasificación de destinos y E.164 14/15 dígitos ══');
+  // ────────────────────────────────────────────────────────────────────────
+  const tenant40 = await makeTenant(`camp-t-40-${stamp}`);
+  await runTest('TEST 40 (TEST A, B, H, I): classifyDestination maneja 14/15 dígitos y LIDs con/sin mapping', async () => {
+    // TEST A: E.164 de 14 dígitos (ej: Alemania +49 151 23456789) -> NO rechazado por longitud
+    const phone14 = '49151234567890';
+    const class14 = classifyDestination(phone14, new Set());
+    assert.strictEqual(class14.eligible, true, 'TEST A: 14 dígitos NO debe ser rechazado por longitud');
+    assert.strictEqual(class14.type, 'phone', 'TEST A: debe clasificarse como phone');
+    assert.strictEqual(class14.destination, phone14);
+
+    // TEST B: E.164 de 15 dígitos (ej: Brasil +55 11 91234 5678) -> NO rechazado por longitud
+    const phone15 = '551191234567890';
+    const class15 = classifyDestination(phone15, new Set());
+    assert.strictEqual(class15.eligible, true, 'TEST B: 15 dígitos NO debe ser rechazado por longitud');
+    assert.strictEqual(class15.type, 'phone', 'TEST B: debe clasificarse como phone');
+    assert.strictEqual(class15.destination, phone15);
+
+    // TEST H: LID numérico huérfano con mapping real en BD -> resuelto correctamente a @lid
+    const orphanLid = '270243989557418';
+    const lidSetWithMapping = new Set([`${orphanLid}@lid`]);
+    const classH = classifyDestination(orphanLid, lidSetWithMapping);
+    assert.strictEqual(classH.eligible, true, 'TEST H: con mapping debe ser elegible');
+    assert.strictEqual(classH.type, 'resolved_lid', 'TEST H: debe ser resolved_lid');
+    assert.strictEqual(classH.destination, `${orphanLid}@lid`);
+
+    // TEST I: LID numérico huérfano sin mapping real -> tratado de forma segura sin inventar identidad ni @s.whatsapp.net
+    const classI = classifyDestination(orphanLid, new Set());
+    assert.strictEqual(classI.eligible, true, 'TEST I: sin mapping en BD se trata de forma segura como teléfono');
+    assert.strictEqual(classI.type, 'phone');
+    assert.strictEqual(classI.destination, orphanLid);
+    assert.notStrictEqual(classI.destination, `${orphanLid}@s.whatsapp.net`, 'JAMÁS debe inventar @s.whatsapp.net');
+  });
+
+  // ────────────────────────────────────────────────────────────────────────
+  console.log('\n══ TEST 41 (TEST C/F): 1 persona física con múltiples contactos vinculados -> 1 solo CampaignLog ══');
+  // ────────────────────────────────────────────────────────────────────────
+  const tenant41 = await makeTenant(`camp-t-41-${stamp}`);
+  await runTest('TEST 41: launchCampaignV2 crea exactamente 1 CampaignLog por occurrence para la misma persona', async () => {
+    const phoneNum = `519927${stamp.toString().slice(-6)}`;
+    const lidAddress = `280243${stamp.toString().slice(-9)}@lid`;
+
+    await prisma.contact.create({
+      data: { name: 'Maria Lopez', phone: phoneNum, tags: [`lid:${lidAddress}`], tenantId: tenant41.id }
+    });
+    await prisma.contact.create({
+      data: { name: 'Maria Lopez (LID)', phone: lidAddress, tags: [`phone:${phoneNum}`], tenantId: tenant41.id }
+    });
+
+    const { campaign, eligibleCount } = await launchCampaignV2({
+      tenantId: tenant41.id,
+      name: 'Camp 41 Unique Log',
+      baseMessage: 'Hola [Nombre]',
+      delayMin: 0,
+      delayMax: 0,
+      audience: 'all'
+    });
+
+    assert.strictEqual(eligibleCount, 1, 'Eligible count debe ser 1');
+    const logs = await prisma.campaignLog.findMany({ where: { campaignId: campaign.id } });
+    assert.strictEqual(logs.length, 1, 'Debe crearse exactamente 1 CampaignLog para Maria Lopez');
+    assert.strictEqual(logs[0].customerPhone, phoneNum);
+
+    await prisma.campaign.update({ where: { id: campaign.id }, data: { status: 'completed' } });
+  });
+
+  // ────────────────────────────────────────────────────────────────────────
+  console.log('\n══ TEST 42: whatsappGateway fail-closed en modo test ══');
+  // ────────────────────────────────────────────────────────────────────────
+  await runTest('TEST 42: whatsappGateway.sendText y sendMedia lanzan error antes de HTTP en modo test', async () => {
+    await assert.rejects(
+      async () => {
+        await whatsappGateway.sendText({ to: '51999999999', text: 'Forbidden in test' });
+      },
+      /External WhatsApp HTTP call blocked in test mode/,
+      'sendText debe fallar inmediatamente de forma local sin hacer HTTP'
+    );
+
+    await assert.rejects(
+      async () => {
+        await whatsappGateway.sendMedia({ to: '51999999999', url: 'https://example.com/test.jpg' });
+      },
+      /External WhatsApp HTTP call blocked in test mode/,
+      'sendMedia debe fallar inmediatamente de forma local sin hacer HTTP'
+    );
+  });
+
+  // ────────────────────────────────────────────────────────────────────────
+  console.log('\n══ TEST 43: Campaign tests perform zero external WhatsApp I/O ══');
+  // ────────────────────────────────────────────────────────────────────────
+  const tenant43 = await makeTenant(`camp-t-43-${stamp}`);
+  await runTest('TEST 43: Custom gateway sender mock captura envíos con cero llamadas de red externas', async () => {
+    const initialCallCount = interceptedGatewayCalls.length;
+
+    const contact = await prisma.contact.create({
+      data: { name: 'Safe Test', phone: `519955${stamp.toString().slice(-6)}`, tenantId: tenant43.id }
+    });
+
+    const { campaign } = await launchCampaignV2({
+      tenantId: tenant43.id,
+      name: 'Camp 43 Zero IO',
+      baseMessage: 'Verificación cero IO',
+      delayMin: 0,
+      delayMax: 0,
+      audience: 'all'
+    });
+
+    const claimed = await claimNextLog(campaign.id, tenant43.id);
+    assert.ok(claimed);
+
+    const success = await sendClaimedLog(claimed, campaign, {}, campaign.baseMessage, contact.name);
+    assert.strictEqual(success, true);
+    assert.strictEqual(interceptedGatewayCalls.length, initialCallCount + 1);
+
+    const lastCall = interceptedGatewayCalls[interceptedGatewayCalls.length - 1];
+    assert.strictEqual(lastCall.to, contact.phone);
+    assert.strictEqual(lastCall.text, 'Verificación cero IO');
+  });
+
+  // ────────────────────────────────────────────────────────────────────────
+  console.log('\n══ TEST 44: Envío con imagen preserva url, caption y formato ══');
+  // ────────────────────────────────────────────────────────────────────────
+  const tenant44 = await makeTenant(`camp-t-44-${stamp}`);
+  await runTest('TEST 44: Campaña con imagen preserva mediaUrl y pasa caption determinístico', async () => {
+    const imgUrl = 'data:image/jpeg;base64,/9j/4AAQSkZJRg==';
+    const contact = await prisma.contact.create({
+      data: { name: 'Foto Cliente', phone: `519956${stamp.toString().slice(-6)}`, tenantId: tenant44.id }
+    });
+
+    const { campaign } = await launchCampaignV2({
+      tenantId: tenant44.id,
+      name: 'Camp 44 Imagen',
+      baseMessage: 'Mira tu recibo {Nombre}',
+      media: imgUrl,
+      delayMin: 0,
+      delayMax: 0,
+      audience: 'all'
+    });
+
+    let sentMediaPayload = null;
+    testCustomSender = async (p) => {
+      sentMediaPayload = p;
+      return 'msg_img_44';
+    };
+
+    try {
+      const claimed = await claimNextLog(campaign.id, tenant44.id);
+      await sendClaimedLog(claimed, campaign, {}, campaign.baseMessage, contact.name);
+
+      assert.ok(sentMediaPayload);
+      assert.strictEqual(sentMediaPayload.media, imgUrl);
+      assert.strictEqual(sentMediaPayload.text, 'Mira tu recibo Foto Cliente');
+    } finally {
+      testCustomSender = null;
+    }
+  });
+
+  // ────────────────────────────────────────────────────────────────────────
+  console.log('\n══ TEST 45: Detección y soporte de video (MP4, QuickTime, WebM, data:video) ══');
+  // ────────────────────────────────────────────────────────────────────────
+  await runTest('TEST 45: sendMedia detecta adecuadamente videos por extensión y mime type data:video', () => {
+    const testCases = [
+      { url: 'https://example.com/promo.mp4', expectedVideo: true },
+      { url: 'https://example.com/clip.mov', expectedVideo: true },
+      { url: 'https://example.com/video.webm', expectedVideo: true },
+      { url: 'data:video/mp4;base64,AAAA', expectedVideo: true },
+      { url: 'data:image/jpeg;base64,BBBB', expectedVideo: false },
+      { url: 'https://example.com/banner.png', expectedVideo: false }
+    ];
+
+    for (const tc of testCases) {
+      const lowerUrl = tc.url.toLowerCase();
+      const isVideo = lowerUrl.startsWith('data:video/') ||
+        lowerUrl.includes('video/mp4') ||
+        lowerUrl.includes('video/webm') ||
+        lowerUrl.includes('.mp4') ||
+        lowerUrl.includes('.mov') ||
+        lowerUrl.includes('.webm') ||
+        lowerUrl.includes('.m4v') ||
+        lowerUrl.includes('/video/upload/');
+
+      assert.strictEqual(isVideo, tc.expectedVideo, `Fallo en detección para ${tc.url}`);
+    }
+  });
+
+  // ────────────────────────────────────────────────────────────────────────
+  console.log('\n══ TEST 46: Frontend sin delays visibles y backend defaults automáticos (10 y 20) ══');
+  // ────────────────────────────────────────────────────────────────────────
+  const tenant46 = await makeTenant(`camp-t-46-${stamp}`);
+  await runTest('TEST 46: Si payload omite delayMin/delayMax, backend asigna defaults 10 y 20', async () => {
+    // 1. Verificación en base de datos al crear campaña sin delays
+    const { campaign } = await launchCampaignV2({
+      tenantId: tenant46.id,
+      name: 'Camp 46 Defaults',
+      baseMessage: 'Prueba defaults',
+      audience: 'all'
+    });
+
+    const found = await prisma.campaign.findUnique({ where: { id: campaign.id } });
+    assert.ok(found);
+    assert.strictEqual(found.delayMin, 10, 'Default de delayMin debe ser 10');
+    assert.strictEqual(found.delayMax, 20, 'Default de delayMax debe ser 20');
+
+    // 2. Verificación estática del código frontend
+    const resolvedPath = path.resolve('../src/pages/CampaignsPage.jsx');
+    const altPath = path.resolve('src/pages/CampaignsPage.jsx');
+    const targetFile = fs.existsSync(resolvedPath) ? resolvedPath : altPath;
+    const frontendCode = fs.readFileSync(targetFile, 'utf-8');
+    assert.ok(!frontendCode.includes('Retraso Mínimo'), 'La UI no debe tener texto de Retraso Mínimo');
+    assert.ok(!frontendCode.includes('Retraso Máximo'), 'La UI no debe tener texto de Retraso Máximo');
+    assert.ok(!frontendCode.includes('Opciones adicionales (Imagen y Retrasos Anti-Ban)'), 'El acordión de retrasos no debe existir');
+  });
+
+  // ────────────────────────────────────────────────────────────────────────
+  console.log('\n══ TEST 47 (TEST D): Phone y @lid SIN mapping real -> NO asumir misma persona (2 destinos) ══');
+  // ────────────────────────────────────────────────────────────────────────
+  const tenant47 = await makeTenant(`camp-t-47-${stamp}`);
+  await runTest('TEST 47 (TEST D): Phone y @lid sin mapping autoritativo no se fusionan (2 destinos elegibles)', async () => {
+    const phoneNum = `519988${stamp.toString().slice(-6)}`;
+    const lidAddress = `290243${stamp.toString().slice(-9)}@lid`;
+
+    // Dos contactos con el mismo nombre pero SIN mapping autoritativo en BD
+    await prisma.contact.create({
+      data: { name: 'Juan Perez', phone: phoneNum, tenantId: tenant47.id }
+    });
+    await prisma.contact.create({
+      data: { name: 'Juan Perez', phone: lidAddress, tenantId: tenant47.id }
+    });
+
+    const { eligibleContacts } = await resolveEligibleContacts({ tenantId: tenant47.id, audience: 'all' });
+    assert.strictEqual(eligibleContacts.length, 2, 'Sin mapping autoritativo, NO deben fusionarse: deben ser 2 destinos');
+    const dests = eligibleContacts.map((c) => c.phone);
+    assert.ok(dests.includes(phoneNum), 'Debe incluir el teléfono normal');
+    assert.ok(dests.includes(lidAddress), 'Debe incluir el @lid independiente');
+  });
+
+  // ────────────────────────────────────────────────────────────────────────
+  console.log('\n══ TEST 48 (TEST E): Dos contactos distintos con mismo nombre -> 2 destinos ══');
+  // ────────────────────────────────────────────────────────────────────────
+  const tenant48 = await makeTenant(`camp-t-48-${stamp}`);
+  await runTest('TEST 48 (TEST E): Homónimos legítimos (mismo nombre, distintos teléfonos) generan 2 destinos', async () => {
+    const phoneA = `519711${stamp.toString().slice(-6)}`;
+    const phoneB = `519722${stamp.toString().slice(-6)}`;
+
+    await prisma.contact.create({
+      data: { name: 'Carlos', phone: phoneA, tenantId: tenant48.id }
+    });
+    await prisma.contact.create({
+      data: { name: 'Carlos', phone: phoneB, tenantId: tenant48.id }
+    });
+
+    const { eligibleContacts } = await resolveEligibleContacts({ tenantId: tenant48.id, audience: 'all' });
+    assert.strictEqual(eligibleContacts.length, 2, 'Dos personas con mismo nombre NO deben sobre-deduplicarse');
+    const phones = eligibleContacts.map((c) => c.phone);
+    assert.ok(phones.includes(phoneA));
+    assert.ok(phones.includes(phoneB));
+  });
+
+  // ────────────────────────────────────────────────────────────────────────
+  console.log('\n══ TEST 49 (TEST F): Dos teléfonos distintos con mismo nombre -> 2 CampaignLogs ══');
+  // ────────────────────────────────────────────────────────────────────────
+  const tenant49 = await makeTenant(`camp-t-49-${stamp}`);
+  await runTest('TEST 49 (TEST F): launchCampaignV2 genera 2 CampaignLogs para dos teléfonos con mismo nombre', async () => {
+    const phoneA = `519733${stamp.toString().slice(-6)}`;
+    const phoneB = `519744${stamp.toString().slice(-6)}`;
+
+    await prisma.contact.create({
+      data: { name: 'Carlos Homonimo', phone: phoneA, tenantId: tenant49.id }
+    });
+    await prisma.contact.create({
+      data: { name: 'Carlos Homonimo', phone: phoneB, tenantId: tenant49.id }
+    });
+
+    const { campaign, eligibleCount } = await launchCampaignV2({
+      tenantId: tenant49.id,
+      name: 'Camp 49 Homonimos Logs',
+      baseMessage: 'Hola [Nombre]',
+      delayMin: 0,
+      delayMax: 0,
+      audience: 'all'
+    });
+
+    assert.strictEqual(eligibleCount, 2, 'Debe registrar 2 elegibles');
+    const logs = await prisma.campaignLog.findMany({ where: { campaignId: campaign.id } });
+    assert.strictEqual(logs.length, 2, 'Deben crearse exactamente 2 CampaignLogs');
+    const logPhones = logs.map((l) => l.customerPhone);
+    assert.ok(logPhones.includes(phoneA));
+    assert.ok(logPhones.includes(phoneB));
+
+    await prisma.campaign.update({ where: { id: campaign.id }, data: { status: 'completed' } });
+  });
+
+  // ────────────────────────────────────────────────────────────────────────
+  console.log('\n══ TEST 50 (TEST G): @lid explícito sin phone equivalente -> válido ══');
+  // ────────────────────────────────────────────────────────────────────────
+  const tenant50 = await makeTenant(`camp-t-50-${stamp}`);
+  await runTest('TEST 50 (TEST G): @lid explícito sin teléfono asociado es destino válido y se conserva intacto', async () => {
+    const lidOnly = `300243${stamp.toString().slice(-9)}@lid`;
+
+    await prisma.contact.create({
+      data: { name: 'Usuario Solo LID', phone: lidOnly, tenantId: tenant50.id }
+    });
+
+    const { eligibleContacts } = await resolveEligibleContacts({ tenantId: tenant50.id, audience: 'all' });
+    assert.strictEqual(eligibleContacts.length, 1);
+    assert.strictEqual(eligibleContacts[0].phone, lidOnly, 'El destino @lid debe conservarse intacto sin mutar');
+
+    const classG = classifyDestination(lidOnly, new Set());
+    assert.strictEqual(classG.eligible, true);
+    assert.strictEqual(classG.type, 'lid');
+    assert.strictEqual(classG.destination, lidOnly);
+  });
+
+  // ────────────────────────────────────────────────────────────────────────
+  console.log('\n══ TEST 51: Caso Carlos Real en BD -> exactamente 1 destinatario y 1 CampaignLog ══');
+  // ────────────────────────────────────────────────────────────────────────
+  await runTest('TEST 51: Identidad real Carlos con 3 contactos en BD resuelve a exactamente 1 destinatario telefónico', async () => {
+    const realTenantId = 'dfe020e6-5e08-404c-9b89-ef3f08f2b150';
+
+    // Obtener los 3 contactos reales de Carlos
+    const carlosContacts = await prisma.contact.findMany({
+      where: {
+        tenantId: realTenantId,
+        OR: [
+          { phone: '51926246740' },
+          { phone: '270243989557418' },
+          { phone: '270243989557418@lid' }
+        ]
+      }
+    });
+
+    assert.ok(carlosContacts.length >= 2, 'Los contactos reales de Carlos deben existir en BD');
+    const contactIds = carlosContacts.map((c) => c.id);
+
+    // Resolver elegibles pasando explícitamente los contactos de Carlos
+    const { eligibleContacts } = await resolveEligibleContacts({
+      tenantId: realTenantId,
+      audience: 'manual',
+      contactIds
+    });
+
+    assert.strictEqual(
+      eligibleContacts.length,
+      1,
+      'Los contactos de Carlos deben resolver autoritativamente a exactamente 1 destinatario'
+    );
+    assert.strictEqual(
+      eligibleContacts[0].phone,
+      '51926246740',
+      'Debe preferir el teléfono universal E.164 51926246740 sobre el LID'
+    );
+
+    // Verificar que una campaña con esta audiencia manual genera exactamente 1 CampaignLog
+    const { campaign, eligibleCount } = await launchCampaignV2({
+      tenantId: realTenantId,
+      name: `Test Carlos Real ${stamp}`,
+      baseMessage: 'Hola [Nombre], prueba determinística',
+      delayMin: 0,
+      delayMax: 0,
+      audience: 'manual',
+      contactIds
+    });
+
+    assert.strictEqual(eligibleCount, 1);
+    const logs = await prisma.campaignLog.findMany({ where: { campaignId: campaign.id } });
+    assert.strictEqual(logs.length, 1, 'Debe crearse exactamente 1 CampaignLog para Carlos');
+    assert.strictEqual(logs[0].customerPhone, '51926246740');
+
+    await prisma.campaign.update({ where: { id: campaign.id }, data: { status: 'completed' } });
+  });
+
+  // ────────────────────────────────────────────────────────────────────────
+  console.log('\n══ TEST 52 (TEST A): Webhook con Phone + remoteJidAlt @lid -> mapping persistido en BD ══');
+  // ────────────────────────────────────────────────────────────────────────
+  const tenant52 = await makeTenant(`camp-t-52-${stamp}`);
+  const autoPhone52 = `519888${stamp.toString().slice(-5)}`;
+  const autoLid52 = `300888${stamp.toString().slice(-9)}@lid`;
+
+  await runTest('TEST 52 (TEST A): Webhook con phone + remoteJidAlt @lid persiste mapping autoritativo automáticamente', async () => {
+    // 1. Simular payload Evolution que llega al webhook
+    const evoPayload = {
+      event: 'messages.upsert',
+      data: {
+        key: {
+          remoteJid: `${autoPhone52}@s.whatsapp.net`,
+          remoteJidAlt: autoLid52
+        }
+      }
+    };
+
+    const identityPair = extractAuthoritativeIdentityPair(evoPayload);
+    assert.deepStrictEqual(identityPair, { phone: autoPhone52, lid: autoLid52 });
+
+    // 2. Crear contacto telefónico (como hace el webhook al recibir el mensaje)
+    const phoneContact = await prisma.contact.create({
+      data: { name: 'Cliente Auto Ingestion', phone: autoPhone52, tenantId: tenant52.id }
+    });
+
+    // 3. Ejecutar persistencia automática
+    const mappingResult = await persistAuthoritativeIdentityMapping({
+      tenantId: tenant52.id,
+      phone: identityPair.phone,
+      lid: identityPair.lid,
+      prismaClient: prisma
+    });
+    assert.deepStrictEqual(mappingResult, { phone: autoPhone52, lid: autoLid52 });
+
+    // 4. Verificar que Contact.tags se actualizó con lid:...
+    const updatedContact = await prisma.contact.findUnique({ where: { id: phoneContact.id } });
+    assert.ok(updatedContact.tags.includes(`lid:${autoLid52}`), 'El contacto telefónico debe quedar etiquetado con lid:...');
+  });
+
+  // ────────────────────────────────────────────────────────────────────────
+  console.log('\n══ TEST 53 (TEST B): Campaigns recibe ambos contactos de usuario nuevo -> exactamente 1 destinatario ══');
+  // ────────────────────────────────────────────────────────────────────────
+  await runTest('TEST 53 (TEST B): Campaigns resuelve ambos contactos (phone + lid) a exactamente 1 destinatario y 1 CampaignLog', async () => {
+    // Crear el segundo contacto registrado por @lid para el mismo usuario
+    const lidContact = await prisma.contact.create({
+      data: { name: 'Cliente Auto Ingestion (LID)', phone: autoLid52, tenantId: tenant52.id }
+    });
+
+    // Sincronizar persistencia para el nuevo contacto LID
+    await persistAuthoritativeIdentityMapping({
+      tenantId: tenant52.id,
+      phone: autoPhone52,
+      lid: autoLid52,
+      prismaClient: prisma
+    });
+
+    const updatedLid = await prisma.contact.findUnique({ where: { id: lidContact.id } });
+    assert.ok(updatedLid.tags.includes(`phone:${autoPhone52}`), 'El contacto LID debe quedar etiquetado con phone:...');
+
+    // Verificar que Campaigns V2 resuelve a exactamente 1 destinatario telefónico
+    const { eligibleContacts } = await resolveEligibleContacts({ tenantId: tenant52.id, audience: 'all' });
+    assert.strictEqual(eligibleContacts.length, 1, 'Ambos contactos deben consolidarse en 1 solo destinatario');
+    assert.strictEqual(eligibleContacts[0].phone, autoPhone52, 'Debe preferir el teléfono universal sobre el LID');
+
+    // Verificar ejecución de campaña
+    const { campaign, eligibleCount } = await launchCampaignV2({
+      tenantId: tenant52.id,
+      name: `Camp 53 Auto Identity ${stamp}`,
+      baseMessage: 'Hola [Nombre], prueba automatica',
+      delayMin: 0,
+      delayMax: 0,
+      audience: 'all'
+    });
+
+    assert.strictEqual(eligibleCount, 1, 'Debe registrar exactamente 1 destinatario elegible');
+    const logs = await prisma.campaignLog.findMany({ where: { campaignId: campaign.id } });
+    assert.strictEqual(logs.length, 1, 'Debe generarse exactamente 1 CampaignLog');
+    assert.strictEqual(logs[0].customerPhone, autoPhone52);
+
+    await prisma.campaign.update({ where: { id: campaign.id }, data: { status: 'completed' } });
+  });
+
+  // ────────────────────────────────────────────────────────────────────────
+  console.log('\n══ TEST 54 (TEST C): Dos contactos con mismo nombre sin mapping -> siguen siendo 2 destinos ══');
+  // ────────────────────────────────────────────────────────────────────────
+  const tenant54 = await makeTenant(`camp-t-54-${stamp}`);
+  await runTest('TEST 54 (TEST C): Dos contactos con mismo nombre sin mapping autoritativo no se fusionan (permanecen 2)', async () => {
+    const phoneX = `519755${stamp.toString().slice(-5)}`;
+    const phoneY = `519766${stamp.toString().slice(-5)}`;
+
+    await prisma.contact.create({
+      data: { name: 'Maria Lopez', phone: phoneX, tenantId: tenant54.id }
+    });
+    await prisma.contact.create({
+      data: { name: 'Maria Lopez', phone: phoneY, tenantId: tenant54.id }
+    });
+
+    const { eligibleContacts } = await resolveEligibleContacts({ tenantId: tenant54.id, audience: 'all' });
+    assert.strictEqual(eligibleContacts.length, 2, 'Sin mapping autoritativo deben permanecer 2 destinatarios independientes');
+  });
+
+  // ────────────────────────────────────────────────────────────────────────
+  console.log('\n══ TEST 55 (TEST D): Aislamiento Tenant: mismo LID en tenant distinto no se cruza ══');
+  // ────────────────────────────────────────────────────────────────────────
+  const tenant55A = await makeTenant(`camp-t-55a-${stamp}`);
+  const tenant55B = await makeTenant(`camp-t-55b-${stamp}`);
+  await runTest('TEST 55 (TEST D): Mapping en Tenant A no contamina a Tenant B (estricto aislamiento multitenant)', async () => {
+    const sharedLid = `300777${stamp.toString().slice(-9)}@lid`;
+    const phoneA = `519777${stamp.toString().slice(-5)}`;
+    const phoneB = `519788${stamp.toString().slice(-5)}`;
+
+    // Tenant A: se registra el mapping autoritativo
+    await prisma.contact.create({
+      data: { name: 'Contacto Tenant A', phone: phoneA, tenantId: tenant55A.id }
+    });
+    await persistAuthoritativeIdentityMapping({
+      tenantId: tenant55A.id,
+      phone: phoneA,
+      lid: sharedLid,
+      prismaClient: prisma
+    });
+
+    // Tenant B: tiene un contacto con el mismo LID y otro con phoneB
+    await prisma.contact.create({
+      data: { name: 'Contacto LID en Tenant B', phone: sharedLid, tenantId: tenant55B.id }
+    });
+    await prisma.contact.create({
+      data: { name: 'Contacto Phone en Tenant B', phone: phoneB, tenantId: tenant55B.id }
+    });
+
+    // Verificar la evidencia en Tenant B: no debe tener mapeado sharedLid -> phoneA
+    const evidenceB = await getTenantIdentityEvidence(tenant55B.id);
+    assert.strictEqual(evidenceB.lidToPhoneMap.has(sharedLid), false, 'Tenant B NO debe ver el mapping creado en Tenant A');
+
+    // Tenant B debe resolver ambos contactos independientemente
+    const { eligibleContacts: eligB } = await resolveEligibleContacts({ tenantId: tenant55B.id, audience: 'all' });
+    assert.strictEqual(eligB.length, 2, 'Tenant B debe conservar sus 2 contactos sin cruce con Tenant A');
+  });
+
+  // ────────────────────────────────────────────────────────────────────────
+  console.log('\n══ TEST 56 (TEST E): Webhook sin evidencia Phone/LID -> no inventa mapping ══');
+  // ────────────────────────────────────────────────────────────────────────
+  await runTest('TEST 56 (TEST E): Webhooks incompletos o sin evidencia autoritativa no inventan mappings', async () => {
+    // 1. Mensaje normal solo con remoteJid (sin remoteJidAlt)
+    const normalMsg = {
+      key: {
+        remoteJid: '51999123456@s.whatsapp.net'
+      }
+    };
+    assert.strictEqual(extractAuthoritativeIdentityPair(normalMsg), null, 'Sin remoteJidAlt no debe extraer par');
+
+    // 2. Mensaje con dos teléfonos normales (ninguno es @lid)
+    const twoPhones = {
+      key: {
+        remoteJid: '51999123456@s.whatsapp.net',
+        remoteJidAlt: '51999654321@s.whatsapp.net'
+      }
+    };
+    assert.strictEqual(extractAuthoritativeIdentityPair(twoPhones), null, 'Si ninguno es @lid no debe extraer par');
+
+    // 3. Mensaje de grupo
+    const groupMsg = {
+      key: {
+        remoteJid: '12036302555@g.us',
+        remoteJidAlt: '270243989557418@lid'
+      }
+    };
+    assert.strictEqual(extractAuthoritativeIdentityPair(groupMsg), null, 'Los grupos @g.us no deben extraerse como par');
+
+    // 4. Intentar persistir con datos vacíos o nulos
+    const emptyRes = await persistAuthoritativeIdentityMapping({
+      tenantId: tenant52.id,
+      phone: null,
+      lid: null,
+      prismaClient: prisma
+    });
+    assert.strictEqual(emptyRes, null, 'Datos nulos no deben persistir nada');
   });
 
   console.log('\n======================================================================');

@@ -57,12 +57,9 @@ export async function launchCampaign(req, res) {
       }
     }
 
-    // Seguro Anti-Ban: Forzar límites mínimos estrictos de retraso por seguridad
+    // Seguro Anti-Ban: Forzar límites internos de retraso (defaults: 10s y 20s)
     let minDelay = Math.max(10, parseInt(delayMin) || 10);
-    let maxDelay = Math.max(15, parseInt(delayMax) || 15);
-    if (minDelay >= maxDelay) {
-      maxDelay = minDelay + 5;
-    }
+    let maxDelay = Math.max(minDelay + 5, parseInt(delayMax) || 20);
 
     const { campaign, eligibleCount, scheduled } = await launchCampaignV2({
       tenantId,

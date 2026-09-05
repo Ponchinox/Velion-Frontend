@@ -17,8 +17,7 @@ import {
   Plus,
   Search,
   Check,
-  ChevronDown,
-  ChevronUp
+  Video
 } from 'lucide-react';
 import * as campaignService from '../services/campaignService';
 import * as contactService from '../services/contactService';
@@ -119,11 +118,8 @@ export default function CampaignsPage() {
   const [scheduledDateTime, setScheduledDateTime] = useState('');
   const [recurrenceType, setRecurrenceType] = useState('NONE'); // 'NONE' | 'EVERY_15_DAYS' | 'MONTHLY'
 
-  // Delays y multimedia
-  const [delayMin, setDelayMin] = useState(10);
-  const [delayMax, setDelayMax] = useState(20);
+  // Multimedia (imagen o video)
   const [mediaFile, setMediaFile] = useState(null);
-  const [showAdvanced, setShowAdvanced] = useState(false);
 
   // Submitting y errores de modal
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -206,12 +202,10 @@ export default function CampaignsPage() {
     setSelectedContactIds([]);
     setScheduleMode('now');
     setRecurrenceType('NONE');
-    setDelayMin(10);
-    setDelayMax(20);
     setMediaFile(null);
+    if (fileInputRef.current) fileInputRef.current.value = '';
     setModalError('');
     setIsSubmitting(false);
-    setShowAdvanced(false);
     setIsModalOpen(true);
     setIsDirty(false);
   };
@@ -223,27 +217,52 @@ export default function CampaignsPage() {
     setModalError('');
   };
 
-  /* ─── Manejo de imagen ─── */
+  /* ─── Manejo de multimedia (imagen o video) ─── */
   const handleMediaChange = (e) => {
-    const file = e.target.files[0];
+    const file = e.target.files?.[0];
     if (!file) return;
 
-    // Validación de tamaño (máx 5MB)
-    if (file.size > 5 * 1024 * 1024) {
+    const isImg = file.type.startsWith('image/');
+    const isVid = file.type.startsWith('video/') ||
+      file.name.endsWith('.mp4') ||
+      file.name.endsWith('.mov') ||
+      file.name.endsWith('.webm');
+
+    if (!isImg && !isVid) {
+      setModalError('Formato multimedia no soportado. Acepta JPG, PNG, WEBP, MP4, MOV o WEBM.');
+      return;
+    }
+
+    // Validación de tamaño: máx 5MB para imágenes, máx 16MB para videos
+    if (isImg && file.size > 5 * 1024 * 1024) {
       setModalError('La imagen no puede exceder 5MB.');
       return;
     }
 
+    if (isVid && file.size > 16 * 1024 * 1024) {
+      setModalError('El video no puede exceder 16MB (límite oficial de WhatsApp).');
+      return;
+    }
+
+    setModalError('');
     const reader = new FileReader();
     reader.onloadend = () => {
       setMediaFile({
         file,
         base64: reader.result,
-        name: file.name
+        name: file.name,
+        type: isVid ? 'video' : 'image',
+        sizeMb: (file.size / (1024 * 1024)).toFixed(1)
       });
       setIsDirty(true);
     };
     reader.readAsDataURL(file);
+  };
+
+  const handleRemoveMedia = () => {
+    setMediaFile(null);
+    if (fileInputRef.current) fileInputRef.current.value = '';
+    setIsDirty(true);
   };
 
   /* ─── Lógica de cambio de recurrencia ─── */
@@ -307,11 +326,8 @@ export default function CampaignsPage() {
         return 'La fecha y hora de programación debe ser futura.';
       }
     }
-    if (delayMin < 10) return 'El retraso mínimo no puede ser menor a 10 segundos.';
-    if (delayMax < 15) return 'El retraso máximo no puede ser menor a 15 segundos.';
-    if (delayMin >= delayMax) return 'El retraso máximo debe ser mayor al retraso mínimo.';
     return null;
-  }, [name, baseMessage, audienceType, selectedContactIds, scheduleMode, recurrenceType, scheduledDateTime, delayMin, delayMax]);
+  }, [name, baseMessage, audienceType, selectedContactIds, scheduleMode, recurrenceType, scheduledDateTime]);
 
   /* ─── Envío de campaña ─── */
   const handleSubmit = async (e) => {
@@ -340,8 +356,6 @@ export default function CampaignsPage() {
         contactIds: audienceType === 'manual' ? selectedContactIds : undefined,
         scheduledAt: scheduledAtISO,
         recurrenceType: recurrenceType || 'NONE',
-        delayMin: Number(delayMin),
-        delayMax: Number(delayMax),
         media: mediaFile ? mediaFile.base64 : null
       };
 
@@ -647,7 +661,7 @@ export default function CampaignsPage() {
             <div className="text-2xs text-lo mt-1.5 leading-normal flex items-start gap-1.5 bg-app p-2 rounded-md border border-line">
               <HelpCircle size={13} className="flex-shrink-0 mt-0.5 text-brand" />
               <span>
-                Tip: Utiliza <strong className="text-hi font-mono">&#123;Nombre&#125;</strong> o <strong className="text-hi font-mono">[Nombre]</strong> para personalizar con el nombre de cada contacto. El motor de IA generará variaciones automáticas para proteger tu número de WhatsApp.
+                Tip: Utiliza <strong className="text-hi font-mono">&#123;Nombre&#125;</strong> o <strong className="text-hi font-mono">[Nombre]</strong> para personalizar con el nombre de cada contacto.
               </span>
             </div>
           </div>
@@ -889,81 +903,90 @@ export default function CampaignsPage() {
             )}
           </div>
 
-          {/* 5. Opciones Avanzadas (Colapsable: Delays Anti-Ban e Imagen) */}
-          <div className="border border-line rounded-xl overflow-hidden bg-app">
-            <button
-              type="button"
-              onClick={() => setShowAdvanced(!showAdvanced)}
-              className="w-full flex items-center justify-between p-3 text-xs font-semibold text-mid hover:text-hi cursor-pointer"
-            >
-              <span>Opciones adicionales (Imagen y Retrasos Anti-Ban)</span>
-              {showAdvanced ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
-            </button>
+          {/* 5. Adjuntar imagen o video (opcional) */}
+          <div className="p-4 rounded-xl border border-line bg-app space-y-3">
+            <div>
+              <label className="block text-xs font-semibold text-mid mb-1">
+                Adjuntar imagen o video (opcional)
+              </label>
+              <p className="text-2xs text-lo mb-2.5">
+                Formatos soportados: JPG, PNG, WEBP (máx. 5MB) o MP4, MOV, WEBM (máx. 16MB).
+              </p>
 
-            {showAdvanced && (
-              <div className="p-3 pt-0 border-t border-line space-y-3 bg-card">
-                {/* Adjuntar Imagen */}
-                <div>
-                  <label className="block text-xs font-semibold text-mid mb-1">Adjuntar Imagen (opcional)</label>
-                  <div className="flex items-center gap-3">
-                    <input
-                      ref={fileInputRef}
-                      type="file"
-                      accept="image/*"
-                      className="hidden"
-                      onChange={handleMediaChange}
-                    />
-                    <button
-                      type="button"
-                      onClick={() => fileInputRef.current?.click()}
-                      className="flex items-center gap-2 px-3 py-2 rounded-lg border border-line bg-app text-xs font-semibold text-hi hover:bg-app/80 cursor-pointer"
-                    >
-                      <ImagePlus size={15} className="text-brand" />
-                      <span>{mediaFile ? 'Cambiar Imagen' : 'Seleccionar Imagen'}</span>
-                    </button>
-                    {mediaFile && (
-                      <div className="flex items-center gap-2 bg-app px-2.5 py-1.5 rounded-lg border border-line text-xs max-w-[200px]">
-                        <img src={mediaFile.base64} alt="Adjunto" className="w-6 h-6 object-cover rounded" />
-                        <span className="truncate flex-1 text-hi font-mono text-[11px]">{mediaFile.name}</span>
-                        <button
-                          type="button"
-                          onClick={() => setMediaFile(null)}
-                          className="text-lo hover:text-hi p-0.5 cursor-pointer"
-                        >
-                          <X size={12} />
-                        </button>
-                      </div>
-                    )}
-                  </div>
-                </div>
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept="image/jpeg,image/png,image/webp,video/mp4,video/quicktime,video/webm"
+                className="hidden"
+                onChange={handleMediaChange}
+              />
 
-                {/* Retrasos anti-ban */}
-                <div className="grid grid-cols-2 gap-3">
-                  <div>
-                    <label className="block text-xs font-semibold text-mid mb-1">Retraso Mínimo (seg)</label>
-                    <input
-                      type="number"
-                      min="10"
-                      max="120"
-                      value={delayMin}
-                      onChange={e => { setDelayMin(Number(e.target.value)); setIsDirty(true); }}
-                      className="w-full px-3 py-1.5 rounded-lg border border-line bg-app text-xs text-hi font-mono"
-                    />
+              {!mediaFile ? (
+                <button
+                  type="button"
+                  onClick={() => fileInputRef.current?.click()}
+                  className="flex items-center gap-2 px-3.5 py-2 rounded-lg border border-line bg-card text-xs font-semibold text-hi hover:bg-card/80 cursor-pointer shadow-xs transition-colors"
+                >
+                  <ImagePlus size={15} className="text-brand" />
+                  <span>Seleccionar imagen o video</span>
+                </button>
+              ) : (
+                <div className="space-y-2">
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 p-3 rounded-lg border border-line bg-card">
+                    <div className="flex items-center gap-3 min-w-0">
+                      {mediaFile.type === 'video' ? (
+                        <div className="flex items-center gap-2.5 min-w-0">
+                          <div className="w-10 h-10 rounded-lg bg-indigo-50 dark:bg-indigo-950/50 flex items-center justify-center text-indigo-600 dark:text-indigo-400 flex-shrink-0">
+                            <Video size={20} />
+                          </div>
+                          <div className="min-w-0">
+                            <p className="text-xs font-semibold text-hi truncate max-w-[200px] sm:max-w-xs">{mediaFile.name}</p>
+                            <p className="text-2xs text-lo font-mono">Video • {mediaFile.sizeMb} MB</p>
+                          </div>
+                        </div>
+                      ) : (
+                        <div className="flex items-center gap-2.5 min-w-0">
+                          <img
+                            src={mediaFile.base64}
+                            alt="Vista previa"
+                            className="w-10 h-10 object-cover rounded-lg border border-line flex-shrink-0"
+                          />
+                          <div className="min-w-0">
+                            <p className="text-xs font-semibold text-hi truncate max-w-[200px] sm:max-w-xs">{mediaFile.name}</p>
+                            <p className="text-2xs text-lo font-mono">Imagen • {mediaFile.sizeMb} MB</p>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+
+                    <div className="flex items-center gap-2 flex-shrink-0 self-end sm:self-auto">
+                      <button
+                        type="button"
+                        onClick={() => fileInputRef.current?.click()}
+                        className="text-2xs font-semibold text-brand hover:underline cursor-pointer"
+                      >
+                        Cambiar
+                      </button>
+                      <span className="text-lo text-2xs">•</span>
+                      <button
+                        type="button"
+                        onClick={handleRemoveMedia}
+                        className="flex items-center gap-1 text-2xs font-semibold text-rose-600 hover:text-rose-700 cursor-pointer"
+                      >
+                        <X size={12} />
+                        <span>Quitar</span>
+                      </button>
+                    </div>
                   </div>
-                  <div>
-                    <label className="block text-xs font-semibold text-mid mb-1">Retraso Máximo (seg)</label>
-                    <input
-                      type="number"
-                      min="15"
-                      max="300"
-                      value={delayMax}
-                      onChange={e => { setDelayMax(Number(e.target.value)); setIsDirty(true); }}
-                      className="w-full px-3 py-1.5 rounded-lg border border-line bg-app text-xs text-hi font-mono"
-                    />
-                  </div>
+
+                  {mediaFile.type === 'video' && (
+                    <div className="rounded-lg overflow-hidden border border-line bg-black/5 max-w-xs">
+                      <video src={mediaFile.base64} controls className="max-h-36 w-full rounded-lg" />
+                    </div>
+                  )}
                 </div>
-              </div>
-            )}
+              )}
+            </div>
           </div>
 
           {/* Footer del modal */}

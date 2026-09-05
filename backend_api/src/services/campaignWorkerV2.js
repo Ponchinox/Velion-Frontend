@@ -1,9 +1,17 @@
 import { Prisma } from '@prisma/client';
 import prisma from '../db.js';
-import { generateAIResponse } from './aiService.js';
-import { evaluateAiBudgetGuard } from './aiBudgetGuardService.js';
 import { sendText as gatewaySendText, sendMedia as gatewaySendMedia, resolveGatewayCtx } from './whatsappGateway.js';
 import { HUMAN_HANDOFF_MS } from './humanHandoffService.js';
+
+let customGatewaySender = null;
+
+/**
+ * Inyecta un mock handler para el WhatsApp Gateway durante tests.
+ * Si está activo, sendClaimedLog delega en él y JAMÁS realiza llamadas externas.
+ */
+export function setCampaignGatewaySender(senderFn) {
+  customGatewaySender = typeof senderFn === 'function' ? senderFn : null;
+}
 
 /**
  * CAMPAIGN WORKER V2 — Motor persistente y reanudable de campañas masivas (Fase A).
@@ -84,19 +92,45 @@ export function calculateNextRun({ recurrenceType, fromDate, anchorDay }) {
 }
 
 /**
- * Clasifica un destino de campaña. Los JIDs (@lid, @s.whatsapp.net) son elegibles
- * porque el gateway actual (whatsappGateway.js) ya sabe rutearlos sin normalizar.
- * Los grupos (@g.us) y los teléfonos con longitud fuera de rango se excluyen.
+ * Clasifica un destino de campaña.
+ * - Destinos vacíos o grupos (@g.us) se excluyen siempre.
+ * - Destinos @lid explícitos y @s.whatsapp.net son elegibles.
+ * - Números telefónicos estándar y E.164 de cualquier longitud válida (incluyendo 14 y 15 dígitos) son elegibles.
+ * - Una cadena numérica solo se clasifica como LID huérfano si existe evidencia autoritativa en BD (${digits}@lid).
+ * - Si no existe evidencia en BD, se clasifica como teléfono normal sin descartarlo por longitud.
  */
-function classifyDestination(phone) {
+export function classifyDestination(phone, tenantLidSet = new Set()) {
   const raw = String(phone || '').trim();
-  if (!raw) return { eligible: false };
-  if (raw.includes('@g.us')) return { eligible: false };
-  const isJid = raw.includes('@lid') || raw.includes('@s.whatsapp.net');
-  if (isJid) return { eligible: true };
+  if (!raw) return { eligible: false, reason: 'empty' };
+  if (raw.includes('@g.us')) return { eligible: false, reason: 'group' };
+
+  if (raw.includes('@lid')) {
+    return { eligible: true, type: 'lid', destination: raw };
+  }
+
+  if (raw.includes('@s.whatsapp.net')) {
+    return { eligible: true, type: 'phone_jid', destination: raw };
+  }
+
   const digits = raw.replace(/\D/g, '');
-  if (digits.length < 8 || digits.length > 15) return { eligible: false };
-  return { eligible: true };
+  if (digits.length < 8) {
+    return { eligible: false, reason: 'too_short' };
+  }
+
+  // Detección de LID numérico huérfano con evidencia autoritativa en BD
+  const candidateLid = `${digits}@lid`;
+  const isKnownLid = tenantLidSet instanceof Set
+    ? tenantLidSet.has(candidateLid)
+    : Array.isArray(tenantLidSet)
+      ? tenantLidSet.includes(candidateLid)
+      : false;
+
+  if (isKnownLid) {
+    return { eligible: true, type: 'resolved_lid', destination: candidateLid };
+  }
+
+  // Sin evidencia de LID: tratado de forma segura como teléfono normal (soporta E.164 14/15 dígitos)
+  return { eligible: true, type: 'phone', destination: digits };
 }
 
 /**
@@ -108,13 +142,101 @@ function computeDedupKey(phone) {
   return raw.replace(/\D/g, '');
 }
 
-function stableVariationIndex(key, mod) {
-  let hash = 0;
-  const str = String(key || '');
-  for (let i = 0; i < str.length; i++) {
-    hash = (hash * 31 + str.charCodeAt(i)) >>> 0;
+/**
+ * Extrae la evidencia de identidad autoritativa existente en el tenant:
+ * - LIDs explícitos conocidos
+ * - Mapeos persistidos entre teléfono y LID (Customer.persistentProfile o Contact.tags)
+ */
+export async function getTenantIdentityEvidence(tenantId) {
+  const tenantLidSet = new Set();
+  const phoneToLidMap = new Map();
+  const lidToPhoneMap = new Map();
+
+  // 1. Evidencia en Contacts
+  const contacts = await prisma.contact.findMany({
+    where: { tenantId },
+    select: { id: true, phone: true, tags: true }
+  });
+
+  for (const c of contacts) {
+    const p = String(c.phone || '').trim();
+    if (p.includes('@lid')) {
+      tenantLidSet.add(p);
+    }
+    if (Array.isArray(c.tags)) {
+      for (const tag of c.tags) {
+        const lidMatch = String(tag).match(/^lid:(.+@lid)$/i);
+        if (lidMatch) {
+          const cleanP = p.replace(/\D/g, '');
+          if (cleanP) {
+            phoneToLidMap.set(cleanP, lidMatch[1].trim());
+            lidToPhoneMap.set(lidMatch[1].trim(), cleanP);
+          }
+        }
+        const phoneMatch = String(tag).match(/^phone:(\d+)$/i);
+        if (phoneMatch && p.includes('@lid')) {
+          phoneToLidMap.set(phoneMatch[1], p);
+          lidToPhoneMap.set(p, phoneMatch[1]);
+        }
+      }
+    }
   }
-  return mod > 0 ? hash % mod : 0;
+
+  // 2. Evidencia en Customers
+  const customers = await prisma.customer.findMany({
+    where: { tenantId },
+    select: { id: true, phone: true, persistentProfile: true, tags: true }
+  });
+
+  for (const cust of customers) {
+    const p = String(cust.phone || '').trim();
+    if (p.includes('@lid')) {
+      tenantLidSet.add(p);
+    }
+    const profile = (typeof cust.persistentProfile === 'object' && cust.persistentProfile !== null)
+      ? cust.persistentProfile
+      : null;
+
+    if (profile) {
+      if (profile.linkedLid && typeof profile.linkedLid === 'string') {
+        const cleanP = p.replace(/\D/g, '');
+        const cleanLid = profile.linkedLid.trim();
+        if (cleanP && cleanLid.includes('@lid')) {
+          phoneToLidMap.set(cleanP, cleanLid);
+          lidToPhoneMap.set(cleanLid, cleanP);
+          tenantLidSet.add(cleanLid);
+        }
+      }
+      if (profile.linkedPhone && typeof profile.linkedPhone === 'string') {
+        const cleanP = String(profile.linkedPhone).replace(/\D/g, '');
+        const lid = p.includes('@lid') ? p : null;
+        if (cleanP && lid) {
+          phoneToLidMap.set(cleanP, lid);
+          lidToPhoneMap.set(lid, cleanP);
+        }
+      }
+    }
+
+    if (Array.isArray(cust.tags)) {
+      for (const tag of cust.tags) {
+        const lidMatch = String(tag).match(/^lid:(.+@lid)$/i);
+        if (lidMatch) {
+          const cleanP = p.replace(/\D/g, '');
+          if (cleanP) {
+            phoneToLidMap.set(cleanP, lidMatch[1].trim());
+            lidToPhoneMap.set(lidMatch[1].trim(), cleanP);
+          }
+        }
+        const phoneMatch = String(tag).match(/^phone:(\d+)$/i);
+        if (phoneMatch && p.includes('@lid')) {
+          phoneToLidMap.set(phoneMatch[1], p);
+          lidToPhoneMap.set(p, phoneMatch[1]);
+        }
+      }
+    }
+  }
+
+  return { tenantLidSet, phoneToLidMap, lidToPhoneMap };
 }
 
 /**
@@ -170,35 +292,95 @@ async function getPausedPhones(tenantId, phones) {
 }
 
 /**
- * Resuelve audiencia (all | manual) revalidando siempre contra el tenant actual,
- * deduplica por destino normalizado y descarta destinos no ruteables.
+ * Resuelve audiencia (all | manual) revalidando siempre contra el tenant actual.
+ * DEDUPLICACIÓN POR IDENTIDAD REAL AUTORITATIVA:
+ * - NO se deduplica por nombre: dos contactos con mismo nombre pueden ser personas distintas.
+ * - La equivalencia phone <-> LID se basa ÚNICAMENTE en relaciones autoritativas en BD.
+ * - Si existe mapping real entre phone y @lid, se PRIORIZA el phone E.164.
+ * - Máximo 1 CampaignLog por persona física autoritativa por occurrence.
  */
-export async function resolveEligibleContacts({ tenantId, audience, contactIds }) {
-  let contacts = [];
+export async function resolveEligibleContacts({ tenantId, audience, contactIds, identityEvidence = null }) {
+  let candidateContacts = [];
 
   const isManual = audience === 'manual' || Array.isArray(audience) || Array.isArray(contactIds);
   if (isManual) {
     const rawIds = Array.isArray(contactIds) ? contactIds : (Array.isArray(audience) ? audience : []);
     const ids = rawIds.filter((id) => typeof id === 'string' && id);
     if (ids.length > 0) {
-      contacts = await prisma.contact.findMany({ where: { id: { in: ids }, tenantId } });
+      candidateContacts = await prisma.contact.findMany({ where: { id: { in: ids }, tenantId } });
     }
   } else {
-    contacts = await prisma.contact.findMany({ where: { tenantId } });
+    candidateContacts = await prisma.contact.findMany({ where: { tenantId } });
   }
 
-  const seen = new Set();
-  const eligible = [];
-  for (const contact of contacts) {
-    const classification = classifyDestination(contact.phone);
+  if (candidateContacts.length === 0) {
+    return { totalContacts: 0, eligibleContacts: [] };
+  }
+
+  // 1. Obtener evidencia autoritativa de BD (LIDs conocidos y relaciones persistidas)
+  const { tenantLidSet, phoneToLidMap, lidToPhoneMap } = identityEvidence || await getTenantIdentityEvidence(tenantId);
+
+  // 2. Clasificar cada contacto candidato
+  const classifiedList = [];
+  for (const contact of candidateContacts) {
+    const classification = classifyDestination(contact.phone, tenantLidSet);
     if (!classification.eligible) continue;
-    const dedupKey = computeDedupKey(contact.phone);
-    if (seen.has(dedupKey)) continue;
-    seen.add(dedupKey);
-    eligible.push(contact);
+    classifiedList.push({
+      contact,
+      destination: classification.destination,
+      type: classification.type
+    });
   }
 
-  return { totalContacts: contacts.length, eligibleContacts: eligible };
+  // 3. Deduplicación por Identidad Real Autoritativa
+  const phoneItems = classifiedList.filter((i) => i.type === 'phone' || i.type === 'phone_jid');
+  const lidItems = classifiedList.filter((i) => i.type === 'lid' || i.type === 'resolved_lid');
+
+  const seenDestinations = new Set();
+  const coveredLids = new Set();
+  const eligible = [];
+
+  // A. Primero procesamos teléfonos estándar (preferencia universal E.164)
+  for (const item of phoneItems) {
+    const destKey = item.destination.replace(/\D/g, '');
+    if (seenDestinations.has(destKey)) continue;
+    seenDestinations.add(destKey);
+
+    // Si este teléfono tiene un @lid equivalente autoritativo, marcar dicho @lid como cubierto
+    if (phoneToLidMap && phoneToLidMap.has(destKey)) {
+      coveredLids.add(phoneToLidMap.get(destKey));
+    }
+
+    eligible.push({
+      ...item.contact,
+      phone: item.destination
+    });
+  }
+
+  // B. Luego procesamos @lid solo si no está cubierto por un teléfono real en la campaña
+  for (const item of lidItems) {
+    const destKey = item.destination;
+    if (seenDestinations.has(destKey)) continue;
+
+    // Si ya existe un envío telefónico para esta misma persona física autoritativa, omitir @lid
+    if (coveredLids.has(destKey)) {
+      continue;
+    }
+    if (lidToPhoneMap && lidToPhoneMap.has(destKey)) {
+      const mappedPhone = lidToPhoneMap.get(destKey);
+      if (seenDestinations.has(mappedPhone)) {
+        continue;
+      }
+    }
+
+    seenDestinations.add(destKey);
+    eligible.push({
+      ...item.contact,
+      phone: item.destination
+    });
+  }
+
+  return { totalContacts: candidateContacts.length, eligibleContacts: eligible };
 }
 
 /**
@@ -221,6 +403,8 @@ export async function launchCampaignV2({
   const normAudienceType = audienceType || (Array.isArray(audience) || audience === 'manual' || Array.isArray(contactIds) ? 'manual' : 'all');
   const normRecurrence = recurrenceType || 'NONE';
   const targetIds = Array.isArray(contactIds) ? contactIds : (Array.isArray(audience) ? audience : null);
+  const finalDelayMin = delayMin !== undefined ? Number(delayMin) : 10;
+  const finalDelayMax = delayMax !== undefined ? Number(delayMax) : 20;
 
   let isScheduledFuture = false;
   let scheduledDate = null;
@@ -241,8 +425,8 @@ export async function launchCampaignV2({
         name,
         baseMessage,
         media: media || null,
-        delayMin,
-        delayMax,
+        delayMin: finalDelayMin,
+        delayMax: finalDelayMax,
         status: 'scheduled',
         scheduledAt: scheduledDate,
         nextRunAt: scheduledDate,
@@ -266,8 +450,8 @@ export async function launchCampaignV2({
       name,
       baseMessage,
       media: media || null,
-      delayMin,
-      delayMax,
+      delayMin: finalDelayMin,
+      delayMax: finalDelayMax,
       status: 'running',
       scheduledAt: scheduledDate,
       lastRunAt: now,
@@ -307,52 +491,7 @@ export async function launchCampaignV2({
   return { campaign, totalContacts, eligibleCount: eligibleContacts.length, scheduled: false };
 }
 
-/**
- * Genera las 3 variaciones IA del mensaje base si aplica y el presupuesto lo permite.
- * Para recordatorios sin IA, retorna directamente [baseMessage].
- */
-async function generateCampaignVariations(campaign, tenant) {
-  const sysPrompt = 'Eres un redactor de marketing persuasivo y experto en WhatsApp. Genera exactamente 3 variaciones naturales, frescas y atractivas del mensaje base proporcionado. Mantén la intención comercial intacta. Usa SIEMPRE la etiqueta [Nombre] donde iría el nombre del cliente. Separa las 3 variaciones usando exactamente esta cadena: "|||". NO agregues viñetas, números, ni saludos adicionales al inicio.';
-  const userPrompt = `Mensaje base a reescribir:\n${campaign.baseMessage}`;
 
-  let variations = [campaign.baseMessage];
-
-  if (tenant?.aiEnabled !== false && tenant?.aiBudgetEnabled !== false) {
-    const budgetGuard = await evaluateAiBudgetGuard({
-      tenantId: tenant.id,
-      tenant,
-      systemPrompt: sysPrompt,
-      chatContext: [{ role: 'user', content: userPrompt }],
-      hasTools: false
-    });
-
-    if (budgetGuard.allowed) {
-      try {
-        const aiResponse = await generateAIResponse(
-          sysPrompt,
-          [{ role: 'user', content: userPrompt }],
-          [], null, null, [], null, tenant.id
-        );
-        if (aiResponse && aiResponse.includes('|||')) {
-          const splitVars = aiResponse.split('|||').map((v) => v.trim()).filter((v) => v.length > 0);
-          if (splitVars.length > 0) {
-            variations = splitVars;
-          }
-        } else if (aiResponse) {
-          variations = [aiResponse.trim()];
-        }
-      } catch (aiError) {
-        console.error('⚠️ [Campaign Worker V2] Error generando variaciones con IA:', aiError.message);
-      } finally {
-        if (budgetGuard.releaseReservation) budgetGuard.releaseReservation();
-      }
-    } else {
-      console.warn(`🛡️ [Campaign Worker V2] Budget Guard bloqueó la IA para la campaña. Motivo: ${budgetGuard.reason}`);
-    }
-  }
-
-  return variations;
-}
 
 /**
  * Reclamación atómica de un CampaignLog pending -> processing usando
@@ -421,12 +560,15 @@ export async function applySendResult(logId, { success, message, errorMsg }) {
 }
 
 /**
- * Envía el log reclamado mediante el gateway activo (Evolution/Meta).
- * REGLA ESTRICTA: Solo un msgId (string no vacío) confirma el envío.
- * Si el gateway retorna null, undefined o empty string => status: failed. JAMÁS sent.
+ * Envía el log reclamado mediante el gateway activo (Evolution/Meta) o el mock inyectado.
+ * CAMPAIGNS 100% DETERMINÍSTICO:
+ * - El mensaje base se entrega de forma literal.
+ * - Únicamente se reemplazan los placeholders {Nombre} y [Nombre].
+ * - REGLA ESTRICTA: Solo un msgId (string no vacío) confirma el envío.
  */
-export async function sendClaimedLog(log, campaign, gatewayCtx, variationText, contactName) {
-  const personalizedMessage = variationText
+export async function sendClaimedLog(log, campaign, gatewayCtx, rawMessageText, contactName) {
+  const baseText = rawMessageText || campaign.baseMessage || '';
+  const personalizedMessage = baseText
     .replace(/\[Nombre\]/gi, contactName || 'amigo')
     .replace(/\{Nombre\}/gi, contactName || 'amigo');
 
@@ -435,7 +577,19 @@ export async function sendClaimedLog(log, campaign, gatewayCtx, variationText, c
 
   try {
     let msgId = null;
-    if (campaign.media) {
+
+    if (customGatewaySender) {
+      // Gateway mock inyectado en suite de tests (cero llamadas externas)
+      msgId = await customGatewaySender({
+        log,
+        campaign,
+        gatewayCtx,
+        to: log.customerPhone,
+        text: personalizedMessage,
+        media: campaign.media,
+        contactName
+      });
+    } else if (campaign.media) {
       msgId = await gatewaySendMedia({
         ...gatewayCtx,
         to: log.customerPhone,
@@ -488,7 +642,6 @@ export async function runCampaignWorker(campaignId) {
     if (!tenant) return;
 
     const gatewayCtx = await resolveGatewayCtx(campaign.tenantId);
-    const variations = await generateCampaignVariations(campaign, tenant);
 
     let pauseRetries = 0;
 
@@ -541,8 +694,9 @@ export async function runCampaignWorker(campaignId) {
       const contact = await prisma.contact.findFirst({
         where: { tenantId: campaign.tenantId, phone: claimed.customerPhone }
       });
-      const variationIndex = stableVariationIndex(claimed.customerPhone, variations.length);
-      await sendClaimedLog(claimed, campaign, gatewayCtx, variations[variationIndex], contact?.name);
+
+      // Despacho 100% determinístico sin IA
+      await sendClaimedLog(claimed, campaign, gatewayCtx, campaign.baseMessage, contact?.name);
 
       const delayMs = Math.floor(Math.random() * (campaign.delayMax - campaign.delayMin + 1) + campaign.delayMin) * 1000;
       await sleep(delayMs);

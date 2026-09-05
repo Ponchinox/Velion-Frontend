@@ -20,6 +20,10 @@ import {
 import { activateHumanHandoff } from '../services/humanHandoffService.js';
 import { isHandoffActive } from '../services/humanHandoffGate.js';
 import { syncCommercialOrder } from '../services/orderCommercialService.js';
+import {
+  extractAuthoritativeIdentityPair,
+  persistAuthoritativeIdentityMapping,
+} from '../services/whatsappIdentityService.js';
 
 // ── HUMAN HANDOFF: ventana de pausa manual (30 minutos) ──────────────────────
 export const HUMAN_HANDOFF_MINUTES = 30;
@@ -1204,6 +1208,20 @@ async function _processWebhookEvent(body, isMeta, provider, io, query, headers) 
       });
     }
 
+    // ── VINCULACIÓN AUTORITATIVA PHONE <-> LID (MULTI-TENANT) ───────────────
+    try {
+      const identityPair = extractAuthoritativeIdentityPair(req.body || normalized.rawData || normalized.key);
+      if (identityPair && tenant?.id) {
+        await persistAuthoritativeIdentityMapping({
+          tenantId: tenant.id,
+          phone: identityPair.phone,
+          lid: identityPair.lid,
+          prismaClient: prisma
+        });
+      }
+    } catch (errIdentity) {
+      console.error('⚠️ [Identity Mapping] Error en resolución autoritativa:', errIdentity.message);
+    }
 
     // ── 6. MENSAJES SALIENTES (Solo Evolution, Meta no nos envía los nuestros) ─
     if (fromMe) {
