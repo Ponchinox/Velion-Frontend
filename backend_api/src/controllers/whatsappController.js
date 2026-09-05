@@ -17,7 +17,7 @@ import {
   isAutomatedMessage,
   isVelionHumanHandoffAlert,
 } from '../services/aiMessageTracker.js';
-import { activateHumanHandoff } from '../services/humanHandoffService.js';
+import { activateHumanHandoff, isUnknownInfoHandoff } from '../services/humanHandoffService.js';
 import { isHandoffActive } from '../services/humanHandoffGate.js';
 import { syncCommercialOrder } from '../services/orderCommercialService.js';
 import {
@@ -32,13 +32,13 @@ export const HUMAN_HANDOFF_MS = HUMAN_HANDOFF_MINUTES * 60 * 1000;
 // ── DEFINICIÓN FORMAL DE FUNCTION TOOL: request_human_handoff (FASE 2) ────────
 export const REQUEST_HUMAN_HANDOFF_DECLARATION = {
   name: 'request_human_handoff',
-  description: 'Solicita la transferencia de esta conversación a un asesor humano y pausa la automatización. Úsala cuando el cliente solicite explícitamente una persona/asesor, exista un reclamo o disputa que requiera intervención humana, o el caso quede fuera del alcance seguro del asistente.',
+  description: 'Solicita la transferencia de esta conversación a un asesor humano y pausa la automatización. Úsala ÚNICAMENTE cuando el cliente solicite explícitamente hablar con una persona/asesor humano ("quiero un asesor", "pásame con alguien"), acepte explícitamente una oferta de transferencia ("sí, comunícame con un asesor"), o exista un reclamo/queja compleja. NUNCA invoques esta herramienta simplemente porque falte información comercial, una fecha no esté confirmada, o desconozcas horarios, profesores o vacantes. Si la información no está disponible, indícalo amablemente y mantén el bot activo.',
   parameters: {
     type: 'OBJECT',
     properties: {
       reason: {
         type: 'STRING',
-        description: 'Motivo breve de la transferencia a un asesor humano.'
+        description: 'Motivo breve y explícito de la transferencia solicitado por el cliente o por reclamo.'
       }
     },
     required: ['reason']
@@ -1785,6 +1785,17 @@ La tienda es la UNICA fuente de verdad para productos, precios, stock, promocion
 - Si un producto no existe en el catalogo: NO lo inventes. Indicalo claramente y ofrece alternativas de la misma familia si corresponde.
 - Si no conoces el precio exacto: NO lo inventes. Usa get_product_details.
 - Si no conoces el stock: NO lo inventes. Usa get_product_details.
+
+[INFORMACION DESCONOCIDA O NO DISPONIBLE (UNKNOWN_INFORMATION) - REGLA OBLIGATORIA]
+Diferencia SIEMPRE entre información no confirmada y solicitud de asesor:
+1. INFORMACIÓN DESCONOCIDA: Si el cliente pregunta por fechas de inicio, horarios, vacantes, nombres de profesores/docentes, garantías de admisión/ingreso o cualquier dato que NO esté confirmado en los datos del negocio:
+   - Reconoce con honestidad que no tienes ese dato confirmado (ej. "No tengo confirmada la fecha exacta de inicio...", "No tengo información confirmada sobre el profesor asignado...").
+   - NO inventes datos. NUNCA prometas admisiones ni resultados absolutos: explica que el programa brinda la preparación necesaria, pero el resultado depende de múltiples factores individuales.
+   - Responde con la información que sí esté disponible sobre el programa o catálogo.
+   - Puedes OFRECER amablemente consultar con un asesor (ej. "Si deseas, puedo solicitar que un asesor te confirme ese dato").
+   - OFRECER NO ES TRANSFERIR: NUNCA llames a 'request_human_handoff' ni uses [HUMAN_HANDOFF: ...] por el simple hecho de que un dato sea desconocido o falte confirmación. El bot DEBE continuar activo.
+2. TRANSFERENCIA HUMANA (HUMAN_HANDOFF):
+   - SOLO se activa si el cliente SOLICITA DIRECTAMENTE hablar con una persona ("quiero hablar con alguien", "pásame con un asesor", "necesito soporte humano") o si ACEPTA EXPLÍCITAMENTE tu oferta ("sí, por favor comunícame", "sí, confirma con un asesor").
 `.trim();
 
     // --- GUARDRAILS DE COMPORTAMIENTO Y VENTAS (hardcoded) ---
@@ -1804,6 +1815,7 @@ La tienda es la UNICA fuente de verdad para productos, precios, stock, promocion
 - LIMITES DE CATALOGO: Solo ofrece alternativas de la MISMA familia semantica. No ofrezcas categorias no relacionadas. NUNCA dispares imagenes no solicitadas.
 - CIERRE PASO A PASO: No pidas datos de golpe. 1. Variantes y Cantidad, 2. Envio, 3. Metodo de pago (ofrece solo los de INFO EMPRESA). Si no hay configurados, di que un asesor los dara. 4. Datos de pago: solo envialos si el cliente confirmo el metodo o pidio pagar. NO preguntes lo que el cliente ya te dijo.
 - NO INVENTAR: No inventes productos, ciudades, métodos de pago ni cantidades no expresadas por el cliente.
+- DATOS NO CONFIRMADOS VS TRANSFERENCIA: Consultas sobre fechas exactas, profesores, docentes, vacantes, horarios no configurados o dudas sobre admisión/ingreso NO son motivo de handoff. Explica con transparencia que no están confirmados en el sistema o que los resultados dependen del esfuerzo individual. NUNCA actives handoff ni pauses el bot ante preguntas de este tipo.
 
 [PAGOS Y AUDITORIA - CRITICO]
 - VERIFICACIÓN DE PAGO: Que el cliente diga "ya pagué", "te envié el comprobante" o adjunte una foto NO significa que el pago esté verificado. La IA solo puede registrar PAYMENT_VERIFIED (revisión humana requerida). La IA NUNCA marca pagos como PAID ni pedidos como COMPLETED.
@@ -1858,7 +1870,7 @@ Puedes usar las siguientes etiquetas dentro de tu respuesta para ejecutar accion
 
 
     
-    systemCommands += `- Transferencia a asesor humano: Llama a la herramienta 'request_human_handoff' con el motivo si el cliente solicita explícitamente hablar con una persona/asesor, presenta reclamos o quejas complejas, o el caso está fuera de tu alcance seguro. (Compatibilidad fallback: [HUMAN_HANDOFF: Motivo]).\n`;
+    systemCommands += `- Transferencia a asesor humano: Llama a la herramienta 'request_human_handoff' con el motivo ÚNICAMENTE si el cliente solicita explícitamente hablar con una persona/asesor ("quiero un asesor", "pásame con alguien"), si acepta explícitamente tu ofrecimiento previo ("sí, comunícame con un asesor"), o si presenta un reclamo/disputa compleja. NUNCA llames a 'request_human_handoff' ni uses [HUMAN_HANDOFF: ...] simplemente porque falte información, una fecha no esté confirmada o desconozcas profesores/horarios. En esos casos responde que no está confirmado y mantén el bot activo. (Compatibilidad fallback: [HUMAN_HANDOFF: Motivo]).\n`;
     systemCommands += `- [BAN_USER]: Usa ESTA etiqueta como tu ÚNICA respuesta si el cliente te envía groserías o contenido inapropiado.\n`;
 
     // ENSAMBLAJE FINAL - Orden critico para maximizar la atencion del LLM
@@ -1964,9 +1976,21 @@ ${catalogIndexCsv}
     // ─── MANEJADOR DE HERRAMIENTAS (CALLBACK) ────────────────────────────────
     const toolsHandler = async (funcName, args) => {
       if (funcName === 'request_human_handoff') {
-        handoffRequestedInSession = true;
         const cleanReason = String(args?.reason || 'Solicitud de asesor humano').trim().slice(0, 120);
         console.log(`👤 [FC] request_human_handoff invocado para +${clientNumber}. Motivo: "${cleanReason}"`);
+
+        // Guardia UNKNOWN_INFORMATION: Si la invocación es por falta de datos o fecha/profesor no confirmado y el cliente no pidió asesor
+        if (isUnknownInfoHandoff({ reason: cleanReason, userMessageText })) {
+          console.warn(`⚠️ [Human Handoff Guard] request_human_handoff bloqueado para +${clientNumber}: Motivo "${cleanReason}" clasificado como UNKNOWN_INFORMATION sin solicitud humana explícita. El bot continuará activo.`);
+          return {
+            success: false,
+            handoffActive: false,
+            rejectedAsUnknownInfo: true,
+            message: 'Información no confirmada o no disponible en el sistema. Responde con amabilidad indicando que ese dato no está confirmado y continúa atendiendo sin pausar la automatización.'
+          };
+        }
+
+        handoffRequestedInSession = true;
 
         if (handoffActivatedInSession) {
           console.log(`👤 [FC] Handoff ya activado previamente en esta sesión para +${clientNumber}. Evitando side effects duplicados.`);
@@ -2383,7 +2407,16 @@ Atributos/Tags: ${Array.isArray(product.tags) ? product.tags.join(', ') : ''}
       }
     }
 
-    if (handoffMatches.length > 0 && !handoffRequestedInSession && !handoffActivatedInSession) {
+    // Filtrar falsos positivos de UNKNOWN_INFORMATION (información no confirmada o desconocida)
+    const validHandoffMatches = handoffMatches.filter(reason => {
+      if (isUnknownInfoHandoff({ reason, userMessageText })) {
+        console.warn(`⚠️ [Human Handoff Guard] [HUMAN_HANDOFF: ${reason}] ignorado para +${clientNumber}: clasificado como UNKNOWN_INFORMATION sin solicitud humana explícita.`);
+        return false;
+      }
+      return true;
+    });
+
+    if (validHandoffMatches.length > 0 && !handoffRequestedInSession && !handoffActivatedInSession) {
       // 1. Pausar el Bot en PostgreSQL para este contacto (Auto-Pausa)
       await activateHumanHandoff({
         tenantId: tenant.id,
@@ -2398,7 +2431,7 @@ Atributos/Tags: ${Array.isArray(product.tags) ? product.tags.join(', ') : ''}
       const rawDestPhone = await resolveNotificationPhone(tenant.id, tenantDetails);
       const destPhone = sanitizePhoneForEvo(rawDestPhone);
       if (destPhone) {
-        for (const reason of handoffMatches) {
+        for (const reason of validHandoffMatches) {
           const alertMessage = buildHumanHandoffAlert(clientNumber, reason);
           try {
             markMessageAsSentByAi(alertMessage, { tenantId: tenant.id });
@@ -2424,8 +2457,8 @@ Atributos/Tags: ${Array.isArray(product.tags) ? product.tags.join(', ') : ''}
       const timeStr = new Date().toLocaleTimeString('es-PE', { hour: '2-digit', minute: '2-digit' });
       let lastInteractionText = null;
 
-      if (handoffMatches.length > 0 || handoffRequestedInSession) {
-        const reason = (handoffMatches[0] || 'Solicitud de asesor').slice(0, 45).trim();
+      if (validHandoffMatches.length > 0 || handoffRequestedInSession) {
+        const reason = (validHandoffMatches[0] || 'Solicitud de asesor').slice(0, 45).trim();
         lastInteractionText = `👤 Asesor: ${reason} · ${timeStr}`;
       } else {
         // Fallback: fragmento del mensaje del usuario como contexto
