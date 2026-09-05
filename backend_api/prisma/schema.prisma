@@ -205,29 +205,46 @@ model Customer {
 }
 
 model Campaign {
-  id          String        @id @default(uuid())
-  name        String
-  baseMessage String
-  media       String?
-  status      String        @default("pending")
-  delayMin    Int           @default(5)
-  delayMax    Int           @default(15)
-  tenantId    String
-  createdAt   DateTime      @default(now())
-  updatedAt   DateTime      @updatedAt
-  tenant      Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  logs        CampaignLog[]
+  id               String        @id @default(uuid())
+  name             String
+  baseMessage      String
+  media            String?
+  status           String        @default("pending")
+  delayMin         Int           @default(5)
+  delayMax         Int           @default(15)
+  tenantId         String
+  scheduledAt      DateTime?
+  recurrenceType   String        @default("NONE")
+  nextRunAt        DateTime?
+  lastRunAt        DateTime?
+  anchorDay        Int?
+  audienceType     String        @default("all")
+  targetContactIds Json?
+  createdAt        DateTime      @default(now())
+  updatedAt        DateTime      @updatedAt
+  tenant           Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  logs             CampaignLog[]
+
+  @@index([status, nextRunAt])
+  @@index([tenantId])
 }
 
 model CampaignLog {
-  id            String   @id @default(uuid())
+  id            String    @id @default(uuid())
   campaignId    String
   customerPhone String
-  status        String
-  sentMessage   String
+  status        String    @default("pending")
+  sentMessage   String    @default("")
   errorMessage  String?
-  sentAt        DateTime @default(now())
-  campaign      Campaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  occurrenceKey String?
+  claimedAt     DateTime?
+  sentAt        DateTime  @default(now())
+  updatedAt     DateTime  @default(now()) @updatedAt
+  campaign      Campaign  @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+
+  @@index([campaignId])
+  @@index([campaignId, status])
+  @@unique([campaignId, customerPhone, occurrenceKey])
 }
 
 model Flow {

@@ -23,6 +23,7 @@ import userRoutes from './src/routes/userRoutes.js';
 import tenantDashboardRoutes from './src/routes/tenantDashboardRoutes.js';
 import planRoutes from './src/routes/planRoutes.js';
 import { initBackupScheduler } from './src/services/backupScheduler.js';
+import { initCampaignWorkerV2 } from './src/services/campaignWorkerV2.js';
 
 // Cargar variables de entorno
 dotenv.config();
@@ -224,4 +225,8 @@ httpServer.listen(PORT, () => {
   console.log(`🚀 Servidor ejecutándose en http://localhost:${PORT}`);
   // Iniciar la tarea programada de copias de seguridad automáticas
   initBackupScheduler();
+  // Iniciar el motor persistente de campañas: recovery de logs huérfanos + reanudación
+  initCampaignWorkerV2().catch((err) => {
+    console.error('❌ [Campaign Worker V2] Error al inicializar el motor de campañas:', err);
+  });
 });

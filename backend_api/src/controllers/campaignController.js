@@ -1,14 +1,27 @@
 import prisma from '../db.js';
-import { processCampaign } from '../services/campaignService.js';
+import { launchCampaignV2, runCampaignWorker } from '../services/campaignWorkerV2.js';
+
+const VALID_RECURRENCES = ['NONE', 'EVERY_15_DAYS', 'MONTHLY'];
 
 /**
- * Crea una campaña masiva, resuelve la audiencia (todos o selección)
- * e inicia el despachador en segundo plano de forma no bloqueante.
+ * Crea una campaña masiva (inmediata o programada / recurrente), resuelve la audiencia
+ * (todos o selección manual de contactos del tenant) y arranca o agenda el motor persistente V2.
  */
 export async function launchCampaign(req, res) {
   try {
     const tenantId = req.user.tenantId;
-    const { name, baseMessage, delayMin, delayMax, audience, media } = req.body;
+    const {
+      name,
+      baseMessage,
+      delayMin,
+      delayMax,
+      audience,
+      audienceType,
+      media,
+      contactIds,
+      scheduledAt,
+      recurrenceType
+    } = req.body;
 
     if (!tenantId) {
       return res.status(400).json({ error: 'El usuario no está asociado a ningún Tenant.' });
@@ -18,6 +31,32 @@ export async function launchCampaign(req, res) {
       return res.status(400).json({ error: 'El nombre y el mensaje base de la campaña son requeridos.' });
     }
 
+    // Validación de recurrencia
+    const normRecurrence = recurrenceType ? String(recurrenceType).toUpperCase().trim() : 'NONE';
+    if (!VALID_RECURRENCES.includes(normRecurrence)) {
+      return res.status(400).json({
+        error: `Tipo de recurrencia no válido. Valores permitidos: ${VALID_RECURRENCES.join(', ')}.`
+      });
+    }
+
+    // Validación de scheduledAt
+    let parsedScheduledAt = null;
+    if (scheduledAt) {
+      parsedScheduledAt = new Date(scheduledAt);
+      if (isNaN(parsedScheduledAt.getTime())) {
+        return res.status(400).json({ error: 'La fecha de programación (scheduledAt) no tiene un formato válido.' });
+      }
+    }
+
+    // Validación de audiencia manual
+    const normAudienceType = audienceType || (audience === 'manual' || Array.isArray(audience) || Array.isArray(contactIds) ? 'manual' : 'all');
+    if (normAudienceType === 'manual') {
+      const ids = Array.isArray(contactIds) ? contactIds : (Array.isArray(audience) ? audience : []);
+      if (!Array.isArray(ids) || ids.length === 0) {
+        return res.status(400).json({ error: 'Para audiencia manual se requiere especificar los contactos (contactIds).' });
+      }
+    }
+
     // Seguro Anti-Ban: Forzar límites mínimos estrictos de retraso por seguridad
     let minDelay = Math.max(10, parseInt(delayMin) || 10);
     let maxDelay = Math.max(15, parseInt(delayMax) || 15);
@@ -25,61 +64,50 @@ export async function launchCampaign(req, res) {
       maxDelay = minDelay + 5;
     }
 
-    // 1. Crear el registro de la campaña con estado 'running'
-    const campaign = await prisma.campaign.create({
-      data: {
-        name,
-        baseMessage,
-        media: media || null,
-        delayMin: minDelay,
-        delayMax: maxDelay,
-        status: 'running',
-        tenantId
-      }
+    const { campaign, eligibleCount, scheduled } = await launchCampaignV2({
+      tenantId,
+      name,
+      baseMessage,
+      media,
+      delayMin: minDelay,
+      delayMax: maxDelay,
+      audience,
+      audienceType: normAudienceType,
+      contactIds: Array.isArray(contactIds) ? contactIds : (Array.isArray(audience) ? audience : null),
+      scheduledAt: parsedScheduledAt,
+      recurrenceType: normRecurrence
     });
 
-    // 2. Resolver audiencia del Tenant
-    let targetContacts = [];
-    if (audience === 'all' || !audience) {
-      targetContacts = await prisma.contact.findMany({
-        where: { tenantId }
-      });
-    } else if (Array.isArray(audience)) {
-      targetContacts = await prisma.contact.findMany({
-        where: {
-          id: { in: audience },
-          tenantId
-        }
+    if (scheduled) {
+      return res.status(200).json({
+        success: true,
+        message: 'Campaña programada con éxito en el sistema.',
+        campaignId: campaign.id,
+        scheduled: true,
+        scheduledAt: campaign.scheduledAt,
+        nextRunAt: campaign.nextRunAt,
+        recurrenceType: campaign.recurrenceType
       });
     }
 
-    // Si la audiencia está vacía, finalizar campaña de inmediato
-    if (targetContacts.length === 0) {
-      await prisma.campaign.update({
-        where: { id: campaign.id },
-        data: { status: 'completed' }
-      });
+    if (eligibleCount === 0) {
       return res.status(200).json({
         success: true,
-        message: 'Campaña creada pero no hay contactos en la audiencia seleccionada.',
+        message: 'Campaña creada pero no hay contactos elegibles en la audiencia seleccionada.',
         campaignId: campaign.id
       });
     }
 
-    // 3. Obtener nombre de la instancia Evolution
-    const instance = 'bot_prod_' + tenantId.slice(0, 8);
-
-    // 4. Disparar worker en segundo plano (No bloqueante, sin await)
-    processCampaign(campaign.id, targetContacts, instance).catch((err) => {
-      console.error(`❌ [Campaign Controller] Error en background worker para campaña ${campaign.id}:`, err);
+    // Disparar worker en segundo plano para campaña inmediata (No bloqueante, sin await)
+    runCampaignWorker(campaign.id).catch((err) => {
+      console.error(`❌ [Campaign Controller] Error en worker V2 para campaña ${campaign.id}:`, err);
     });
 
-    // 5. Responder inmediatamente
     return res.status(200).json({
       success: true,
       message: 'Campaña iniciada con éxito en segundo plano.',
       campaignId: campaign.id,
-      contactsCount: targetContacts.length
+      contactsCount: eligibleCount
     });
 
   } catch (error) {
