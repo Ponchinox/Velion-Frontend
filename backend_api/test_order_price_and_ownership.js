@@ -45,6 +45,21 @@ function createInMemoryPrisma() {
     orderItems,
     alerts,
 
+    tenant: {
+      findUnique: async ({ where, select }) => {
+        const t = tenants.get(where.id);
+        if (!t) return null;
+        if (select) {
+          const res = {};
+          for (const k of Object.keys(select)) {
+            if (select[k]) res[k] = t[k];
+          }
+          return res;
+        }
+        return { ...t };
+      }
+    },
+
     product: {
       create: async ({ data }) => {
         const id = data.id || genId();
@@ -213,8 +228,10 @@ async function main() {
   const db = createInMemoryPrisma();
 
   // 1. Fixtures: Tenants
-  const tenantA = { id: 'tenant-a-uuid', name: 'Tenant A Store' };
-  const tenantB = { id: 'tenant-b-uuid', name: 'Tenant B Store' };
+  const tenantA = { id: 'tenant-a-uuid', name: 'Tenant A Store', bankAccounts: 'Yape: 987654321, BCP: 191-123456-0-12, Contraentrega Lima' };
+  const tenantB = { id: 'tenant-b-uuid', name: 'Tenant B Store', bankAccounts: 'Yape: 911222333, BCP: 191-999999-0-99, Contraentrega Lima' };
+  db.tenants.set(tenantA.id, tenantA);
+  db.tenants.set(tenantB.id, tenantB);
 
   // 2. Fixtures: Usuarios
   const userA = { id: 'user-a-uuid', tenantId: tenantA.id };

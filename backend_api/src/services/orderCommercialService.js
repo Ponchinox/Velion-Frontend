@@ -39,6 +39,77 @@ export function cleanCommercialDraft(state) {
 }
 
 /**
+ * Detecta pseudo-métodos de pago que intentan evadir la configuración real del tenant.
+ * Ej: "asesor", "por coordinar con asesor", "coordinar con asesor", etc.
+ */
+export function isPseudoPaymentMethod(method) {
+  if (!method || typeof method !== 'string') return true;
+  const clean = method.toLowerCase().trim();
+  const pseudoKeywords = [
+    'asesor', 'coordinar', 'por coordinar', 'humano', 'pendiente',
+    'por definir', 'por acordar', 'acordar', 'a coordinar', 'consultar',
+    'sin definir', 'ninguno', 'no especificado', 'no sabe', 'desconocido'
+  ];
+  return pseudoKeywords.some(kw => clean.includes(kw));
+}
+
+/**
+ * Valida si un método de pago solicitado coincide con los métodos autorizados en la configuración del tenant.
+ * Evita estrictamente falsos positivos (ej. "Banco BBVA" no debe pasar si el tenant solo tiene "Banco BCP").
+ */
+export function isPaymentMethodAuthorized(paymentMethod, bankAccountsConfig) {
+  if (!paymentMethod || typeof paymentMethod !== 'string') return false;
+  if (isPseudoPaymentMethod(paymentMethod)) return false;
+  if (!bankAccountsConfig || !bankAccountsConfig.trim()) return false;
+
+  const rawConfig = bankAccountsConfig.toLowerCase().trim();
+  const rawMethod = paymentMethod.toLowerCase().trim();
+
+  // Canales específicos mutuamente excluyentes o distintivos
+  const specificChannels = {
+    yape: ['yape'],
+    plin: ['plin', 'tunki', 'agora'],
+    bcp: ['bcp', 'banco de credito', 'crédito', 'credito'],
+    bbva: ['bbva', 'continental', 'banco continental'],
+    interbank: ['interbank'],
+    scotiabank: ['scotiabank'],
+    nacion: ['banco de la nacion', 'banco de la nación', 'bn'],
+    contraentrega: ['contraentrega', 'contra entrega', 'contra-entrega', 'efectivo', 'pago en puerta', 'contra-reembolso'],
+    tarjeta: ['tarjeta', 'pos', 'culqi', 'mercado pago', 'mercadopago', 'stripe', 'niubiz', 'izipay', 'visa', 'mastercard']
+  };
+
+  // 1. Si el método menciona un canal específico (ej. BBVA), la configuración DEBE soportar ese canal específico
+  for (const [, words] of Object.entries(specificChannels)) {
+    const methodHasChannel = words.some(w => rawMethod.includes(w));
+    if (methodHasChannel) {
+      const configHasChannel = words.some(w => rawConfig.includes(w));
+      if (!configHasChannel) {
+        return false; // Conflicto de canal: el método pide un canal que la tienda NO tiene
+      }
+    }
+  }
+
+  // 2. Si el método es genérico bancario ("transferencia", "depósito", "banco", "cuenta")
+  const isGenericBankOrTransfer = ['transferencia', 'deposito', 'depósito', 'banco', 'cuenta', 'cci'].some(w => rawMethod.includes(w));
+  if (isGenericBankOrTransfer) {
+    const configSupportsBank = ['bcp', 'bbva', 'interbank', 'scotiabank', 'nacion', 'banco', 'cuenta', 'transferencia', 'deposito', 'depósito', 'cci'].some(w => rawConfig.includes(w));
+    if (configSupportsBank) return true;
+  }
+
+  // 3. Coincidencia directa por canal autorizado
+  for (const [, words] of Object.entries(specificChannels)) {
+    const methodMatches = words.some(w => rawMethod.includes(w));
+    const configMatches = words.some(w => rawConfig.includes(w));
+    if (methodMatches && configMatches) return true;
+  }
+
+  // 4. Coincidencia directa exacta de substring (para métodos personalizados no tipificados)
+  if (rawConfig.includes(rawMethod)) return true;
+
+  return false;
+}
+
+/**
  * Sincroniza el estado comercial y la orden (Order / OrderItem) de forma determinista y multi-tenant.
  *
  * @param {object} params
@@ -67,19 +138,48 @@ export async function syncCommercialOrder({
     throw new Error('syncCommercialOrder requiere un customer con id válido.');
   }
 
-  // 1. Validación estricta de métodos de pago autorizados
-  if (args.paymentMethod) {
-    const rawMethod = String(args.paymentMethod).toLowerCase().trim();
-    const isYape = rawMethod.includes('yape');
-    const isContraentrega = rawMethod.includes('contraentrega') ||
-                            rawMethod.includes('contra entrega') ||
-                            rawMethod.includes('contra-entrega') ||
-                            rawMethod.includes('efectivo');
+  // 1. Obtener y validar métodos de pago reales del tenant (fuente canónica: tenant.bankAccounts)
+  let tenantBankAccounts = tenant.bankAccounts;
+  if (tenantBankAccounts === undefined && db.tenant?.findUnique) {
+    try {
+      const tRecord = await db.tenant.findUnique({
+        where: { id: tenant.id },
+        select: { bankAccounts: true }
+      });
+      tenantBankAccounts = tRecord?.bankAccounts;
+    } catch (tErr) {
+      console.warn(`⚠️ [Order Security] No se pudo consultar tenant en BD:`, tErr.message);
+    }
+  }
 
-    if (!isYape && !isContraentrega) {
-      console.warn(`⚠️ [Order Security] Método de pago no autorizado rechazado: "${args.paymentMethod}"`);
+  const tenantHasConfiguredPayments = Boolean(tenantBankAccounts && tenantBankAccounts.trim());
+
+  if (args.paymentMethod) {
+    // A. Rechazar rotundamente pseudo-métodos ("asesor", "por coordinar con asesor", etc.)
+    if (isPseudoPaymentMethod(args.paymentMethod)) {
+      console.warn(`⚠️ [Order Security] Pseudo-método de pago rechazado: "${args.paymentMethod}"`);
       return {
-        error: 'Método de pago no autorizado. La tienda ÚNICAMENTE acepta Yape o Contraentrega (con adelanto de flete por Shalom si es provincia). No aceptes ni guardes otros medios de pago.'
+        error: 'El asesor no es un método de pago. La tienda requiere un método de pago legítimo configurado para registrar transacciones.',
+        state: currentCommercialState
+      };
+    }
+
+    // B. Tenant sin métodos de pago configurados -> fail-closed absoluto
+    if (!tenantHasConfiguredPayments) {
+      console.warn(`⚠️ [Order Security] Tenant ${tenant.id?.slice(0, 8)} no tiene métodos de pago configurados. Rechazando "${args.paymentMethod}".`);
+      return {
+        error: 'La tienda no tiene métodos de pago registrados en este momento. No inventes medios de pago ni guardes métodos no autorizados.',
+        state: currentCommercialState
+      };
+    }
+
+    // C. Tenant con métodos de pago configurados -> validar contra su configuración
+    const authorized = isPaymentMethodAuthorized(args.paymentMethod, tenantBankAccounts);
+    if (!authorized) {
+      console.warn(`⚠️ [Order Security] Método de pago "${args.paymentMethod}" no coincide con las cuentas del tenant ${tenant.id?.slice(0, 8)}.`);
+      return {
+        error: `Método de pago no autorizado. La tienda únicamente opera con los métodos configurados: ${tenantBankAccounts.trim()}. No aceptes otros medios de pago.`,
+        state: currentCommercialState
       };
     }
   }
@@ -124,7 +224,15 @@ export async function syncCommercialOrder({
               id: updatedState.productId,
               user: { tenantId: tenant.id }
             },
-            select: { id: true, name: true, price: true, promotionalPrice: true, promoStartDate: true, promoEndDate: true }
+            select: {
+              id: true,
+              name: true,
+              price: true,
+              promotionalPrice: true,
+              promoStartDate: true,
+              promoEndDate: true,
+              type: true
+            }
           });
           if (verifiedProduct) {
             productPrice = getCanonicalProductPrice(verifiedProduct);
@@ -133,13 +241,39 @@ export async function syncCommercialOrder({
 
         const isConfirmed = Boolean(updatedState.customerConfirmed === true);
         const hasValidProduct = Boolean(verifiedProduct);
-        const hasShippingDestination = Boolean(updatedState.shippingCity || updatedState.shippingAddress);
-        const hasPaymentMethod = Boolean(updatedState.paymentMethod);
-        const hasLogistics = hasShippingDestination && hasPaymentMethod;
-        const canCreateOrder = isConfirmed && isQtyValid && hasValidProduct && hasLogistics;
+        const productType = verifiedProduct?.type || 'PHYSICAL_PRODUCT';
+        const isService = productType === 'SERVICE';
+
+        // Determinar validez de método de pago para crear orden (Estricto Fail-Closed)
+        let isPaymentValidForOrder = false;
+        if (updatedState.paymentMethod && !isPseudoPaymentMethod(updatedState.paymentMethod)) {
+          if (tenantHasConfiguredPayments) {
+            isPaymentValidForOrder = isPaymentMethodAuthorized(updatedState.paymentMethod, tenantBankAccounts);
+          } else {
+            isPaymentValidForOrder = false; // Sin bankAccounts válidas -> JAMÁS se permite crear Order
+          }
+        }
+
+        let canCreateOrder = false;
+        let finalQuantity = parsedQty;
+
+        if (isService) {
+          // BIFURCACIÓN SERVICE:
+          // 1. Normalizar cantidad a 1 internamente si no fue especificada o es menor a 1
+          finalQuantity = (isQtyValid && parsedQty >= 1) ? parsedQty : 1;
+          // 2. NO exige shipping destination ni logística de envíos
+          // 3. Exige: customerConfirmed + producto válido del tenant + método de pago real configurado
+          canCreateOrder = isConfirmed && hasValidProduct && isPaymentValidForOrder;
+        } else {
+          // BIFURCACIÓN PHYSICAL_PRODUCT:
+          // Requiere confirmación explícita + cantidad válida + destino (ciudad/dirección) + método de pago
+          const hasShippingDestination = Boolean(updatedState.shippingCity || updatedState.shippingAddress);
+          const hasLogistics = hasShippingDestination && isPaymentValidForOrder;
+          canCreateOrder = isConfirmed && isQtyValid && hasValidProduct && hasLogistics;
+        }
 
         if (canCreateOrder) {
-          const quantity = parsedQty;
+          const quantity = finalQuantity;
           const total = quantity * productPrice;
 
           const newOrder = await db.order.create({
@@ -149,8 +283,8 @@ export async function syncCommercialOrder({
               status: orderStatus,
               paymentStatus: payStatus,
               paymentMethod: updatedState.paymentMethod || null,
-              shippingCity: updatedState.shippingCity || null,
-              shippingAddress: updatedState.shippingAddress || null,
+              shippingCity: isService ? null : (updatedState.shippingCity || null),
+              shippingAddress: isService ? null : (updatedState.shippingAddress || null),
               customerNeeds: updatedState.customerNeeds || null,
               totalAmount: total,
               items: {
@@ -167,11 +301,19 @@ export async function syncCommercialOrder({
 
           updatedState.activeOrderId = newOrder.id;
 
+          let alertMessage = '';
+          if (isService) {
+            const qtyNote = quantity > 1 ? ` (${quantity} personas)` : '';
+            alertMessage = `💼 SERVICIO REGISTRADO | Cliente: +${clientNumber} (${customer.name || 'Sin Nombre'}) | ${verifiedProduct.name}${qtyNote}`;
+          } else {
+            alertMessage = `📦 PEDIDO CREADO | Cliente: +${clientNumber} (${customer.name || 'Sin Nombre'}) | ${verifiedProduct.name} x${quantity}`;
+          }
+
           await db.alert.create({
             data: {
               type: 'NEW_ORDER',
               severity: 'INFO',
-              message: `📦 PEDIDO CREADO | Cliente: +${clientNumber} (${customer.name || 'Sin Nombre'}) | ${verifiedProduct.name} x${quantity}`,
+              message: alertMessage,
               tenantId: tenant.id
             }
           });
@@ -183,12 +325,13 @@ export async function syncCommercialOrder({
               total,
               quantity,
               productName: verifiedProduct.name,
-              shippingCity: updatedState.shippingCity,
-              shippingAddress: updatedState.shippingAddress
+              shippingCity: isService ? null : updatedState.shippingCity,
+              shippingAddress: isService ? null : updatedState.shippingAddress,
+              productType
             });
           }
         } else {
-          console.log(`ℹ️ [FC update_commercial_state] Draft comercial en memoria (Requisitos Order: confirmed=${isConfirmed}, qty=${isQtyValid}, prod=${hasValidProduct}, dest=${hasShippingDestination}, pay=${hasPaymentMethod}).`);
+          console.log(`ℹ️ [FC update_commercial_state] Draft comercial en memoria (Tipo: ${productType}, confirmed=${isConfirmed}, qty=${isService ? 1 : isQtyValid}, prod=${hasValidProduct}, pay=${isPaymentValidForOrder}).`);
         }
       }
     } else {
@@ -221,6 +364,7 @@ export async function syncCommercialOrder({
       let finalProductId = null;
       let finalProductName = 'Producto sin nombre';
       let finalUnitPrice = 0;
+      let verifiedNewProduct = null;
 
       const hasExplicitProductChange = Boolean(
         args.productId &&
@@ -231,12 +375,12 @@ export async function syncCommercialOrder({
 
       if (hasExplicitProductChange) {
         // CASO B / C: El LLM solicita explícitamente cambiar a un productId distinto
-        const verifiedNewProduct = await db.product.findFirst({
+        verifiedNewProduct = await db.product.findFirst({
           where: {
             id: args.productId.trim(),
             user: { tenantId: tenant.id }
           },
-          select: { id: true, name: true, price: true, promotionalPrice: true, promoStartDate: true, promoEndDate: true }
+          select: { id: true, name: true, price: true, promotionalPrice: true, promoStartDate: true, promoEndDate: true, type: true }
         });
 
         if (!verifiedNewProduct) {
@@ -271,6 +415,18 @@ export async function syncCommercialOrder({
         finalUnitPrice = existingItem.price;
       }
 
+      // Determinar si el producto de la orden es un servicio
+      let isExistingService = false;
+      if (hasExplicitProductChange && verifiedNewProduct) {
+        isExistingService = verifiedNewProduct.type === 'SERVICE';
+      } else if (existingItem?.productId) {
+        const prodRecord = await db.product.findFirst({
+          where: { id: existingItem.productId },
+          select: { type: true }
+        });
+        isExistingService = prodRecord?.type === 'SERVICE';
+      }
+
       // Cantidad a recalcular
       const quantity = isQtyValid ? parsedQty : (existingItem?.quantity || 1);
       const total = quantity * finalUnitPrice;
@@ -298,8 +454,8 @@ export async function syncCommercialOrder({
             status: updateOrderStatus,
             paymentStatus: updatePayStatus,
             paymentMethod: updatedState.paymentMethod || existingOrder.paymentMethod || null,
-            shippingCity: updatedState.shippingCity || existingOrder.shippingCity || null,
-            shippingAddress: updatedState.shippingAddress || existingOrder.shippingAddress || null,
+            shippingCity: isExistingService ? null : (updatedState.shippingCity || existingOrder.shippingCity || null),
+            shippingAddress: isExistingService ? null : (updatedState.shippingAddress || existingOrder.shippingAddress || null),
             customerNeeds: updatedState.customerNeeds || existingOrder.customerNeeds || null,
             totalAmount: total
           }

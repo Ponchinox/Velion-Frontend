@@ -166,6 +166,7 @@ export default function Products() {
   const [description, setDescription] = useState('');
   const [price, setPrice] = useState('');
   const [isAvailable, setIsAvailable] = useState(true);
+  const [productType, setProductType] = useState('PHYSICAL_PRODUCT');
 
   // Multimedia: Imagen Principal / Portada
   const [mainImageFile, setMainImageFile] = useState(null);
@@ -364,6 +365,7 @@ export default function Products() {
       setDescription(prod.description || '');
       setPrice(prod.price || '');
       setIsAvailable(prod.isAvailable !== false);
+      setProductType(prod.type === 'SERVICE' ? 'SERVICE' : 'PHYSICAL_PRODUCT');
       
       setMainImageFile(null);
       setMainImagePreview(prod.imageUrl || null);
@@ -425,6 +427,7 @@ export default function Products() {
     setDescription('');
     setPrice('');
     setIsAvailable(true);
+    setProductType('PHYSICAL_PRODUCT');
     setMainImageFile(null);
     setMainImagePreview(null);
     setRemoveMainImage(false);
@@ -452,6 +455,7 @@ export default function Products() {
     formData.append('description', description);
     formData.append('price', price);
     formData.append('isAvailable', isAvailable);
+    formData.append('type', productType);
 
     // 1. Imagen Principal
     if (mainImageFile) {
@@ -741,7 +745,18 @@ export default function Products() {
 
                       {/* Columna Nombre */}
                       <td className="px-6 py-3 font-semibold text-hi">
-                        <span className="block truncate max-w-[200px]">{prod.name}</span>
+                        <div className="flex items-center gap-2">
+                          <span className="block truncate max-w-[180px]">{prod.name}</span>
+                          {prod.type === 'SERVICE' ? (
+                            <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium bg-purple-500/10 text-purple-600 dark:text-purple-400 border border-purple-500/20 flex-shrink-0">
+                              Servicio
+                            </span>
+                          ) : (
+                            <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium bg-slate-500/10 text-slate-600 dark:text-slate-400 border border-slate-500/20 flex-shrink-0">
+                              Físico
+                            </span>
+                          )}
+                        </div>
                       </td>
 
                       {/* Columna Descripción */}
@@ -873,6 +888,45 @@ export default function Products() {
         maxWidth="max-w-xl"
       >
         <form onSubmit={handleSubmit} className="space-y-4">
+          {/* Selector de Tipo */}
+          <div>
+            <label className="block text-xs font-semibold text-hi mb-1.5">
+              Tipo
+            </label>
+            <div className="grid grid-cols-2 gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  setProductType('PHYSICAL_PRODUCT');
+                  setIsFormDirty(true);
+                }}
+                className={`flex items-center justify-center gap-2 py-2 px-3 rounded-lg border text-xs font-semibold transition-all cursor-pointer ${
+                  productType === 'PHYSICAL_PRODUCT'
+                    ? 'bg-brand/10 border-brand text-brand shadow-sm font-bold'
+                    : 'bg-app border-line text-muted hover:text-hi hover:border-line/80'
+                }`}
+              >
+                <span>📦</span>
+                <span>Producto físico</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setProductType('SERVICE');
+                  setIsFormDirty(true);
+                }}
+                className={`flex items-center justify-center gap-2 py-2 px-3 rounded-lg border text-xs font-semibold transition-all cursor-pointer ${
+                  productType === 'SERVICE'
+                    ? 'bg-brand/10 border-brand text-brand shadow-sm font-bold'
+                    : 'bg-app border-line text-muted hover:text-hi hover:border-line/80'
+                }`}
+              >
+                <span>🧑‍💼</span>
+                <span>Servicio</span>
+              </button>
+            </div>
+          </div>
+
           {/* Nombre */}
           <div>
             <label htmlFor="prod-name" className="block text-xs font-semibold text-hi mb-1">

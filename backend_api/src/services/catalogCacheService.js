@@ -37,25 +37,27 @@ export async function getCompactCatalogIndex(tenantId) {
         name: true,
         price: true,
         promotionalPrice: true,
-        category: true
+        category: true,
+        type: true
       },
       orderBy: { name: 'asc' }
     });
 
     if (products.length === 0) {
-      const emptyCsv = "ID,Nombre,Precio,Categoria\nNo hay productos disponibles actualmente.";
+      const emptyCsv = "ID,Nombre,Precio,Tipo,Categoria\nNo hay productos disponibles actualmente.";
       catalogCache.set(tenantId, { csv: emptyCsv, timestamp: now });
       return emptyCsv;
     }
 
     // Construir CSV
-    let csv = "ID,Nombre,Precio,Categoria\n";
+    let csv = "ID,Nombre,Precio,Tipo,Categoria\n";
     for (const p of products) {
       const priceToUse = (p.promotionalPrice && p.promotionalPrice > 0) ? p.promotionalPrice : p.price;
       const id = sanitizeForCsv(p.id);
       const name = sanitizeForCsv(p.name);
+      const prodType = p.type === 'SERVICE' ? 'SERVICE' : 'PHYSICAL_PRODUCT';
       const cat = sanitizeForCsv(p.category || 'General');
-      csv += `${id},${name},S/. ${priceToUse},${cat}\n`;
+      csv += `${id},${name},S/. ${priceToUse},${prodType},${cat}\n`;
     }
 
     catalogCache.set(tenantId, { csv, timestamp: now });
@@ -65,7 +67,7 @@ export async function getCompactCatalogIndex(tenantId) {
     console.error(`❌ [CatalogCache] Error al obtener catálogo para tenant ${tenantId}:`, error.message);
     // En caso de error, si hay caché viejo, devolverlo para no caerse
     if (cached) return cached.csv;
-    return "ID,Nombre,Precio,Categoria\nError al cargar catálogo.";
+    return "ID,Nombre,Precio,Tipo,Categoria\nError al cargar catálogo.";
   }
 }
 

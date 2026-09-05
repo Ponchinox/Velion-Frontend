@@ -127,6 +127,7 @@ model Product {
   description      String?
   category         String?
   tags             String[]  @default([])
+  type             String    @default("PHYSICAL_PRODUCT")
   price            Float
   isAvailable      Boolean   @default(true)
   imageUrl         String?

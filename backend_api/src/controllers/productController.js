@@ -1,5 +1,6 @@
 import prisma from '../db.js';
 import cloudinary from '../config/cloudinary.js';
+import { invalidateCatalogCache } from '../services/catalogCacheService.js';
 
 /**
  * Extrae el public_id de un recurso de Cloudinary a partir de su URL completa
@@ -55,7 +56,7 @@ async function destroyCloudinaryResource(url, isVideo = false) {
  */
 export async function createProduct(req, res) {
   try {
-    const { name, description, price, isAvailable, promotionalPrice, promoStartDate, promoEndDate } = req.body;
+    const { name, description, price, isAvailable, promotionalPrice, promoStartDate, promoEndDate, type } = req.body;
     const userId = req.user.userId || req.user.id;
 
     if (!userId) {
@@ -68,6 +69,16 @@ export async function createProduct(req, res) {
 
     if (!name || price === undefined) {
       return res.status(400).json({ error: 'Faltan parámetros obligatorios (name, price).' });
+    }
+
+    // Validación estricta del tipo de producto
+    let finalType = 'PHYSICAL_PRODUCT';
+    if (type !== undefined && type !== null && String(type).trim() !== '') {
+      const normalizedType = String(type).trim().toUpperCase();
+      if (normalizedType !== 'PHYSICAL_PRODUCT' && normalizedType !== 'SERVICE') {
+        return res.status(400).json({ error: 'Tipo de producto no válido. Debe ser PHYSICAL_PRODUCT o SERVICE.' });
+      }
+      finalType = normalizedType;
     }
 
     // 1. Imagen principal / portada
@@ -106,9 +117,14 @@ export async function createProduct(req, res) {
         promotionalPrice: parsedPromoPrice,
         promoStartDate: parsedPromoStart,
         promoEndDate: parsedPromoEnd,
+        type: finalType,
         userId,
       },
     });
+
+    if (req.user?.tenantId) {
+      invalidateCatalogCache(req.user.tenantId);
+    }
 
     return res.status(201).json(product);
   } catch (error) {
@@ -160,21 +176,35 @@ export async function createBulkProducts(req, res) {
       return res.status(400).json({ error: 'Se requiere un array de productos válido en la propiedad "products".' });
     }
 
-    const formattedProducts = products.map((prod) => ({
-      name: String(prod.name || 'Producto sin nombre').trim(),
-      description: prod.description ? String(prod.description).trim() : null,
-      price: prod.price !== undefined ? parseFloat(prod.price) : 0.0,
-      isAvailable: prod.isAvailable !== undefined ? (prod.isAvailable === true || prod.isAvailable === 'true') : true,
-      imageUrl: prod.imageUrl ? String(prod.imageUrl).trim() : null,
-      images: Array.isArray(prod.images) ? prod.images : [],
-      videoUrl: prod.videoUrl ? String(prod.videoUrl).trim() : null,
-      userId: userId,
-    }));
+    const formattedProducts = products.map((prod) => {
+      let finalType = 'PHYSICAL_PRODUCT';
+      if (prod.type !== undefined && prod.type !== null && String(prod.type).trim() !== '') {
+        const normalizedType = String(prod.type).trim().toUpperCase();
+        if (normalizedType === 'SERVICE') {
+          finalType = 'SERVICE';
+        }
+      }
+      return {
+        name: String(prod.name || 'Producto sin nombre').trim(),
+        description: prod.description ? String(prod.description).trim() : null,
+        price: prod.price !== undefined ? parseFloat(prod.price) : 0.0,
+        type: finalType,
+        isAvailable: prod.isAvailable !== undefined ? (prod.isAvailable === true || prod.isAvailable === 'true') : true,
+        imageUrl: prod.imageUrl ? String(prod.imageUrl).trim() : null,
+        images: Array.isArray(prod.images) ? prod.images : [],
+        videoUrl: prod.videoUrl ? String(prod.videoUrl).trim() : null,
+        userId: userId,
+      };
+    });
 
     const result = await prisma.product.createMany({
       data: formattedProducts,
       skipDuplicates: false,
     });
+
+    if (req.user?.tenantId) {
+      invalidateCatalogCache(req.user.tenantId);
+    }
 
     return res.status(201).json({
       success: true,
@@ -230,6 +260,10 @@ export async function deleteProduct(req, res) {
       where: { id },
     });
 
+    if (req.user?.tenantId) {
+      invalidateCatalogCache(req.user.tenantId);
+    }
+
     return res.json({
       success: true,
       message: 'Producto y archivos multimedia eliminados con éxito.',
@@ -256,7 +290,8 @@ export async function updateProduct(req, res) {
       promoEndDate,
       existingImages,
       removeImage,
-      removeVideo
+      removeVideo,
+      type
     } = req.body;
     const userId = req.user.userId || req.user.id;
 
@@ -287,6 +322,14 @@ export async function updateProduct(req, res) {
         promoEndDate: (promoEndDate === '' || promoEndDate === null || promoEndDate === 'null') ? null : new Date(promoEndDate) 
       }),
     };
+
+    if (type !== undefined && type !== null && String(type).trim() !== '') {
+      const normalizedType = String(type).trim().toUpperCase();
+      if (normalizedType !== 'PHYSICAL_PRODUCT' && normalizedType !== 'SERVICE') {
+        return res.status(400).json({ error: 'Tipo de producto no válido. Debe ser PHYSICAL_PRODUCT o SERVICE.' });
+      }
+      dataToUpdate.type = normalizedType;
+    }
 
     // 1. Manejo de Imagen Principal / Portada
     const newMainImage = req.files?.image?.[0]?.path || req.file?.path;
@@ -341,14 +384,14 @@ export async function updateProduct(req, res) {
       dataToUpdate.videoUrl = null;
     }
 
-    await prisma.product.updateMany({
-      where: { id, userId },
+    const updatedProduct = await prisma.product.update({
+      where: { id },
       data: dataToUpdate,
     });
 
-    const updatedProduct = await prisma.product.findFirst({
-      where: { id, userId },
-    });
+    if (req.user?.tenantId) {
+      invalidateCatalogCache(req.user.tenantId);
+    }
 
     return res.json(updatedProduct);
   } catch (error) {
