@@ -241,6 +241,78 @@ export function incrementTenantAiEpoch(tenantId) {
   return next;
 }
 
+// ─── CHAT GENERATION VERSIONS (Anti-Obsolete Generation Guard) ────────────────
+// Contador de versión por chat (bufferKey = `${tenant.id}:${cleanJid}`).
+// Se incrementa CADA VEZ que entra un mensaje nuevo del cliente.
+// Permite que una generación activa de Gemini detecte que quedó obsoleta
+// (superseded) y aborte tools mutantes, post-generation gate y despacho.
+const chatGenerationVersions = new Map();
+const chatVersionCleanupTimers = new Map();
+
+/**
+ * Devuelve la versión actual del chat (0 si nunca se ha registrado).
+ */
+export function getChatGenerationVersion(bufferKey) {
+  return chatGenerationVersions.get(bufferKey) ?? 0;
+}
+
+/**
+ * Incrementa la versión del chat y cancela cualquier timer de limpieza pendiente.
+ */
+export function incrementChatGenerationVersion(bufferKey) {
+  if (chatVersionCleanupTimers.has(bufferKey)) {
+    clearTimeout(chatVersionCleanupTimers.get(bufferKey));
+    chatVersionCleanupTimers.delete(bufferKey);
+  }
+  const prev = chatGenerationVersions.get(bufferKey) ?? 0;
+  const next = prev + 1;
+  chatGenerationVersions.set(bufferKey, next);
+
+  // Mantiene el mapa acotado en memoria si supera 10,000 entradas
+  if (chatGenerationVersions.size > 10000) {
+    let purged = 0;
+    for (const key of chatGenerationVersions.keys()) {
+      if (!processingLocks.has(key) && !pendingQueues.has(key) && !messageBuffers.has(key)) {
+        chatGenerationVersions.delete(key);
+        purged++;
+        if (purged >= 1000) break;
+      }
+    }
+  }
+
+  return next;
+}
+
+/**
+ * Programa la limpieza de versión para un chat inactivo tras un TTL seguro de 15 min.
+ */
+export function scheduleChatVersionCleanup(bufferKey) {
+  if (chatVersionCleanupTimers.has(bufferKey)) {
+    clearTimeout(chatVersionCleanupTimers.get(bufferKey));
+  }
+  const timer = setTimeout(() => {
+    chatVersionCleanupTimers.delete(bufferKey);
+    if (!processingLocks.has(bufferKey) && !pendingQueues.has(bufferKey) && !messageBuffers.has(bufferKey)) {
+      chatGenerationVersions.delete(bufferKey);
+    }
+  }, 15 * 60 * 1000);
+  if (timer && typeof timer.unref === 'function') {
+    timer.unref();
+  }
+  chatVersionCleanupTimers.set(bufferKey, timer);
+}
+
+/**
+ * Helper para testing: reinicia versiones y timers en memoria.
+ */
+export function _resetChatGenerationVersionsForTesting() {
+  chatGenerationVersions.clear();
+  for (const timer of chatVersionCleanupTimers.values()) {
+    clearTimeout(timer);
+  }
+  chatVersionCleanupTimers.clear();
+}
+
 // ── aiMessageTracker: delegamos al servicio de dos capas (RAM + PostgreSQL) ──
 // markMessageAsSentByAi es exportada para compatibilidad con importaciones externas
 export function markMessageAsSentByAi(textOrId, opts = {}) {
@@ -1452,6 +1524,11 @@ async function _processWebhookEvent(body, isMeta, provider, io, query, headers) 
     // 3. Sistema de Message Buffer / Debounce + Lock de Procesamiento
     const provider = isMeta ? 'META' : 'EVOLUTION';
     const bufferKey = `${tenant.id}:${cleanJid}`;
+
+    // ─── CHAT GENERATION VERSION INCREMENT ───
+    // Cada mensaje entrante de este chat incrementa su versión determinística
+    // antes de bifurcar entre pendingQueues o messageBuffers.
+    incrementChatGenerationVersion(bufferKey);
     
     if (processingLocks.has(bufferKey)) {
       const existingQueue = pendingQueues.get(bufferKey);
@@ -1615,10 +1692,15 @@ async function processBufferedMessage(bufferKey) {
   console.log(`🤖 [Message Buffer] Procesando ráfaga acumulada para +${clientNumber} (${userMessageText.length} caracteres): "${userMessageText.replace(/\n/g, ' ')}"`);
   const finalCleanNumber = String(clientNumber || '').includes('@lid') ? String(clientNumber || '').trim() : String(clientNumber || '').replace(/[^0-9]/g, '');
 
+  // ─── CAPTURA DE VERSIÓN DE GENERACIÓN (Anti-Generación Obsoleta) ───
+  const generationVersion = getChatGenerationVersion(bufferKey);
+  const isGenerationSuperseded = () =>
+    (getChatGenerationVersion(bufferKey) !== generationVersion) || pendingQueues.has(bufferKey);
+
   // ─── LOCK DE PROCESAMIENTO (ANTI-PARALELISMO) ───
   // Marcar al usuario como "ocupado" por tenant para evitar colisiones
   processingLocks.add(bufferKey);
-  console.log(`🔒 [Processing Lock] Lock activado para +${clientNumber} (tenant: ${tenant.id}). La IA está generando respuesta.`);
+  console.log(`🔒 [Processing Lock] Lock activado para +${clientNumber} (tenant: ${tenant.id}, genVersion: ${generationVersion}). La IA está generando respuesta.`);
 
   try {
     const evoUrl = process.env.EVOLUTION_API_URL || 'http://localhost:8080';
@@ -2011,7 +2093,21 @@ ${catalogIndexCsv}
 
     // ─── MANEJADOR DE HERRAMIENTAS (CALLBACK) ────────────────────────────────
     const toolsHandler = async (funcName, args) => {
+      // ─── TOOL GUARD GENERAL: Abortar si la generación quedó obsoleta ───
+      if (isGenerationSuperseded()) {
+        console.warn(`🛑 [Tool Guard] Generación obsoleta para +${clientNumber} (v${generationVersion} vs actual v${getChatGenerationVersion(bufferKey)}). Abortando ejecución de tool '${funcName}'.`);
+        return {
+          success: false,
+          error: 'GENERATION_SUPERSEDED',
+          message: 'El usuario envió un mensaje más reciente. No aplicar cambios.'
+        };
+      }
+
       if (funcName === 'request_human_handoff') {
+        if (isGenerationSuperseded()) {
+          console.warn(`🛑 [Tool Guard - Handoff] Generación obsoleta para +${clientNumber}. Abortando request_human_handoff.`);
+          return { success: false, error: 'GENERATION_SUPERSEDED', message: 'El usuario envió un mensaje más reciente. No aplicar cambios.' };
+        }
         const cleanReason = String(args?.reason || 'Solicitud de asesor humano').trim().slice(0, 120);
         console.log(`👤 [FC] request_human_handoff invocado para +${clientNumber}. Motivo: "${cleanReason}"`);
 
@@ -2304,6 +2400,10 @@ Atributos/Tags: ${Array.isArray(product.tags) ? product.tags.join(', ') : ''}
         }
       }
       if (funcName === 'update_commercial_state') {
+        if (isGenerationSuperseded()) {
+          console.warn(`🛑 [Tool Guard - Commercial] Generación obsoleta para +${clientNumber}. Abortando update_commercial_state.`);
+          return { success: false, error: 'GENERATION_SUPERSEDED', message: 'El usuario envió un mensaje más reciente. No aplicar cambios.' };
+        }
         const fcStart = Date.now();
         console.log(`📝 [FC] update_commercial_state invocado. Actualizando BD...`);
         try {
@@ -2423,6 +2523,12 @@ Atributos/Tags: ${Array.isArray(product.tags) ? product.tags.join(', ') : ''}
       if (budgetGuard.releaseReservation) {
         budgetGuard.releaseReservation();
       }
+    }
+
+    // ─── GENERATION SUPERSEDED CHECK (Post-Gemini Gate) ───
+    if (isGenerationSuperseded()) {
+      console.log(`🛑 [Generation Superseded] Respuesta descartada para +${clientNumber} porque llegó un mensaje nuevo durante la generación (v${generationVersion} vs actual v${getChatGenerationVersion(bufferKey)}).`);
+      return; // Sale limpiamente al bloque finally para liberar lock y re-inyectar pendingQueue
     }
 
     // ─── AI OFF FINAL GATE (Post-Gemini) ───
@@ -2719,9 +2825,9 @@ Atributos/Tags: ${Array.isArray(product.tags) ? product.tags.join(', ') : ''}
 
       // ─── DESPACHO SECUENCIAL ───
       for (let i = 0; i < dispatchSequence.length; i++) {
-        // ─── INTERRUPCIÓN DE SECUENCIA (CANCELACIÓN DE COLA) ───
-        if (pendingQueues.has(bufferKey)) {
-          console.log(`🛑 [Interrupción Activa] El usuario +${finalCleanNumber} envió un nuevo mensaje. Cancelando el envío de ${dispatchSequence.length - i} globos restantes de la ráfaga anterior...`);
+        // ─── INTERRUPCIÓN DE SECUENCIA (CANCELACIÓN DE COLA / GENERACIÓN OBSOLETA) ───
+        if (isGenerationSuperseded()) {
+          console.log(`🛑 [Interrupción Activa] El usuario +${finalCleanNumber} envió un nuevo mensaje (generación obsoleta v${generationVersion} vs actual v${getChatGenerationVersion(bufferKey)}). Cancelando el envío de ${dispatchSequence.length - i} globos restantes de la ráfaga anterior...`);
           break; // Rompe el bucle de despacho. El bloque finally procesará la nueva cola.
         }
 
@@ -2750,6 +2856,12 @@ Atributos/Tags: ${Array.isArray(product.tags) ? product.tags.join(', ') : ''}
 
         // Esperar el tiempo de tipeado simulado antes de enviar
         await new Promise(resolve => setTimeout(resolve, typingDelay));
+
+        // ─── GENERATION SUPERSEDED CHECK (Post-Typing Check) ───
+        if (isGenerationSuperseded()) {
+          console.log(`🛑 [Post-Typing Guard] Mensaje nuevo detectado durante el tiempo de tipeo para +${clientNumber} (v${generationVersion} vs actual v${getChatGenerationVersion(bufferKey)}). Abortando fragmento actual y restantes.`);
+          break; // Rompe el bucle de despacho; no se envía este fragmento ni los siguientes
+        }
         
         // ─── AI OFF FINAL GATE (Post-Typing Check) ───
         const postTypingCheck = await prisma.tenant.findUnique({
@@ -2919,6 +3031,11 @@ Atributos/Tags: ${Array.isArray(product.tags) ? product.tags.join(', ') : ''}
         }, 4000)
       };
       messageBuffers.set(bufferKey, newBufferEntry);
+    } else {
+      // Si no hay pendingQueue ni messageBuffer activo, programar limpieza segura tras TTL
+      if (!messageBuffers.has(bufferKey)) {
+        scheduleChatVersionCleanup(bufferKey);
+      }
     }
   }
 }
