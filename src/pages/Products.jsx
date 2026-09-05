@@ -6,16 +6,13 @@ import {
   WarningCircle,
   ArrowsClockwise,
   CheckCircle,
-  Eye,
   Trash,
   MagnifyingGlass,
   PencilSimple,
   CaretLeft,
   CaretRight,
   Package,
-  Images,
   VideoCamera,
-  FilmStrip,
   PlayCircle,
 } from '@phosphor-icons/react';
 import * as XLSX from 'xlsx';
@@ -149,7 +146,7 @@ function ProductSkeleton() {
 export default function Products() {
   const [products, setProducts] = useState([]);
   const [isLoading, setIsLoading] = useState(true);
-  const [errorMsg, setErrorMsg] = useState('');
+  const [_errorMsg, setErrorMsg] = useState('');
   const [toast, setToast] = useState(null);
   const [productToDelete, setProductToDelete] = useState(null);
   const [isDeleting, setIsDeleting] = useState(false);
@@ -875,7 +872,7 @@ export default function Products() {
         }
         maxWidth="max-w-xl"
       >
-        <form onSubmit={handleSubmit} className="space-y-4 max-h-[80vh] overflow-y-auto pr-1">
+        <form onSubmit={handleSubmit} className="space-y-4">
           {/* Nombre */}
           <div>
             <label htmlFor="prod-name" className="block text-xs font-semibold text-hi mb-1">
