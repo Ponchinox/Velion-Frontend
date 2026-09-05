@@ -737,7 +737,7 @@ export default function CampaignsPage() {
                 </div>
 
                 {/* Lista scrolleable de contactos */}
-                <div className="max-h-40 overflow-y-auto border border-line rounded-lg divide-y divide-line bg-app">
+                <div className="max-h-36 sm:max-h-44 overflow-y-auto border border-line rounded-lg divide-y divide-line bg-app touch-pan-y [scrollbar-width:thin]">
                   {isLoadingContacts ? (
                     <div className="flex items-center justify-center py-8 gap-2 text-xs text-lo">
                       <Loader2 size={16} className="animate-spin text-brand" />
@@ -967,7 +967,7 @@ export default function CampaignsPage() {
           </div>
 
           {/* Footer del modal */}
-          <div className="flex items-center justify-end gap-3 pt-3 border-t border-line">
+          <div className="flex items-center justify-end gap-3 pt-3 border-t border-line pb-1">
             <button
               type="button"
               onClick={handleCloseModal}
