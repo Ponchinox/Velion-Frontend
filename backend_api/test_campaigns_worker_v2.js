@@ -64,7 +64,12 @@ async function runTest(name, fn) {
   }
 }
 
+const createdSuiteTenantIds = new Set();
+
 async function makeTenant(id, overrides = {}) {
+  if (typeof id === 'string') {
+    createdSuiteTenantIds.add(id);
+  }
   return prisma.tenant.create({
     data: {
       id,
@@ -1716,6 +1721,25 @@ main()
     process.exitCode = 1;
   })
   .finally(async () => {
+    // Limpieza estricta y garantizada de los tenants creados en esta corrida
+    if (createdSuiteTenantIds.size > 0) {
+      console.log(`\n🧹 [Suite Cleanup] Limpiando ${createdSuiteTenantIds.size} tenants de test creados en esta ejecución...`);
+      for (const tenantId of createdSuiteTenantIds) {
+        if (typeof tenantId === 'string' && tenantId.startsWith('camp-t-')) {
+          try {
+            await prisma.campaignLog.deleteMany({ where: { campaign: { tenantId } } });
+            await prisma.campaign.deleteMany({ where: { tenantId } });
+            await prisma.registeredWhatsAppNumber.deleteMany({ where: { tenantId } });
+            await prisma.message.deleteMany({ where: { tenantId } });
+            await prisma.chat.deleteMany({ where: { tenantId } });
+            await prisma.contact.deleteMany({ where: { tenantId } });
+            await prisma.customer.deleteMany({ where: { tenantId } });
+            await prisma.tenant.delete({ where: { id: tenantId } });
+          } catch (_) {}
+        }
+      }
+      console.log('✅ [Suite Cleanup] Limpieza completada.');
+    }
     await prisma.$disconnect();
     process.exit(passedTests === totalTests ? 0 : 1);
   });
