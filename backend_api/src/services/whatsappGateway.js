@@ -259,26 +259,65 @@ export async function sendMedia(opts) {
 
   const evoUrl = process.env.EVOLUTION_API_URL || 'http://localhost:8080';
   const evoInstance = instance || getEvoInstanceName(tenantId || '');
-  try {
-    const res = await axios.post(
-      `${evoUrl}/message/sendMedia/${evoInstance}`,
-      {
-        number: cleanTo,
-        mediatype: isVideo ? 'video' : 'image',
-        media: url,
-        caption: caption || ''
-      },
-      getEvoHeaders(apiKey)
-    );
-    const msgId = res.data?.key?.id || null;
-    if (isAutomated) {
-      if (msgId) markMessageAsSentByAi(msgId, { tenantId, origin: origin || 'ai' });
-      if (caption) markMessageAsSentByAi(caption, { tenantId, origin: origin || 'ai' });
+
+  // Reintento automático ante errores transitorios para Evolution API (1 inicial + 2 retries = 3 intentos máx.)
+  //
+  // NOTA SOBRE DUPLICADOS Y TIMEOUT AMBIGUO:
+  // Si Evolution API recibe y procesa el multimedia pero la conexión HTTP se corta o agota
+  // el timeout antes de que el cliente reciba la confirmación HTTP 200 con key.id, un reintento
+  // posterior podría provocar el envío duplicado del mensaje multimedia al usuario.
+  // Este es un riesgo inherente al transporte HTTP sin idempotencia persistente en el gateway.
+  // Sin embargo, en cuanto Evolution confirma la recepción con msgId, la función retorna inmediatamente
+  // evitando cualquier duplicado posterior tras una respuesta exitosa.
+  const MAX_MEDIA_RETRIES = 2;
+  const BASE_MEDIA_RETRY_DELAY_MS = Number(process.env.GATEWAY_MEDIA_RETRY_DELAY_MS) || 1500;
+
+  for (let attempt = 1; attempt <= MAX_MEDIA_RETRIES + 1; attempt++) {
+    try {
+      const res = await axios.post(
+        `${evoUrl}/message/sendMedia/${evoInstance}`,
+        {
+          number: cleanTo,
+          mediatype: isVideo ? 'video' : 'image',
+          media: url,
+          caption: caption || ''
+        },
+        getEvoHeaders(apiKey)
+      );
+      const msgId = res.data?.key?.id || null;
+      if (isAutomated) {
+        if (msgId) markMessageAsSentByAi(msgId, { tenantId, origin: origin || 'ai' });
+        if (caption) markMessageAsSentByAi(caption, { tenantId, origin: origin || 'ai' });
+      }
+      console.log(`[WA Gateway EVOLUTION] ${isVideo ? 'Video' : 'Imagen'} enviado a ${cleanTo} (msgId: ${msgId})`);
+      return msgId;
+    } catch (err) {
+      const status = err.response?.status;
+      const errText = `${err.code || ''} ${err.message || ''}`.toLowerCase();
+
+      // Errores fatales de cliente (4xx: auth, payload inválido, número inválido, ruta inexistente)
+      const isFatal = Boolean(status && status >= 400 && status < 500);
+
+      // Errores transitorios (500, 502, 503, 504 o fallos de red / timeout / socket cortado)
+      const isTransient = !isFatal && (
+        !status ||
+        status === 500 || status === 502 || status === 503 || status === 504 ||
+        errText.includes('connection closed') ||
+        errText.includes('econnreset') ||
+        errText.includes('econnrefused') ||
+        errText.includes('etimedout') ||
+        errText.includes('timeout')
+      );
+
+      if (isTransient && attempt <= MAX_MEDIA_RETRIES) {
+        const delay = BASE_MEDIA_RETRY_DELAY_MS * attempt;
+        console.warn(`⚠️ [WA Gateway EVOLUTION] Media intento ${attempt}/${MAX_MEDIA_RETRIES + 1} falló (${status || err.code || err.message}). Reintentando en ${delay / 1000}s...`);
+        await new Promise(resolve => setTimeout(resolve, delay));
+        continue;
+      }
+
+      console.error(`[WA Gateway EVOLUTION] Error definitivo al enviar ${isVideo ? 'video' : 'imagen'} a ${cleanTo} tras ${attempt} intento(s):`, JSON.stringify(err.response?.data || err.message));
+      throw err;
     }
-    console.log(`[WA Gateway EVOLUTION] ${isVideo ? 'Video' : 'Imagen'} enviado a ${cleanTo} (msgId: ${msgId})`);
-    return msgId;
-  } catch (err) {
-    console.error(`[WA Gateway EVOLUTION] Error al enviar ${isVideo ? 'video' : 'imagen'} a ${cleanTo}:`, JSON.stringify(err.response?.data || err.message));
-    throw err;
   }
 }

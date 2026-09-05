@@ -45,6 +45,22 @@ export const REQUEST_HUMAN_HANDOFF_DECLARATION = {
   }
 };
 
+// ── DEFINICIÓN FORMAL DE FUNCTION TOOL: send_product_media ───────────────────
+export const SEND_PRODUCT_MEDIA_DECLARATION = {
+  name: 'send_product_media',
+  description: 'Envía la imagen o foto oficial del producto o servicio al cliente por WhatsApp. Úsala ÚNICAMENTE cuando el cliente solicite de forma EXPLÍCITA ver una foto, imagen o folleto gráfico del producto/servicio (ej. "¿tienes foto?", "¿tienes imagen?", "muéstrame la imagen", "enséñame el producto", "quiero verlo", "¿hay imagen del plan?"). PROHIBIDO usarla en consultas normales de precio, características, recomendaciones, stock o información general, y PROHIBIDO enviarla automáticamente solo porque el producto tenga imagen.',
+  parameters: {
+    type: 'OBJECT',
+    properties: {
+      productId: {
+        type: 'STRING',
+        description: 'El ID exacto del producto obtenido del <catalog_index> o de get_product_details.'
+      }
+    },
+    required: ['productId']
+  }
+};
+
 /**
  * Helper para generar los headers de autenticación del Evolution API
  */
@@ -1866,9 +1882,8 @@ Puedes usar las siguientes etiquetas dentro de tu respuesta para ejecutar accion
 - LÍMITE ESTRICTO DE RÁFAGA: ESTÁ ESTRICTAMENTE PROHIBIDO usar más de 2 o 3 [SPLIT] por respuesta. NUNCA envíes ráfagas largas de 4 o más mensajes. Sé conciso y agrupa tus ideas.\n\n`;
     }
     
-    systemCommands += `📦 MULTIMEDIA (Úsalas en cualquier parte de tu texto, se enviarán en ese orden exacto):
-- [SHOW_GALLERY: ID]: Úsala para mostrar FOTOS y/o VIDEOS del producto. Si el cliente pide un video, usa este mismo comando. El ID DEBE OBTENERSE EXACTAMENTE de <catalog_index>. NO inventes IDs. Ej: "Aquí tienes el video y fotos del modelo [SHOW_GALLERY: 550e8400-e29b-41d4-a716-446655440000]"
-- [MEDIA: https://url.jpg]: Envía una imagen o video externo por URL directa (NO uses Markdown).
+    systemCommands += `📦 MULTIMEDIA:
+- Para enviar fotos o imágenes del producto/servicio: Llama a la herramienta 'send_product_media' con el productId ÚNICAMENTE si el cliente te pide explícitamente ver fotos o imágenes ("¿tienes foto?", "muéstrame la imagen", "enséñame el producto", "quiero ver el curso"). NUNCA envíes imágenes ante simples consultas de información, precio o características.
 
 ⚙️ ACCIONES INVISIBLES (Estas DEBEN ir siempre al FINAL ABSOLUTO de tu respuesta):
 `;
@@ -1897,7 +1912,7 @@ Estado Comercial Actual: ${JSON.stringify(currentCommercialState)}
 </customer_data>
 
 <catalog_index>
-[ATENCION: LOS DATOS A CONTINUACION SON EL INDICE DE PRODUCTOS DISPONIBLES. NO INVENTES PRODUCTOS QUE NO ESTEN AQUI. SI EL CLIENTE PIDE FOTOS O VIDEOS, USA [SHOW_GALLERY: ID]. SI NECESITAS MAS DETALLES, USA get_product_details]
+[ATENCION: LOS DATOS A CONTINUACION SON EL INDICE DE PRODUCTOS DISPONIBLES. NO INVENTES PRODUCTOS QUE NO ESTEN AQUI. SI EL CLIENTE PIDE FOTOS O IMAGENES, USA send_product_media. SI NECESITAS MAS DETALLES, USA get_product_details]
 ${catalogIndexCsv}
 </catalog_index>
 
@@ -1920,10 +1935,15 @@ ${catalogIndexCsv}
     let handoffActivatedInSession = false;
     let handoffConfirmationSentInSession = false;
 
+    // ─── FLAGS DE SESIÓN PARA MULTIMEDIA DETERMINÍSTICA ──────────────────
+    let pendingMediaToSend = null;
+    let mediaSentInSession = false;
+
     // ─── DEFINICIÓN DE HERRAMIENTAS (FUNCTION CALLING) ───────────────────
     const tools = [{
       functionDeclarations: [
         REQUEST_HUMAN_HANDOFF_DECLARATION,
+        SEND_PRODUCT_MEDIA_DECLARATION,
         {
           name: 'get_product_details',
           description: 'Obtiene detalles profundos de un producto (descripción larga, stock, variantes, características). Úsala ÚNICAMENTE cuando el cliente pida información específica sobre un producto que encontraste en el <catalog_index>.',
@@ -2167,6 +2187,109 @@ Atributos/Tags: ${Array.isArray(product.tags) ? product.tags.join(', ') : ''}
         } catch (searchErr) {
           console.error('❌ Error en get_product_details:', searchErr);
           return { error: 'Ocurrió un error al buscar detalles del producto.' };
+        }
+      }
+
+      if (funcName === 'send_product_media') {
+        const fcStart = Date.now();
+        const rawProductId = args?.productId;
+        const productId = typeof rawProductId === 'string' ? rawProductId.trim() : String(rawProductId || '').trim();
+        console.log(`🖼️ [FC] send_product_media — ID: "${productId}"`);
+
+        // Guardia de deduplicación: máximo 1 media por turno
+        if (mediaSentInSession || pendingMediaToSend) {
+          console.warn(`⚠️ [FC] send_product_media rechazado: ya se encoló una imagen para este turno (productId: "${productId}").`);
+          return {
+            success: false,
+            hasMedia: false,
+            reason: 'MEDIA_ALREADY_QUEUED',
+            message: 'Ya se preparó una imagen para este turno. No se permiten envíos duplicados.'
+          };
+        }
+
+        if (!productId) {
+          return {
+            success: false,
+            hasMedia: false,
+            reason: 'INVALID_PRODUCT_ID',
+            message: 'Se requiere un productId válido.'
+          };
+        }
+
+        try {
+          // Aislamiento Multi-tenant estricto: el producto DEBE pertenecer al tenant actual
+          const product = await prisma.product.findFirst({
+            where: {
+              id: productId,
+              user: { tenantId: tenant.id }
+            },
+            select: {
+              id: true,
+              name: true,
+              imageUrl: true,
+              images: true,
+              type: true
+            }
+          });
+
+          if (!product) {
+            console.warn(`⚠️ [FC] send_product_media: Producto "${productId}" no encontrado o no pertenece al tenant ${tenant.id}.`);
+            return {
+              success: false,
+              hasMedia: false,
+              reason: 'NO_IMAGE_REGISTERED',
+              message: 'El producto no fue encontrado en esta tienda. Informa con amabilidad al cliente.'
+            };
+          }
+
+          // Precedencia canónica segura:
+          // 1. imageUrl
+          // 2. images[0] (si imageUrl está vacío y images[0] es válido)
+          // 3. sin media
+          let canonicalUrl = null;
+          if (product.imageUrl && typeof product.imageUrl === 'string' && product.imageUrl.trim() !== '' && product.imageUrl.trim() !== 'Sin imagen') {
+            canonicalUrl = product.imageUrl.trim();
+          } else if (Array.isArray(product.images) && product.images.length > 0) {
+            const firstImg = product.images[0];
+            if (firstImg && typeof firstImg === 'string' && firstImg.trim() !== '' && firstImg.trim() !== 'Sin imagen') {
+              canonicalUrl = firstImg.trim();
+            }
+          }
+
+          if (!canonicalUrl) {
+            console.log(`ℹ️ [FC] send_product_media: Producto "${product.name}" (${product.id}) no tiene imagen registrada.`);
+            return {
+              success: false,
+              hasMedia: false,
+              reason: 'NO_IMAGE_REGISTERED',
+              message: `El producto o servicio "${product.name}" no cuenta con una imagen o foto registrada en el catálogo digital en este momento. Informa esto al cliente con honestidad y amabilidad sin inventar enlaces.`
+            };
+          }
+
+          pendingMediaToSend = {
+            productId: product.id,
+            productName: product.name,
+            url: canonicalUrl,
+            mediaType: 'image'
+          };
+          mediaSentInSession = true;
+
+          const fcMs = Date.now() - fcStart;
+          console.log(`✅ [FC] send_product_media completado en ${fcMs}ms. Imagen preparada: ${product.name}`);
+          return {
+            success: true,
+            hasMedia: true,
+            productName: product.name,
+            message: `La imagen oficial de "${product.name}" ha sido preparada y se enviará al cliente. Acompaña la imagen con un mensaje breve y amigable.`
+          };
+        } catch (mediaErr) {
+          console.error('❌ Error en send_product_media:', mediaErr.message);
+          return {
+            success: false,
+            hasMedia: false,
+            reason: 'INTERNAL_ERROR',
+            message: 'Ocurrió un error interno al recuperar la imagen.'
+          };
         }
       }
       if (funcName === 'update_commercial_state') {
@@ -2500,82 +2623,67 @@ Atributos/Tags: ${Array.isArray(product.tags) ? product.tags.join(', ') : ''}
     }
     // ────────────────────────────────────────────────────────────────────────────────────────────
 
-    const visibleText = aiResponse
+    // Sanitizar texto visible: eliminar comandos legacy [MEDIA: ...] y [SHOW_GALLERY: ...]
+    // para impedir cualquier inyección de URLs arbitrarias generadas por el modelo
+    const cleanedText = aiResponse
       .replace(handoffRegex, '')
+      .replace(/\[MEDIA:.*?\]/gi, '')
+      .replace(/\[SHOW_GALLERY:.*?\]/gi, '')
       .trim();
 
-    if (visibleText) {
+    if (cleanedText || pendingMediaToSend) {
       const isMultiMsg = tenantDetails?.multiMessageMode !== false;
-      const sequenceRegex = /(\[SPLIT\]|\[MEDIA:.*?\]|\[SHOW_GALLERY:.*?\])/gi;
-      const tokens = visibleText.split(sequenceRegex).filter(t => t !== undefined && t !== null);
+      const sequenceRegex = /(\[SPLIT\])/gi;
+      const tokens = cleanedText.split(sequenceRegex).filter(t => t !== undefined && t !== null);
 
       let dispatchSequence = [];
       let textBuffer = "";
 
-      for (const fragment of tokens) {
-        if (!fragment) continue;
-        
-        const token = fragment.trim();
-        const upperToken = token.toUpperCase();
-        
-        if (upperToken === '[SPLIT]') {
-          if (isMultiMsg && textBuffer.trim()) {
-            dispatchSequence.push({ type: 'text', content: textBuffer.trim() });
-            textBuffer = "";
-          } else if (!isMultiMsg) {
-            textBuffer += " "; // Si el modo humano está desactivado, el SPLIT se ignora como espacio
-          }
-        } else if (upperToken.startsWith('[SHOW_GALLERY:')) {
-          if (textBuffer.trim()) {
-            dispatchSequence.push({ type: 'text', content: textBuffer.trim() });
-            textBuffer = "";
-          }
-          const productId = token.substring(14, token.length - 1).trim();
-          const matchedProd = await prisma.product.findFirst({
-            where: { 
-              id: productId,
-              user: { tenantId: tenant.id }
-            },
-            select: { imageUrl: true, images: true, videoUrl: true }
+      const hasSplit = tokens.some(t => t.trim().toUpperCase() === '[SPLIT]');
+
+      if (pendingMediaToSend && !hasSplit && cleanedText.length <= 1000) {
+        // Preferencia arquitectural: Si hay imagen y el texto es conciso sin splits,
+        // integramos el texto como caption de la imagen para una experiencia fluida
+        // sin esperas artificiales ni duplicación de mensajes.
+        dispatchSequence.push({
+          type: 'image',
+          url: pendingMediaToSend.url,
+          caption: cleanedText || undefined
+        });
+      } else {
+        // Si hay imagen pero el texto tiene splits o es largo, enviamos la imagen primero y luego los textos
+        if (pendingMediaToSend) {
+          dispatchSequence.push({
+            type: 'image',
+            url: pendingMediaToSend.url
           });
+        }
+
+        for (const fragment of tokens) {
+          if (!fragment) continue;
           
-          if (matchedProd) {
-            // Priority: Video, then main image, then gallery
-            if (matchedProd.videoUrl) {
-              dispatchSequence.push({ type: 'video', url: matchedProd.videoUrl });
+          const token = fragment.trim();
+          const upperToken = token.toUpperCase();
+          
+          if (upperToken === '[SPLIT]') {
+            if (isMultiMsg && textBuffer.trim()) {
+              dispatchSequence.push({ type: 'text', content: textBuffer.trim() });
+              textBuffer = "";
+            } else if (!isMultiMsg) {
+              textBuffer += " "; // Si el modo humano está desactivado, el SPLIT se ignora como espacio
             }
-            if (matchedProd.imageUrl && matchedProd.imageUrl !== 'Sin imagen') {
-              dispatchSequence.push({ type: 'image', url: matchedProd.imageUrl });
-            }
-            if (Array.isArray(matchedProd.images) && matchedProd.images.length > 0) {
-              for (const gUrl of matchedProd.images) {
-                dispatchSequence.push({ type: 'image', url: gUrl });
-              }
-            }
+          } else {
+            // Texto normal, mantenemos los espacios originales al acumular
+            textBuffer += fragment;
           }
-        } else if (upperToken.startsWith('[MEDIA:')) {
-          if (textBuffer.trim()) {
-            dispatchSequence.push({ type: 'text', content: textBuffer.trim() });
-            textBuffer = "";
-          }
-          const urlsStr = token.substring(7, token.length - 1).trim();
-          const urls = urlsStr.split(',').map(u => u.trim());
-          for (const u of urls) {
-            const lower = u.toLowerCase();
-            const isVid = lower.includes('.mp4') || lower.includes('.mov') || lower.includes('.webm') || lower.includes('.m4v') || lower.includes('/video/upload/');
-            dispatchSequence.push({ type: isVid ? 'video' : 'image', url: u });
-          }
-        } else {
-          // Texto normal, mantenemos los espacios originales al acumular
-          textBuffer += fragment;
+        }
+
+        if (textBuffer.trim()) {
+          dispatchSequence.push({ type: 'text', content: textBuffer.trim() });
         }
       }
 
-      if (textBuffer.trim()) {
-        dispatchSequence.push({ type: 'text', content: textBuffer.trim() });
-      }
-
-                   // ─── LÍMITE DURO DE FRAGMENTOS (MÁXIMO 3 TEXTOS) ───
+      // ─── LÍMITE DURO DE FRAGMENTOS (MÁXIMO 3 TEXTOS) ───
       let textCount = 0;
       let limitedSequence = [];
       for (const item of dispatchSequence) {
@@ -2612,6 +2720,8 @@ Atributos/Tags: ${Array.isArray(product.tags) ? product.tags.join(', ') : ''}
         if (item.type === 'text') {
           // 40ms por caracter. Mínimo 2s, máximo 12s.
           typingDelay = Math.max(2000, Math.min(12000, item.content.length * 40));
+        } else if (item.type === 'image' && item.caption) {
+          typingDelay = Math.max(2000, Math.min(6000, item.caption.length * 30));
         }
 
         // Enviar estado "escribiendo..." justo el tiempo que tardará en enviarse
@@ -2698,14 +2808,26 @@ Atributos/Tags: ${Array.isArray(product.tags) ? product.tags.join(', ') : ''}
           }
         } else if (item.type === 'image' || item.type === 'video') {
           try {
-            const mediaMsgId = await sendWhatsAppMedia({ ...gatewayCtx, to: finalCleanNumber, url: item.url, mediaType: item.type });
+            const mediaMsgId = await sendWhatsAppMedia({ 
+              ...gatewayCtx, 
+              to: finalCleanNumber, 
+              url: item.url, 
+              mediaType: item.type,
+              caption: item.caption || undefined,
+              isAutomated: true,
+              origin: 'ai'
+            });
             console.log(`✅ [${provider} Gateway] Multimedia (${item.type}) enviado a ${finalCleanNumber} (msgId: ${mediaMsgId})`);
 
             const aiMediaNow = new Date();
+            const savedContent = item.caption 
+              ? `[${item.type === 'video' ? 'Video' : 'Imagen'}]: ${item.url}\n${item.caption}`
+              : `[${item.type === 'video' ? 'Video' : 'Imagen'}]: ${item.url}`;
+
             const [savedMediaMsg] = await prisma.$transaction([
               prisma.message.create({
                 data: {
-                  content: `[${item.type === 'video' ? 'Video' : 'Imagen'}]: ${item.url}`,
+                  content: savedContent,
                   senderRole: 'agent',
                   status: 'sent',
                   externalId: mediaMsgId || null,
@@ -2721,7 +2843,8 @@ Atributos/Tags: ${Array.isArray(product.tags) ? product.tags.join(', ') : ''}
               reqIo.to(aiMediaRoom).emit('new_whatsapp_message', {
                 chatId: chat.id,
                 remoteJid: cleanJid,
-                text: item.url,
+                text: item.caption ? `${item.url}\n${item.caption}` : item.url,
+                caption: item.caption || null,
                 type: 'outgoing',
                 from: 'business',
                 senderRole: 'agent',
