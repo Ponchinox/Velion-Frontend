@@ -52,6 +52,7 @@ model Tenant {
   users                User[]
   orders               Order[]
   aiUsages             TenantAIUsage[]
+  operationalItems     OperationalItem[]
 }
 
 model User {
@@ -66,6 +67,8 @@ model User {
   updatedAt DateTime  @updatedAt
   products  Product[]
   tenant    Tenant?   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  createdOperationalItems   OperationalItem[] @relation("CreatedByUser")
+  completedOperationalItems OperationalItem[] @relation("CompletedByUser")
 }
 
 model Contact {
@@ -81,6 +84,7 @@ model Contact {
   tenantId        String
   chats           Chat[]
   tenant          Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  operationalItems OperationalItem[]
 }
 
 model Chat {
@@ -94,6 +98,7 @@ model Chat {
   contact   Contact   @relation(fields: [contactId], references: [id], onDelete: Cascade)
   tenant    Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   messages  Message[]
+  operationalItems OperationalItem[]
 }
 
 model Message {
@@ -107,6 +112,7 @@ model Message {
   status     String   @default("sent")
   chat       Chat     @relation(fields: [chatId], references: [id], onDelete: Cascade)
   tenant     Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  operationalItems OperationalItem[]
 }
 
 model AutomationFlow {
@@ -201,6 +207,7 @@ model Customer {
   updatedAt         DateTime  @updatedAt
   tenant            Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   orders            Order[]
+  operationalItems  OperationalItem[]
 
   @@unique([tenantId, phone])
 }
@@ -297,6 +304,7 @@ model Order {
   tenant          Tenant      @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   customer        Customer    @relation(fields: [customerId], references: [id], onDelete: Cascade)
   items           OrderItem[]
+  operationalItems OperationalItem[]
 }
 
 model OrderItem {
@@ -329,3 +337,56 @@ model TenantAIUsage {
 
   @@unique([tenantId, date])
 }
+
+model OperationalItem {
+  id                String      @id @default(uuid())
+  tenantId          String
+  customerId        String?
+  contactId         String?
+  chatId            String?
+  sourceMessageId   String?
+  orderId           String?
+
+  type              String      // 'NOTE' | 'TASK'
+  category          String      @default("GENERAL") // 'GENERAL' | 'COORDINATION' | 'ATTENDANCE' | 'SERVICE_INSTRUCTION' | 'FOLLOW_UP' | 'ORDER_REQUEST' | 'SUPPORT' | 'OTHER'
+  
+  title             String?
+  summary           String
+  subjectName       String?
+  
+  status            String      @default("PENDING") // NOTE: 'ACTIVE' | 'ARCHIVED'. TASK: 'PENDING' | 'IN_PROGRESS' | 'COMPLETED' | 'CANCELED'
+  priority          String      @default("NORMAL")  // 'LOW' | 'NORMAL' | 'HIGH'
+
+  createdByType     String      @default("AI")      // 'AI' | 'USER'
+  createdByUserId   String?
+  completedAt       DateTime?
+  completedByUserId String?
+
+  dueDateLocal      String?     // 'YYYY-MM-DD'
+  dueTimeLocal      String?     // 'HH:mm'
+  dueAt             DateTime?   // UTC timestamp cuando fecha y hora son conocidas/calculables
+
+  dedupeKey         String?
+
+  details           Json?
+
+  createdAt         DateTime    @default(now())
+  updatedAt         DateTime    @updatedAt
+
+  tenant            Tenant      @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  customer          Customer?   @relation(fields: [customerId], references: [id], onDelete: SetNull)
+  contact           Contact?    @relation(fields: [contactId], references: [id], onDelete: SetNull)
+  chat              Chat?       @relation(fields: [chatId], references: [id], onDelete: SetNull)
+  sourceMessage     Message?    @relation(fields: [sourceMessageId], references: [id], onDelete: SetNull)
+  order             Order?      @relation(fields: [orderId], references: [id], onDelete: SetNull)
+  createdByUser     User?       @relation("CreatedByUser", fields: [createdByUserId], references: [id], onDelete: SetNull)
+  completedByUser   User?       @relation("CompletedByUser", fields: [completedByUserId], references: [id], onDelete: SetNull)
+
+  @@unique([tenantId, dedupeKey])
+  @@index([tenantId, type, status])
+  @@index([tenantId, chatId])
+  @@index([tenantId, customerId])
+  @@index([tenantId, dueDateLocal])
+  @@index([tenantId, dueAt])
+}
+
