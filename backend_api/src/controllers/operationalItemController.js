@@ -3,22 +3,15 @@ import {
   getOperationalItemById,
   listOperationalItems,
   updateOperationalItem,
+  startOperationalTask,
   completeOperationalTask,
   archiveOperationalNote,
   cancelOperationalTask
 } from '../services/operationalItemService.js';
-
-/**
- * Emite eventos Socket.IO acotados estrictamente a la sala del tenant.
- */
-function emitOperationalSocket(io, tenantId, eventName, item) {
-  if (!io || !tenantId) return;
-  const roomName = `tenant:${tenantId}`;
-  io.to(roomName).emit(eventName, {
-    item,
-    chatId: item?.chatId || null
-  });
-}
+import {
+  emitOperationalItemCreated,
+  emitOperationalItemUpdated
+} from '../services/operationalItemEventService.js';
 
 /**
  * Mapea excepciones del servicio a códigos HTTP adecuados y respuestas consistentes.
@@ -33,9 +26,11 @@ function handleServiceError(err, res) {
   if (
     msg.includes('VALIDATION_ERROR') ||
     msg.includes('PROHIBITED_FIELD_UPDATE') ||
+    msg.includes('CANNOT_START_NON_TASK') ||
     msg.includes('CANNOT_COMPLETE_NON_TASK') ||
     msg.includes('CANNOT_ARCHIVE_NON_NOTE') ||
     msg.includes('CANNOT_CANCEL_NON_TASK') ||
+    msg.includes('INVALID_TASK_TRANSITION') ||
     msg.includes('PARAM_MISSING') ||
     msg.includes('TENANT_REQUIRED') ||
     msg.includes('TENANT_AND_ID_REQUIRED') ||
@@ -49,7 +44,8 @@ function handleServiceError(err, res) {
   if (
     msg.includes('TENANT_MISMATCH') ||
     msg.includes('CROSS_TENANT') ||
-    msg.includes('CHAT_MISMATCH')
+    msg.includes('CHAT_MISMATCH') ||
+    msg.includes('USER_TENANT_MISMATCH')
   ) {
     return res.status(400).json({ success: false, error: msg });
   }
@@ -223,7 +219,7 @@ export async function createItem(req, res) {
     const result = await createOperationalItem(payload, serviceOptions);
 
     const io = req.io || global.io;
-    emitOperationalSocket(io, tenantId, 'operational_item_created', result.item);
+    emitOperationalItemCreated({ io, tenantId, item: result.item });
 
     return res.status(201).json({
       success: true,
@@ -295,11 +291,41 @@ export async function updateItem(req, res) {
     const updated = await updateOperationalItem({ tenantId, id, updates }, serviceOptions);
 
     const io = req.io || global.io;
-    emitOperationalSocket(io, tenantId, 'operational_item_updated', updated);
+    emitOperationalItemUpdated({ io, tenantId, item: updated });
 
     return res.json({
       success: true,
       item: updated
+    });
+  } catch (error) {
+    return handleServiceError(error, res);
+  }
+}
+
+/**
+ * POST /api/operational-items/:id/start
+ * Inicia una tarea operacional (TASK) pasando a IN_PROGRESS.
+ */
+export async function startItem(req, res) {
+  try {
+    const tenantId = req.user?.tenantId;
+    const userId = req.user?.id || req.user?.userId;
+
+    if (!tenantId || !userId) {
+      return res.status(401).json({ success: false, error: 'UNAUTHORIZED: Sesión inválida.' });
+    }
+
+    const { id } = req.params;
+    const serviceOptions = req.prismaClient ? { prismaClient: req.prismaClient } : {};
+
+    const started = await startOperationalTask({ tenantId, id, userId }, serviceOptions);
+
+    const io = req.io || global.io;
+    emitOperationalItemUpdated({ io, tenantId, item: started });
+
+    return res.json({
+      success: true,
+      item: started
     });
   } catch (error) {
     return handleServiceError(error, res);
@@ -325,7 +351,7 @@ export async function completeItem(req, res) {
     const completed = await completeOperationalTask({ tenantId, id, userId }, serviceOptions);
 
     const io = req.io || global.io;
-    emitOperationalSocket(io, tenantId, 'operational_item_updated', completed);
+    emitOperationalItemUpdated({ io, tenantId, item: completed });
 
     return res.json({
       success: true,
@@ -353,7 +379,7 @@ export async function archiveItem(req, res) {
     const archived = await archiveOperationalNote({ tenantId, id }, serviceOptions);
 
     const io = req.io || global.io;
-    emitOperationalSocket(io, tenantId, 'operational_item_updated', archived);
+    emitOperationalItemUpdated({ io, tenantId, item: archived });
 
     return res.json({
       success: true,
@@ -381,7 +407,7 @@ export async function cancelItem(req, res) {
     const canceled = await cancelOperationalTask({ tenantId, id }, serviceOptions);
 
     const io = req.io || global.io;
-    emitOperationalSocket(io, tenantId, 'operational_item_updated', canceled);
+    emitOperationalItemUpdated({ io, tenantId, item: canceled });
 
     return res.json({
       success: true,

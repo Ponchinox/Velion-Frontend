@@ -5,6 +5,7 @@ import {
   getItemById,
   createItem,
   updateItem,
+  startItem,
   completeItem,
   archiveItem,
   cancelItem
@@ -19,6 +20,7 @@ router.get('/', getItems);
 router.get('/:id', getItemById);
 router.post('/', createItem);
 router.patch('/:id', updateItem);
+router.post('/:id/start', startItem);
 router.post('/:id/complete', completeItem);
 router.post('/:id/archive', archiveItem);
 router.post('/:id/cancel', cancelItem);

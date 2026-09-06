@@ -21,6 +21,7 @@ import { activateHumanHandoff, isUnknownInfoHandoff } from '../services/humanHan
 import { isHandoffActive } from '../services/humanHandoffGate.js';
 import { syncCommercialOrder } from '../services/orderCommercialService.js';
 import { createOperationalItem } from '../services/operationalItemService.js';
+import { emitOperationalItemCreated } from '../services/operationalItemEventService.js';
 import {
   extractAuthoritativeIdentityPair,
   persistAuthoritativeIdentityMapping,
@@ -257,6 +258,14 @@ export async function handleOperationalTool(funcName, args, ctx = {}) {
 
       console.log(`📝 [FC] register_operational_note procesado: ${opResult.item.id} (tenant: ${tenant?.id}, dedupe: ${opResult.deduplicated})`);
 
+      if (opResult.success && !opResult.deduplicated) {
+        emitOperationalItemCreated({
+          io: global.io,
+          tenantId: tenant?.id,
+          item: opResult.item
+        });
+      }
+
       return {
         success: true,
         itemId: opResult.item.id,
@@ -323,6 +332,14 @@ export async function handleOperationalTool(funcName, args, ctx = {}) {
       }, { prismaClient });
 
       console.log(`📋 [FC] create_operational_task procesado: ${opResult.item.id} (tenant: ${tenant?.id}, dueAt: ${dueAt?.toISOString() || 'null'}, dedupe: ${opResult.deduplicated})`);
+
+      if (opResult.success && !opResult.deduplicated) {
+        emitOperationalItemCreated({
+          io: global.io,
+          tenantId: tenant?.id,
+          item: opResult.item
+        });
+      }
 
       return {
         success: true,

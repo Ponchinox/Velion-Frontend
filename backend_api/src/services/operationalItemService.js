@@ -576,8 +576,71 @@ export async function updateOperationalItem({ tenantId, id, updates }, options =
 }
 
 /**
+ * Inicia una tarea operacional cambiando su estado a IN_PROGRESS.
+ * Requiere que el usuario pertenezca al tenant.
+ * Transición permitida: PENDING -> IN_PROGRESS.
+ * Idempotente: IN_PROGRESS -> IN_PROGRESS.
+ * Prohibido: COMPLETED -> IN_PROGRESS, CANCELED -> IN_PROGRESS, NOTE -> IN_PROGRESS.
+ */
+export async function startOperationalTask({ tenantId, id, userId }, options = {}) {
+  const db = options.prismaClient || defaultPrisma;
+
+  if (!tenantId || !id || !userId) {
+    throw new Error('PARAM_MISSING: tenantId, id y userId son obligatorios para iniciar una tarea.');
+  }
+
+  // Validar pertenencia del usuario al tenant
+  const user = await db.user.findFirst({
+    where: { id: userId, tenantId },
+    select: { id: true }
+  });
+  if (!user) {
+    throw new Error(`USER_TENANT_MISMATCH: User '${userId}' no pertenece al tenant.`);
+  }
+
+  const item = await db.operationalItem.findFirst({
+    where: { id, tenantId }
+  });
+
+  if (!item) {
+    throw new Error('ITEM_NOT_FOUND: Tarea no encontrada en este tenant.');
+  }
+
+  if (item.type !== 'TASK') {
+    throw new Error(`CANNOT_START_NON_TASK: No se puede iniciar un item de tipo '${item.type}'.`);
+  }
+
+  // Idempotente si ya está en progreso
+  if (item.status === 'IN_PROGRESS') {
+    return item;
+  }
+
+  if (item.status === 'COMPLETED') {
+    throw new Error('INVALID_TASK_TRANSITION: No se puede iniciar una tarea ya completada.');
+  }
+
+  if (item.status === 'CANCELED') {
+    throw new Error('INVALID_TASK_TRANSITION: No se puede iniciar una tarea cancelada.');
+  }
+
+  if (item.status === 'PENDING') {
+    return db.operationalItem.update({
+      where: { id: item.id },
+      data: {
+        status: 'IN_PROGRESS'
+      }
+    });
+  }
+
+  throw new Error(`INVALID_TASK_TRANSITION: Transición no válida a IN_PROGRESS desde '${item.status}'.`);
+}
+
+/**
  * Completa una tarea operacional (TASK).
  * Prohibido sobre notas (NOTE). Requiere usuario del mismo tenant.
+ * Permitido: PENDING -> COMPLETED, IN_PROGRESS -> COMPLETED.
+ * Idempotente: COMPLETED -> COMPLETED (no sobrescribe completedAt ni completedByUserId).
+ * Prohibido: CANCELED -> COMPLETED.
  */
 export async function completeOperationalTask({ tenantId, id, userId }, options = {}) {
   const db = options.prismaClient || defaultPrisma;
@@ -607,19 +670,34 @@ export async function completeOperationalTask({ tenantId, id, userId }, options 
     throw new Error(`CANNOT_COMPLETE_NON_TASK: No se puede completar un item de tipo '${item.type}'. Use archive para notas.`);
   }
 
-  return db.operationalItem.update({
-    where: { id: item.id },
-    data: {
-      status: 'COMPLETED',
-      completedAt: new Date(),
-      completedByUserId: userId
-    }
-  });
+  // Idempotencia: si ya está COMPLETED, retornar sin alterar completedAt ni completedByUserId
+  if (item.status === 'COMPLETED') {
+    return item;
+  }
+
+  // Prohibir revivir tareas canceladas
+  if (item.status === 'CANCELED') {
+    throw new Error('INVALID_TASK_TRANSITION: No se puede completar una tarea cancelada.');
+  }
+
+  if (item.status === 'PENDING' || item.status === 'IN_PROGRESS') {
+    return db.operationalItem.update({
+      where: { id: item.id },
+      data: {
+        status: 'COMPLETED',
+        completedAt: new Date(),
+        completedByUserId: userId
+      }
+    });
+  }
+
+  throw new Error(`INVALID_TASK_TRANSITION: Transición no válida a COMPLETED desde '${item.status}'.`);
 }
 
 /**
  * Archiva una nota operacional (NOTE).
  * Prohibido sobre tareas (TASK).
+ * Idempotente: ARCHIVED -> ARCHIVED.
  */
 export async function archiveOperationalNote({ tenantId, id }, options = {}) {
   const db = options.prismaClient || defaultPrisma;
@@ -640,6 +718,10 @@ export async function archiveOperationalNote({ tenantId, id }, options = {}) {
     throw new Error(`CANNOT_ARCHIVE_NON_NOTE: No se puede archivar un item de tipo '${item.type}'. Use cancel para tareas.`);
   }
 
+  if (item.status === 'ARCHIVED') {
+    return item;
+  }
+
   return db.operationalItem.update({
     where: { id: item.id },
     data: {
@@ -651,6 +733,9 @@ export async function archiveOperationalNote({ tenantId, id }, options = {}) {
 /**
  * Cancela una tarea operacional (TASK).
  * Prohibido sobre notas (NOTE).
+ * Permitido: PENDING -> CANCELED, IN_PROGRESS -> CANCELED.
+ * Idempotente: CANCELED -> CANCELED.
+ * Prohibido: COMPLETED -> CANCELED.
  */
 export async function cancelOperationalTask({ tenantId, id }, options = {}) {
   const db = options.prismaClient || defaultPrisma;
@@ -671,10 +756,24 @@ export async function cancelOperationalTask({ tenantId, id }, options = {}) {
     throw new Error(`CANNOT_CANCEL_NON_TASK: No se puede cancelar un item de tipo '${item.type}'.`);
   }
 
-  return db.operationalItem.update({
-    where: { id: item.id },
-    data: {
-      status: 'CANCELED'
-    }
-  });
+  // Idempotente si ya está CANCELED
+  if (item.status === 'CANCELED') {
+    return item;
+  }
+
+  // Prohibir cancelar una tarea ya completada
+  if (item.status === 'COMPLETED') {
+    throw new Error('INVALID_TASK_TRANSITION: No se puede cancelar una tarea ya completada.');
+  }
+
+  if (item.status === 'PENDING' || item.status === 'IN_PROGRESS') {
+    return db.operationalItem.update({
+      where: { id: item.id },
+      data: {
+        status: 'CANCELED'
+      }
+    });
+  }
+
+  throw new Error(`INVALID_TASK_TRANSITION: Transición no válida a CANCELED desde '${item.status}'.`);
 }
