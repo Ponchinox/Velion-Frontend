@@ -22,6 +22,7 @@ import connectionRoutes from './src/routes/connectionRoutes.js';
 import userRoutes from './src/routes/userRoutes.js';
 import tenantDashboardRoutes from './src/routes/tenantDashboardRoutes.js';
 import planRoutes from './src/routes/planRoutes.js';
+import operationalItemRoutes from './src/routes/operationalItemRoutes.js';
 import { initBackupScheduler } from './src/services/backupScheduler.js';
 import { initCampaignWorkerV2 } from './src/services/campaignWorkerV2.js';
 
@@ -132,6 +133,7 @@ app.use('/api/connections', connectionRoutes);
 app.use('/api/users', userRoutes);
 app.use('/api/tenant/dashboard', tenantDashboardRoutes);
 app.use('/api/plans', planRoutes);
+app.use('/api/operational-items', operationalItemRoutes);
 
 // Ruta de comprobación de estado (Healthcheck + DB Test)
 app.get('/api/health', async (req, res) => {
