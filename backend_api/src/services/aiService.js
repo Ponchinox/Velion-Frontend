@@ -922,7 +922,7 @@ export async function generateAIResponse(
     if (userQueues.get(userLockKey) === nextTask) {
       userQueues.delete(userLockKey);
     }
-  });
+  }).catch(() => {});
 
   return nextTask;
 }
@@ -942,9 +942,8 @@ async function _processAIRequest(prompt, context, mediaItems, tools, toolsHandle
     return aiText;
   } catch (error) {
     if (error?.isSuperseded || error?.message === 'GENERATION_SUPERSEDED') {
-      const supersededErr = new Error('GENERATION_SUPERSEDED');
-      supersededErr.isSuperseded = true;
-      throw supersededErr;
+      geminiWarn('🛑 [SUPERSEDED] Generación obsoleta interceptada en _processAIRequest. Retornando sentinel { superseded: true } sin excepción no controlada.');
+      return { superseded: true };
     }
     console.error('❌ Error final en generateAIResponse tras agotar cascada:', error);
     return null;

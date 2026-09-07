@@ -3069,6 +3069,10 @@ Atributos/Tags: ${Array.isArray(product.tags) ? product.tags.join(', ') : ''}
         toolsHandler,
         tenant.id // <- tenantId para medición persistente de consumo de IA
       );
+      if (aiResponse?.superseded || isGenerationSuperseded()) {
+        console.log(`🛑 [Generation Superseded Fast Abort] Generación abortada tempranamente para +${clientNumber} (v${generationVersion} vs actual v${getChatGenerationVersion(bufferKey)}). 0 llamadas extra a Gemini.`);
+        return; // Sale limpiamente al bloque finally para liberar lock y re-inyectar pendingQueue
+      }
     } catch (aiErr) {
       if (aiErr?.isSuperseded || aiErr?.message === 'GENERATION_SUPERSEDED' || isGenerationSuperseded()) {
         console.log(`🛑 [Generation Superseded Fast Abort] Generación abortada tempranamente para +${clientNumber} (v${generationVersion} vs actual v${getChatGenerationVersion(bufferKey)}). 0 llamadas extra a Gemini.`);
