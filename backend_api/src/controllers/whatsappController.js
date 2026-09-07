@@ -50,18 +50,89 @@ export const REQUEST_HUMAN_HANDOFF_DECLARATION = {
 // ── DEFINICIÓN FORMAL DE FUNCTION TOOL: send_product_media ───────────────────
 export const SEND_PRODUCT_MEDIA_DECLARATION = {
   name: 'send_product_media',
-  description: 'Envía la imagen o foto oficial del producto o servicio al cliente por WhatsApp. Úsala ÚNICAMENTE cuando el cliente solicite de forma EXPLÍCITA ver una foto, imagen o folleto gráfico del producto/servicio (ej. "¿tienes foto?", "¿tienes imagen?", "muéstrame la imagen", "enséñame el producto", "quiero verlo", "¿hay imagen del plan?"). PROHIBIDO usarla en consultas normales de precio, características, recomendaciones, stock o información general, y PROHIBIDO enviarla automáticamente solo porque el producto tenga imagen.',
+  description: 'Envía la imagen o foto oficial del producto o servicio al cliente por WhatsApp. Úsala SIEMPRE que el cliente solicite de forma EXPLÍCITA ver una foto, imagen o folleto gráfico del producto/servicio (ej. "¿tienes foto?", "¿tienes fotos?", "¿además tiene foto?", "mándame una foto", "envíame una imagen", "¿cómo se ve?", "quiero verlo", "muéstrame el producto"). Si el cliente pide ver la foto/imagen de un producto, es OBLIGATORIO llamar a send_product_media y NUNCA sustituirla por get_product_details. PROHIBIDO usarla en consultas de precio o características sin solicitud explícita de imagen.',
   parameters: {
     type: 'OBJECT',
     properties: {
       productId: {
         type: 'STRING',
-        description: 'El ID exacto del producto obtenido del <catalog_index> o de get_product_details.'
+        description: 'El ID exacto del producto obtenido del <catalog_index>, estado comercial o de get_product_details.'
       }
     },
     required: ['productId']
   }
 };
+
+/**
+ * ─── HELPER: DETECCIÓN DE INTENCIÓN EXPLÍCITA DE FOTO/IMAGEN DE PRODUCTO ───
+ * Retorna true si el mensaje del usuario pide explícitamente ver una foto o imagen del producto.
+ */
+export function isExplicitProductMediaIntent(text) {
+  if (!text || typeof text !== 'string') return false;
+  const normalized = text
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .trim();
+
+  // 1. Guardas negativas de rechazo explícito (ej. "no quiero foto", "sin foto", "no necesito foto")
+  const negativeRejectionPattern = /\b(no\s+(?:quiero|deseo|necesito|mandes|envies)|sin\s+fotos?|sin\s+imagenes?)\b/;
+  if (negativeRejectionPattern.test(normalized)) {
+    return false;
+  }
+
+  // 2. Patrones positivos de solicitud explícita de foto / imagen / aspecto visual
+  const patterns = [
+    /\b(?:no\s+)?(tienes?|tienen|hay|tendra|tienen?)\s+(?:una?\s+)?(fotos?|imagen(?:es)?|pics?)\b/,
+    /\b(mandame|enviame|pasa(?:me)?|comparte(?:me)?|puedes\s+enviar(?:me)?|puedes\s+mandar(?:me)?)\s+(?:una?\s+|la\s+)?(fotos?|imagen(?:es)?|pics?)\b/,
+    /\b(quiero|deseo|puedo)\s+(?:verlo|verla|verlos|verlas|ver\s+(?:el\s+producto|la\s+foto|la\s+imagen|una?\s+(?:foto|imagen)|fotos?|imagenes?))\b/,
+    /\bcomo\s+se\s+ve\b/,
+    /\bmuestrame\s+(?:el\s+producto|la\s+foto|la\s+imagen|el|la|fotos?|imagen(?:es)?|una?\s+(?:foto|imagen))\b/,
+    /\bensename\s+(?:el\s+producto|la\s+foto|la\s+imagen|el|la|fotos?|imagen(?:es)?|una?\s+(?:foto|imagen))\b/,
+    /\b(?:ademas\s+)?(tiene|hay|tienen)\s+(?:una?\s+)?(foto|fotos|imagen|imagenes)\b/,
+    /\b(alguna|algunas)\s+(fotos?|imagen(?:es)?)\b/,
+    /\bfoto(s)?\s*\?/,
+    /\bimagen(es)?\s*\?/
+  ];
+
+  return patterns.some(rgx => rgx.test(normalized));
+}
+
+/**
+ * ─── HELPER: AUTHORITY MODEL PARA MULTIMEDIA ───
+ * Garantiza que el asistente nunca afirme estar enviando o adjuntando una foto si no existe
+ * multimedia canónica real preparada en el turno (hasPendingMedia === false).
+ */
+export function enforceMediaAuthority(text, hasPendingMedia) {
+  if (!text || typeof text !== 'string') return text || '';
+  if (hasPendingMedia) return text;
+
+  // Colección limpia de patrones para detectar afirmaciones de entrega o envío de foto/imagen
+  // Soporta tildes/sin tildes (aquí/aqui, envío/envio), artículos (la/esta/una/un) y perífrasis
+  const falseMediaPatterns = [
+    /(?:claro(?:\s+que\s+s[ií])?,?\s*)?(?:aqu[ií]\s+(?:tienes|te\s+(?:muestro|comparto|dejo|adjunto|env[ií]o))|aqu[ií]\s+est[aá])\s+(?:la\s+|esta\s+|una?\s+)?(?:imagen|foto|fotograf[ií]a)(?:\s+del?\s+[^:.\n!,]+)?(?:\s*[:.¡!,])?/gi,
+    /(?:claro(?:\s+que\s+s[ií])?,?\s*)?te\s+(?:env[ií]o|mando|adjunto|comparto)\s+(?:la\s+|esta\s+|una?\s+)?(?:imagen|foto|fotograf[ií]a)(?:\s+del?\s+[^:.\n!,]+)?(?:\s*[:.¡!,])?/gi,
+    /(?:claro(?:\s+que\s+s[ií])?,?\s*)?(?:(?:voy\s+a\s+(?:enviarte|mandarte|compartirte)|d[eé]jame\s+(?:enviarte|mandarte|compartirte)|te\s+voy\s+a\s+(?:enviar|mandar|compartir)))\s+(?:la\s+|esta\s+|una?\s+)?(?:imagen|foto|fotograf[ií]a)(?:\s+del?\s+[^:.\n!,]+)?(?:\s*[:.¡!,])?/gi,
+    /(?:claro(?:\s+que\s+s[ií])?,?\s*)?mira\s+(?:esta\s+|la\s+|una?\s+)?(?:imagen|foto|fotograf[ií]a)(?:\s+del?\s+[^:.\n!,]+)?(?:\s*[:.¡!,])?/gi
+  ];
+
+  let modified = false;
+  let result = text;
+  for (const pattern of falseMediaPatterns) {
+    const replaced = result.replace(pattern, 'No tengo una imagen disponible para enviarte en este momento.');
+    if (replaced !== result) {
+      modified = true;
+      result = replaced;
+    }
+  }
+
+  if (modified) {
+    let clean = result.replace(/(?:No tengo una imagen disponible para enviarte en este momento\.\s*)+/g, 'No tengo una imagen disponible para enviarte en este momento. ');
+    clean = clean.replace(/No tengo una imagen disponible para enviarte en este momento\.\s*\./g, 'No tengo una imagen disponible para enviarte en este momento.');
+    return clean.trim();
+  }
+  return text;
+}
 
 // ── DEFINICIÓN FORMAL DE FUNCTION TOOL: register_operational_note (FASE 2B) ──
 export const REGISTER_OPERATIONAL_NOTE_DECLARATION = {
@@ -2362,6 +2433,10 @@ Las respuestas breves afirmativas ("sí", "si", "claro", "ok", "de acuerdo", "co
 - VERIFICACIÓN DE PAGO: Que el cliente diga "ya pagué", "te envié el comprobante" o adjunte una foto NO significa que el pago esté verificado. La IA solo puede registrar PAYMENT_VERIFIED (revisión humana requerida). La IA NUNCA marca pagos como PAID ni pedidos como COMPLETED.
 - MÉTODOS PERMITIDOS Y ENVÍOS: Nunca inventes métodos de pago, empresas de envío, cuentas, números o titulares. Nunca afirmes que un método es el único disponible salvo que los datos dinámicos del negocio lo indiquen explícitamente.
 - LÍMITES ESTRICTOS: Los métodos concretos provienen EXCLUSIVAMENTE de la INFORMACIÓN DE LA EMPRESA provista. Si el cliente pide un método no listado allí, dile amablemente que no operamos con ese medio. Si los datos configurados son insuficientes o ambiguos, no asumas ni inventes.
+
+[FIDELIDAD TÉCNICA Y POLÍTICAS - PROHIBIDO ALUCINAR]
+- DATOS TÉCNICOS CANÓNICOS (ANTI-ALUCINACIÓN): Cuando el cliente pregunte por características técnicas, funciones, especificaciones, conectividad o compatibilidad de un producto, los hechos DEBEN provenir EXCLUSIVAMENTE de 'get_product_details' o de la ficha canónica. PROHIBIDO terminantemente inventar o asumir características típicas no registradas (ej. 'resistencia al agua', 'conectividad Bluetooth', 'GPS en tiempo real', alcance en metros, duración de batería no registrada, certificaciones o garantías). Si un dato no está explícitamente en la descripción o tags del producto, responde con honestidad que esa especificación no está registrada o confirmada por el fabricante.
+- POLÍTICAS DE ENVÍO DESCONOCIDAS: Si no existen políticas de envío configuradas en INFORMACIÓN DE LA EMPRESA, PROHIBIDO prometer o asumir delivery, couriers, fletes, despacho o recojo en tienda, y PROHIBIDO preguntar '¿Te gustaría que te cuente sobre las opciones de entrega?'. Puedes indicar con amabilidad y naturalidad: "Si deseas realizar la compra, puedo ayudarte a avanzar con el pedido; los detalles de entrega deberán confirmarse directamente con el negocio."
 `.trim();
 
 
@@ -2383,7 +2458,11 @@ Las respuestas breves afirmativas ("sí", "si", "claro", "ok", "de acuerdo", "co
       } else {
         detallesExt += `\n- Cuentas bancarias y métodos de pago autorizados: Actualmente no hay cuentas registradas en el sistema. Si el cliente solicita pagar, indícale amablemente que un asesor le brindará los datos de pago en breve.`;
       }
-      if (tenantDetails.termsAndPolicies) detallesExt += `\n- Políticas de envío, devolución y términos: ${tenantDetails.termsAndPolicies}.`;
+      if (tenantDetails.termsAndPolicies && tenantDetails.termsAndPolicies.trim()) {
+        detallesExt += `\n- Políticas de envío, devolución y términos: ${tenantDetails.termsAndPolicies.trim()}.`;
+      } else {
+        detallesExt += `\n- Políticas de envío, devolución y términos: No hay políticas ni tarifas de envío configuradas en el sistema. PROHIBIDO afirmar delivery, couriers, despacho o recojo, y PROHIBIDO preguntar '¿Te gustaría que te cuente sobre las opciones de entrega?'. Si el cliente consulta sobre envíos o avanza en la compra, indícale amablemente que puedes ayudarle a avanzar con el pedido y que los detalles de entrega deberán confirmarse directamente con el negocio.`;
+      }
       
       infoInstitucional += detallesExt;
     }
@@ -2450,6 +2529,11 @@ ${catalogIndexCsv}
     // Capa 5 + 6 - Guardrails de formato/ventas y comandos (hardcoded, al final = maxima atencion)
     finalPrompt += `${globalGuardrails}\n\n${systemCommands}`;
 
+    // Directiva de máxima prioridad para solicitudes explícitas de fotos/imágenes
+    if (isExplicitProductMediaIntent(userMessageText) && currentCommercialState?.productId) {
+      finalPrompt += `\n\n[INSTRUCCIÓN PRIORITARIA DE FOTO/IMAGEN]:\nEl usuario solicita explícitamente ver una foto o imagen del producto en consulta (ID: "${currentCommercialState.productId}"). DEBES llamar INMEDIATAMENTE a la herramienta 'send_product_media' con productId: "${currentCommercialState.productId}". NUNCA uses 'get_product_details' como sustituto de 'send_product_media' cuando el usuario pide ver fotos o imágenes.\n`;
+    }
+
     const systemPrompt = finalPrompt;
 
     // ─── FLAGS DE SESIÓN PARA HUMAN HANDOFF DETERMINÍSTICO (FASE 2) ──────
@@ -2470,13 +2554,13 @@ ${catalogIndexCsv}
         CREATE_OPERATIONAL_TASK_DECLARATION,
         {
           name: 'get_product_details',
-          description: 'Obtiene detalles profundos de un producto (descripción larga, stock, variantes, características). Úsala ÚNICAMENTE cuando el cliente pida información específica sobre un producto que encontraste en el <catalog_index>.',
+          description: 'Obtiene especificaciones técnicas escritas de un producto (descripción larga, stock, variantes, características). NO envía fotos ni imágenes. Si el usuario pide fotos o imágenes, usa send_product_media.',
           parameters: {
             type: 'OBJECT',
             properties: {
               productId: {
                 type: 'STRING',
-                description: 'El ID exacto del producto, obtenido de <catalog_index>.'
+                description: 'El ID exacto del producto, obtenido de <catalog_index> o del estado comercial.'
               }
             },
             required: ['productId']
@@ -2729,7 +2813,30 @@ Fotos disponibles: ${totalFotos}
 Video: ${product.videoUrl ? 'Sí' : 'No'}
 Descripción Completa: ${product.description || 'Sin descripción adicional'}
 Atributos/Tags: ${Array.isArray(product.tags) ? product.tags.join(', ') : ''}
+
+[GROUNDING TÉCNICO ESTRICTO]: Las únicas especificaciones válidas son las listadas arriba. PROHIBIDO inventar o asumir características no escritas (como resistencia al agua, conectividad Bluetooth, GPS satelital, alcance en metros, duración de batería no especificada, garantías o certificaciones). Si el cliente consulta sobre un dato ausente, responde honestamente que esa característica no está registrada por el fabricante.
 `.trim();
+
+          // Si el cliente expresó una intención explícita de foto/imagen pero Gemini llamó a get_product_details
+          // en lugar de send_product_media, encolamos automáticamente la imagen canónica si está disponible
+          if (isExplicitProductMediaIntent(userMessageText) && !pendingMediaToSend && !mediaSentInSession) {
+            let canonicalUrl = null;
+            if (product.imageUrl && typeof product.imageUrl === 'string' && product.imageUrl.startsWith('http')) {
+              canonicalUrl = product.imageUrl;
+            } else if (Array.isArray(product.images) && product.images.length > 0) {
+              const firstValid = product.images.find(img => typeof img === 'string' && img.startsWith('http'));
+              if (firstValid) canonicalUrl = firstValid;
+            }
+            if (canonicalUrl) {
+              pendingMediaToSend = {
+                url: canonicalUrl,
+                type: 'image',
+                productId: productId
+              };
+              mediaSentInSession = true;
+              console.log(`🖼️ [FC - get_product_details Auto-Media] Imagen canónica encolada para producto "${productId}" debido a intención explícita de foto: ${canonicalUrl}`);
+            }
+          }
 
           const fcMs = Date.now() - fcStart;
           console.log(`✅ [FC] get_product_details completado en ${fcMs}ms`);
@@ -2962,6 +3069,12 @@ Atributos/Tags: ${Array.isArray(product.tags) ? product.tags.join(', ') : ''}
         toolsHandler,
         tenant.id // <- tenantId para medición persistente de consumo de IA
       );
+    } catch (aiErr) {
+      if (aiErr?.isSuperseded || aiErr?.message === 'GENERATION_SUPERSEDED' || isGenerationSuperseded()) {
+        console.log(`🛑 [Generation Superseded Fast Abort] Generación abortada tempranamente para +${clientNumber} (v${generationVersion} vs actual v${getChatGenerationVersion(bufferKey)}). 0 llamadas extra a Gemini.`);
+        return; // Sale limpiamente al bloque finally para liberar lock y re-inyectar pendingQueue
+      }
+      throw aiErr;
     } finally {
       // Liberar reserva de tokens en vuelo
       if (budgetGuard.releaseReservation) {
@@ -3191,7 +3304,10 @@ Atributos/Tags: ${Array.isArray(product.tags) ? product.tags.join(', ') : ''}
       .replace(handoffRegex, '')
       .replace(/\[MEDIA:.*?\]/gi, '')
       .replace(/\[SHOW_GALLERY:.*?\]/gi, '');
-    const cleanedText = sanitizeSpuriousEmoticons(textWithoutCommands);
+    let cleanedText = sanitizeSpuriousEmoticons(textWithoutCommands);
+
+    // ─── AUTHORITY MODEL PARA MULTIMEDIA (POST-GENERATION GUARD) ───
+    cleanedText = enforceMediaAuthority(cleanedText, Boolean(pendingMediaToSend));
 
     if (cleanedText || pendingMediaToSend) {
       const isMultiMsg = tenantDetails?.multiMessageMode !== false;
@@ -3267,6 +3383,10 @@ Atributos/Tags: ${Array.isArray(product.tags) ? product.tags.join(', ') : ''}
 
       console.log(`📤 [${provider} Gateway] Secuencia de despacho: ${dispatchSequence.length} elementos para ${finalCleanNumber}.`);
 
+      // ─── ESTADO LOCAL DE ENTREGA MULTIMEDIA (GATEWAY FAILURE AUTHORITY) ───
+      let mediaDeliveryConfirmed = false;
+      let mediaDeliveryFailed = false;
+
       // ─── DESPACHO SECUENCIAL ───
       for (let i = 0; i < dispatchSequence.length; i++) {
         // ─── INTERRUPCIÓN DE SECUENCIA (CANCELACIÓN DE COLA / GENERACIÓN OBSOLETA) ───
@@ -3333,9 +3453,23 @@ Atributos/Tags: ${Array.isArray(product.tags) ? product.tags.join(', ') : ''}
         
         if (item.type === 'text') {
           try {
+            let outgoingText = item.content;
+
+            // ─── GATEWAY FAILURE AUTHORITY GUARD (POST-DISPATCH CHECK) ───
+            // Si en esta secuencia hubo un intento de envío multimedia y el gateway falló,
+            // ningún texto posterior puede afirmar que la imagen fue enviada.
+            if (mediaDeliveryFailed) {
+              outgoingText = enforceMediaAuthority(outgoingText, false);
+            }
+
+            // Si tras sanitizar el texto quedó vacío, no enviarlo
+            if (!outgoingText.trim()) {
+              continue;
+            }
+
             // Pre-registro por texto ANTES de enviar para evitar race condition con Evolution webhook
-            markMessageAsSentByAi(item.content);
-            const msgId = await sendWhatsAppReply({ ...gatewayCtx, to: finalCleanNumber, text: item.content });
+            markMessageAsSentByAi(outgoingText);
+            const msgId = await sendWhatsAppReply({ ...gatewayCtx, to: finalCleanNumber, text: outgoingText });
             if (msgId) markMessageAsSentByAi(msgId);
             console.log(`✅ [${provider} Gateway] Texto enviado (msgId: ${msgId}).`);
 
@@ -3343,7 +3477,7 @@ Atributos/Tags: ${Array.isArray(product.tags) ? product.tags.join(', ') : ''}
             const [savedMsg] = await prisma.$transaction([
               prisma.message.create({
                 data: {
-                  content: item.content,
+                  content: outgoingText,
                   senderRole: 'agent',
                   status: 'sent',
                   externalId: msgId || null,
@@ -3359,7 +3493,7 @@ Atributos/Tags: ${Array.isArray(product.tags) ? product.tags.join(', ') : ''}
               reqIo.to(aiTextRoom).emit('new_whatsapp_message', {
                 chatId: chat.id,
                 remoteJid: cleanJid,
-                text: item.content,
+                text: outgoingText,
                 type: 'outgoing',
                 from: 'business',
                 senderRole: 'agent',
@@ -3385,6 +3519,11 @@ Atributos/Tags: ${Array.isArray(product.tags) ? product.tags.join(', ') : ''}
               isAutomated: true,
               origin: 'ai'
             });
+            if (mediaMsgId) {
+              mediaDeliveryConfirmed = true;
+            } else {
+              mediaDeliveryFailed = true;
+            }
             console.log(`✅ [${provider} Gateway] Multimedia (${item.type}) enviado a ${finalCleanNumber} (msgId: ${mediaMsgId})`);
 
             const aiMediaNow = new Date();
@@ -3426,6 +3565,7 @@ Atributos/Tags: ${Array.isArray(product.tags) ? product.tags.join(', ') : ''}
               });
             }
           } catch (mediaSendError) {
+            mediaDeliveryFailed = true;
             console.error(`❌ [${provider} Gateway] Error al enviar multimedia:`, mediaSendError.message);
           }
         }

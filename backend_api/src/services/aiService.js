@@ -621,7 +621,21 @@ async function callGemini(systemPrompt, messages, mediaItems = [], tools = [], t
               apiResponse = executedToolsCache.get(toolSignature);
             } else {
               apiResponse = await toolsHandler(call.name, call.args);
-              executedToolsCache.set(toolSignature, apiResponse);
+              const isToolSuccess = apiResponse &&
+                apiResponse.success !== false &&
+                !apiResponse.error &&
+                !apiResponse.reason;
+              if (isToolSuccess) {
+                executedToolsCache.set(toolSignature, apiResponse);
+              }
+            }
+
+            // ─── SUPERSEDED GENERATION FAST ABORT ───
+            if (apiResponse && (apiResponse.error === 'GENERATION_SUPERSEDED' || apiResponse.reason === 'GENERATION_SUPERSEDED' || apiResponse.superseded === true)) {
+              geminiWarn(`🛑 [SUPERSEDED] Tool ${call.name} retornó GENERATION_SUPERSEDED. Abortando loop de tools y ejecución de IA inmediatamente.`);
+              const supersededErr = new Error('GENERATION_SUPERSEDED');
+              supersededErr.isSuperseded = true;
+              throw supersededErr;
             }
 
 
@@ -647,6 +661,9 @@ async function callGemini(systemPrompt, messages, mediaItems = [], tools = [], t
 
             accumulateUsage(response);
           } catch (funcErr) {
+            if (funcErr?.isSuperseded || funcErr?.message === 'GENERATION_SUPERSEDED') {
+              throw funcErr;
+            }
             geminiWarn(`Error en toolsHandler o encadenamiento para ${call.name}: ${funcErr.message}`);
             throw funcErr;
           }
@@ -702,6 +719,10 @@ async function callGemini(systemPrompt, messages, mediaItems = [], tools = [], t
 
       } catch (err) {
         lastErr = err;
+        if (err?.isSuperseded || err?.message === 'GENERATION_SUPERSEDED') {
+          geminiWarn(`🛑 [SUPERSEDED] Generación obsoleta. Abortando cascada de reintentos y fallback inmediatamente.`);
+          throw err;
+        }
         const latencyMs = Date.now() - attemptStartTime;
         const errType   = classifyError(err);
         lastErrType     = errType;
@@ -797,6 +818,9 @@ async function callAiProviderCascade(systemPrompt, messages, mediaItems = [], to
       const text = await callGemini(systemPrompt, messages, mediaItems, tools, toolsHandler, tenantId);
       if (text) return text;
     } catch (err) {
+      if (err?.isSuperseded || err?.message === 'GENERATION_SUPERSEDED') {
+        throw err;
+      }
       geminiWarn(`Gemini falló completamente (${err.message?.slice(0, 80)}).`);
       lastError = err;
       await handleAiError(err, 'Google Gemini');
@@ -917,6 +941,11 @@ async function _processAIRequest(prompt, context, mediaItems, tools, toolsHandle
 
     return aiText;
   } catch (error) {
+    if (error?.isSuperseded || error?.message === 'GENERATION_SUPERSEDED') {
+      const supersededErr = new Error('GENERATION_SUPERSEDED');
+      supersededErr.isSuperseded = true;
+      throw supersededErr;
+    }
     console.error('❌ Error final en generateAIResponse tras agotar cascada:', error);
     return null;
   }
