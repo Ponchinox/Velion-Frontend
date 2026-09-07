@@ -134,6 +134,100 @@ export function enforceMediaAuthority(text, hasPendingMedia) {
   return text;
 }
 
+/**
+ * Helper: enforceBusinessAuthority
+ * Sanitiza el texto generado por la IA para asegurar que cumpla con el Authority Model:
+ * A) Si NO hay métodos de pago configurados (hasPaymentConfig === false):
+ *    - Elimina cualquier ofrecimiento espurio de datos de pago ("te brindo los detalles de pago", "te paso la cuenta", etc.).
+ *    - Lo sustituye por indicación neutral de confirmación con el negocio.
+ * B) Si NO se ejecutó handoff humano (handoffSuccess === false):
+ *    - Prohíbe prometer contacto o envío de datos por asesor ("un asesor te enviará los datos", "un asesor te brindará los detalles", "te pasará la cuenta", "ya avisé al equipo", etc.).
+ * C) Sanitización de tiempos:
+ *    - Elimina promesas de tiempo exacto o garantizado ("en 5 minutos", "en media hora", "en breve", "en unos minutos", etc.) incluso con handoff activo.
+ */
+export function enforceBusinessAuthority(text, { hasPaymentConfig = true, handoffSuccess = false } = {}) {
+  if (!text || typeof text !== 'string') return text || '';
+
+  let result = text;
+
+  // A) Si NO existe payment config:
+  if (!hasPaymentConfig) {
+    const falsePaymentOfferPatterns = [
+      /(?:¿\s*)?(?:deseas\s+que\s+)?te\s+(?:brinde|pase|proporcione|d[eé]|comparta)\s+(?:los\s+)?(?:detalles|datos|informaci[oó]n|cuentas?)\s+(?:de|para\s+(?:realizar\s+el\s+|hacer\s+el\s+)?)pago(?:\s*\?)?/gi,
+      /(?:claro(?:\s+que\s+s[ií])?,?\s*)?(?:te\s+(?:brindo|paso|comparto|dejo)|aqu[ií]\s+(?:tienes|est[aá]n))\s+(?:los\s+)?(?:detalles|datos|cuentas?)(?:\s+de|\s+para\s+(?:el\s+)?|\s+del)?\s+pago(?:\s*[:.¡!,])?/gi,
+      /(?:(?:(?:un|el)\s+)?asesor\s+)?te\s+(?:enviar[aá]|brindar[aá]|pasar[aá]|compartir[aá]|dar[aá]|proporcionar[aá])\s+(?:los\s+|la\s+|el\s+)?(?:detalles|datos|cuentas?|informaci[oó]n)(?:\s+(?:de\s+pago|para\s+(?:el\s+)?pago|para\s+pagar|del\s+pago))(?:\s+en\s+breve)?(?:\s*[:.¡!,])?/gi,
+      /te\s+paso\s+la\s+cuenta(?:\s+para\s+pagar)?(?:\s*[:.¡!,])?/gi,
+      /puedes\s+pagar\s+(?:por|con|a\s+trav[eé]s\s+de)\s+[^:.\n!,]+/gi
+    ];
+
+    for (const pattern of falsePaymentOfferPatterns) {
+      if (pattern.test(result)) {
+        result = result.replace(pattern, 'Actualmente no tengo un método de pago registrado. Ese dato debe confirmarse con el negocio.');
+      }
+    }
+  }
+
+  // B) Si NO se ejecutó request_human_handoff exitoso:
+  if (!handoffSuccess) {
+    const unpromptedHandoffPatterns = [
+      /(?:(?:(?:un|el)\s+)?asesor\s+(?:se\s+pondr[aá]\s+en\s+contacto|te\s+contactar[aá]|te\s+escribir[aá]|se\s+comunicar[aá]|te\s+atender[aá])(?:\s+contigo)?(?:\s+(?:para\s+[^:.¡!]+))?(?:\s+(?:en\s+breve|en\s+unos\s+minutos|en\s+\d+\s+minutos|en\s+media\s+hora|en\s+una\s+hora))?)(?:\s*[:.¡!,])?/gi,
+      /(?:(?:(?:un|el)\s+)?asesor\s+(?:te\s+)?(?:enviar[aá]n?|brindar[aá]n?|pasar[aá]n?|dar[aá]n?|compartir[aá]n?|proporcionar[aá]n?)(?:\s+(?:en\s+breve|en\s+unos\s+minutos|en\s+\d+\s+minutos|en\s+media\s+hora|en\s+una\s+hora))?(?:\s+(?:los|las|la|el|su|sus))?\s+(?:datos|detalles|cuentas?|informaci[oó]n)(?:\s+(?:de\s+pago|para\s+(?:el\s+)?pago|para\s+pagar|del\s+pago))?(?:\s+(?:en\s+breve|en\s+unos\s+minutos|en\s+\d+\s+minutos|en\s+media\s+hora|en\s+una\s+hora))?)(?:\s*[:.¡!,])?/gi,
+      /(?:(?:ya\s+)?avis[eé]\s+al\s+equipo(?:\s+(?:en\s+breve|para\s+que\s+te\s+(?:contacten|escriban|atiendan|env[ií]en|pasen|brinden|compartan|den)(?:\s+(?:los|las|la|el))?\s*(?:datos|detalles|cuentas?|informaci[oó]n)?(?:\s+(?:de\s+pago|para\s+pagar))?))?)(?:\s*[:.¡!,])?/gi,
+      /(?:te\s+escribir[aá]n|te\s+contactar[aá]n|te\s+enviar[aá]n\s+(?:los\s+)?datos)(?:\s+(?:en\s+breve|en\s+unos\s+minutos|en\s+\d+\s+minutos|en\s+media\s+hora|en\s+una\s+hora))?(?:\s*[:.¡!,])?/gi
+    ];
+
+    for (const pattern of unpromptedHandoffPatterns) {
+      if (pattern.test(result)) {
+        result = result.replace(pattern, 'Ese dato debe confirmarse directamente con el negocio.');
+      }
+    }
+  }
+
+  // C) En cualquier caso (especialmente tras handoff o respuestas libres): no prometer tiempo exacto o garantizado de respuesta
+  result = result.replace(/(?:^|[.!?]\s*)\b[Ee]n\s+\d+\s+minutos,?\s*/g, (match) => {
+    return match.startsWith('.') || match.startsWith('!') || match.startsWith('?') ? match[0] + ' ' : '';
+  });
+  result = result.replace(/,\s*en\s+\d+\s+minutos\b/gi, '');
+  result = result.replace(/\s*en\s+\d+\s+minutos\b/gi, '');
+
+  result = result.replace(/(?:^|[.!?]\s*)\b[Ee]n\s+media\s+hora,?\s*/g, (match) => {
+    return match.startsWith('.') || match.startsWith('!') || match.startsWith('?') ? match[0] + ' ' : '';
+  });
+  result = result.replace(/,\s*en\s+media\s+hora\b/gi, '');
+  result = result.replace(/\s*en\s+media\s+hora\b/gi, '');
+
+  result = result.replace(/(?:^|[.!?]\s*)\b[Ee]n\s+una\s+hora,?\s*/g, (match) => {
+    return match.startsWith('.') || match.startsWith('!') || match.startsWith('?') ? match[0] + ' ' : '';
+  });
+  result = result.replace(/,\s*en\s+una\s+hora\b/gi, '');
+  result = result.replace(/\s*en\s+una\s+hora\b/gi, '');
+
+  result = result.replace(/(?:^|[.!?]\s*)\b[Ee]n\s+breve,?\s*/g, (match) => {
+    return match.startsWith('.') || match.startsWith('!') || match.startsWith('?') ? match[0] + ' ' : '';
+  });
+  result = result.replace(/,\s*en\s+breve\b/gi, '');
+  result = result.replace(/\s*en\s+breve\b/gi, '');
+
+  result = result.replace(/(?:^|[.!?]\s*)\b[Ee]n\s+unos\s+minutos,?\s*/g, (match) => {
+    return match.startsWith('.') || match.startsWith('!') || match.startsWith('?') ? match[0] + ' ' : '';
+  });
+  result = result.replace(/,\s*en\s+unos\s+minutos\b/gi, '');
+  result = result.replace(/\s*en\s+unos\s+minutos\b/gi, '');
+
+  result = result.replace(/\s*en\s+un\s+momento\b/gi, '');
+  result = result.replace(/\s*de\s+inmediato\b/gi, '');
+  result = result.replace(/\s*al\s+instante\b/gi, '');
+  result = result.replace(/([.!?]\s+)([a-z])/g, (_, p1, p2) => p1 + p2.toUpperCase());
+
+  // Deduplicación y limpieza de formato
+  result = result.replace(/(?:Actualmente no tengo un método de pago registrado\. Ese dato debe confirmarse con el negocio\.\s*)+/g, 'Actualmente no tengo un método de pago registrado. Ese dato debe confirmarse con el negocio. ');
+  result = result.replace(/(?:Ese dato debe confirmarse directamente con el negocio\.\s*)+/g, 'Ese dato debe confirmarse directamente con el negocio. ');
+  result = result.replace(/Actualmente no tengo un método de pago registrado\.\s*Ese dato debe confirmarse (?:directamente )?con el negocio\.\s*Ese dato debe confirmarse directamente con el negocio\./g, 'Actualmente no tengo un método de pago registrado. Ese dato debe confirmarse con el negocio.');
+  result = result.replace(/\s{2,}/g, ' ').replace(/\.\s*\./g, '.').trim();
+
+  return result;
+}
+
 // ── DEFINICIÓN FORMAL DE FUNCTION TOOL: register_operational_note (FASE 2B) ──
 export const REGISTER_OPERATIONAL_NOTE_DECLARATION = {
   name: 'register_operational_note',
@@ -2374,10 +2468,10 @@ La tienda/empresa es la ÚNICA fuente de verdad para productos, precios, stock, 
 
 [INFORMACIÓN DESCONOCIDA (UNKNOWN_INFORMATION) VS HUMAN HANDOFF]
 Diferencia SIEMPRE entre información no confirmada y solicitud de asesor:
-1. INFORMACIÓN DESCONOCIDA: Si preguntan por fechas no confirmadas, horarios exactos de disponibilidad, docentes asignados o datos ausentes:
+1. INFORMACIÓN DESCONOCIDA: Si preguntan por fechas no confirmadas, horarios exactos de disponibilidad, docentes asignados, especificaciones no registradas o datos ausentes:
    - Reconoce con honestidad que no tienes ese dato confirmado en el sistema.
    - NUNCA inventes datos ni prometas admisiones ni resultados absolutos.
-   - Puedes ofrecer consultar con un asesor o profesor ("Si deseas, puedo pedir que un asesor te confirme ese detalle").
+   - Aclara que ese dato debe confirmarse directamente con el negocio.
    - OFRECER NO ES TRANSFERIR: No llames a 'request_human_handoff' solo porque falta un dato.
 2. TRANSFERENCIA HUMANA: SOLO llama a 'request_human_handoff' si el cliente lo pide DIRECTAMENTE ("quiero hablar con una persona", "pásame con el profesor") o acepta explícitamente tu ofrecimiento.
 `.trim();
@@ -2414,7 +2508,7 @@ Aplica las siguientes reglas comerciales ÚNICAMENTE cuando el usuario exprese i
 - CIERRE PASO A PASO:
   * Para PHYSICAL_PRODUCT: 1. Variantes y Cantidad, 2. Envío/Destino, 3. Método de pago configurado.
   * Para SERVICE: 1. Confirmación de interés en el servicio, 2. Método de pago configurado (salta de DETAILS_PROVIDED directo a PAYMENT_PENDING sin pasar por SHIPPING_COORDINATED).
-  * Ambos: Ofrece ÚNICAMENTE los métodos de pago autorizados en INFORMACIÓN DE LA EMPRESA. Si no hay métodos de pago configurados por la tienda, indica con amabilidad: "No tengo registrado el método de pago en este momento. Un asesor te brindará los detalles para realizar el pago." NUNCA inventes métodos de pago ni digas "por coordinar con asesor" como si fuera un método de pago.
+  * Ambos: Ofrece ÚNICAMENTE los métodos de pago autorizados en INFORMACIÓN DE LA EMPRESA. Si NO hay métodos de pago configurados por la tienda: PROHIBIDO decir "te brindo los datos", "aquí tienes los datos", "puedes pagar por...", "te paso la cuenta" o preguntar "¿Deseas que te brinde los detalles para realizar el pago?". Responde de forma neutral: "Actualmente no tengo un método de pago registrado en el sistema. Ese dato debe confirmarse directamente con el negocio." NUNCA inventes métodos de pago ni digas "por coordinar con asesor" como si fuera un método de pago.
 - NO INVENTAR: Nunca inventes métodos de pago, empresas de envío, cuentas, números o titulares. No inventes productos, ciudades, métodos de pago ni cantidades no expresadas por el cliente. Nunca afirmes que un método es el único disponible salvo que los datos dinámicos del negocio lo indiquen explícitamente.
 - DATOS NO CONFIRMADOS VS TRANSFERENCIA: Consultas sobre fechas exactas, profesores, docentes, vacantes, horarios no configurados o dudas sobre admisión/ingreso NO son motivo de handoff. Explica con transparencia que no están confirmados en el sistema o que los resultados dependen del esfuerzo individual. NUNCA actives handoff ni pauses el bot ante preguntas de este tipo.
 
@@ -2432,10 +2526,22 @@ Las respuestas breves afirmativas ("sí", "si", "claro", "ok", "de acuerdo", "co
 [PAGOS Y AUDITORIA - CRITICO]
 - VERIFICACIÓN DE PAGO: Que el cliente diga "ya pagué", "te envié el comprobante" o adjunte una foto NO significa que el pago esté verificado. La IA solo puede registrar PAYMENT_VERIFIED (revisión humana requerida). La IA NUNCA marca pagos como PAID ni pedidos como COMPLETED.
 - MÉTODOS PERMITIDOS Y ENVÍOS: Nunca inventes métodos de pago, empresas de envío, cuentas, números o titulares. Nunca afirmes que un método es el único disponible salvo que los datos dinámicos del negocio lo indiquen explícitamente.
-- LÍMITES ESTRICTOS: Los métodos concretos provienen EXCLUSIVAMENTE de la INFORMACIÓN DE LA EMPRESA provista. Si el cliente pide un método no listado allí, dile amablemente que no operamos con ese medio. Si los datos configurados son insuficientes o ambiguos, no asumas ni inventes.
+- LÍMITES ESTRICTOS DE PAGO: Los métodos concretos provienen EXCLUSIVAMENTE de la INFORMACIÓN DE LA EMPRESA provista. Si NO existen cuentas ni métodos de pago registrados en la empresa: PROHIBIDO decir "te brindo los datos", "aquí tienes los datos", "puedes pagar por..." o preguntar "¿Deseas que te brinde los detalles para realizar el pago?". Debes responder de forma neutral: "Actualmente no tengo un método de pago registrado en el sistema. Ese dato debe confirmarse directamente con el negocio."
+
+[AUTORIDAD HUMANA Y TIEMPOS DE RESPUESTA - ESTRICTO]
+- REGLA DE INTERVENCIÓN HUMANA: Si NO se ejecutó exitosamente la herramienta 'request_human_handoff' (success: true):
+  * PROHIBIDO terminantemente prometer o decir: "un asesor te contactará", "un asesor se pondrá en contacto", "ya avisé al equipo", "te escribirán en breve", "un asesor te escribirá", "un asesor te enviará los datos", "un asesor te brindará los datos", "un asesor te pasará la cuenta", "un asesor te dará la información", "te enviarán los datos".
+  * SOLO después de que 'request_human_handoff' haya retornado success: true puedes afirmar con prudencia que se solicitó intervención humana.
+- PROHIBIDO PROMETER TIEMPOS: Incluso si se activó la transferencia humana, ESTÁ TERMINANTEMENTE PROHIBIDO prometer tiempos de respuesta (PROHIBIDO decir "en breve", "en unos minutos", "en unos instantes", "al instante", "de inmediato", "en 5 minutos", "en 10 minutos", "en media hora", "en una hora", o cualquier tiempo específico). Solo indica con prudencia que la solicitud fue transferida al equipo.
 
 [FIDELIDAD TÉCNICA Y POLÍTICAS - PROHIBIDO ALUCINAR]
-- DATOS TÉCNICOS CANÓNICOS (ANTI-ALUCINACIÓN): Cuando el cliente pregunte por características técnicas, funciones, especificaciones, conectividad o compatibilidad de un producto, los hechos DEBEN provenir EXCLUSIVAMENTE de 'get_product_details' o de la ficha canónica. PROHIBIDO terminantemente inventar o asumir características típicas no registradas (ej. 'resistencia al agua', 'conectividad Bluetooth', 'GPS en tiempo real', alcance en metros, duración de batería no registrada, certificaciones o garantías). Si un dato no está explícitamente en la descripción o tags del producto, responde con honestidad que esa especificación no está registrada o confirmada por el fabricante.
+- DATOS TÉCNICOS CANÓNICOS (ANTI-ALUCINACIÓN / USER CLAIM != VERIFIED PRODUCT FACT): Cuando el cliente pregunte por características técnicas, funciones, especificaciones, conectividad o compatibilidad de un producto, los hechos DEBEN provenir EXCLUSIVAMENTE de 'get_product_details' o de la ficha canónica. PROHIBIDO terminantemente inventar o asumir características típicas no registradas (ej. 'resistencia al agua', 'conectividad Bluetooth', 'GPS en tiempo real', alcance en metros, duración de batería no registrada, certificaciones o garantías).
+- REGLA OBLIGATORIA: USER CLAIM != VERIFIED PRODUCT FACT. Una característica, función, tecnología o hipótesis mencionada o preguntada por el CLIENTE (ej. "¿Es Bluetooth?", "Será que no es por WiFi o Bluetooth", "¿Es resistente al agua?", "¿Tiene GPS?", "¿Tiene garantía?", "¿Funciona a 100 metros?") NO se convierte en verdad ni en hecho confirmado solo porque aparezca en su mensaje.
+- Si la característica NO está explícitamente en los datos canónicos del producto devueltos por 'get_product_details':
+  * PROHIBIDO confirmarla.
+  * PROHIBIDO inferirla por conocimiento general o preentrenamiento.
+  * PROHIBIDO completarla por similitud con otros productos del mercado (ej. AirTag, Tile, smart tags comunes).
+  * Responde indicando lo que sí está registrado y aclarando con honestidad que esa característica no está confirmada en la ficha y debe confirmarse directamente con el negocio (ej. "La ficha registrada confirma compatibilidad con Apple Find My y Android Find Hub, pero no tengo confirmado si utiliza Bluetooth o WiFi. Ese detalle debe confirmarse directamente con el negocio.").
 - POLÍTICAS DE ENVÍO DESCONOCIDAS: Si no existen políticas de envío configuradas en INFORMACIÓN DE LA EMPRESA, PROHIBIDO prometer o asumir delivery, couriers, fletes, despacho o recojo en tienda, y PROHIBIDO preguntar '¿Te gustaría que te cuente sobre las opciones de entrega?'. Puedes indicar con amabilidad y naturalidad: "Si deseas realizar la compra, puedo ayudarte a avanzar con el pedido; los detalles de entrega deberán confirmarse directamente con el negocio."
 `.trim();
 
@@ -2456,7 +2562,7 @@ Las respuestas breves afirmativas ("sí", "si", "claro", "ok", "de acuerdo", "co
       if (tenantDetails.bankAccounts && tenantDetails.bankAccounts.trim()) {
         detallesExt += `\n- Cuentas bancarias y métodos de pago autorizados (CONFIDENCIAL - REGLA ESTRICTA: Solo existen estos métodos autorizados; proporcionar ÚNICAMENTE si el cliente confirmó explícitamente su decisión de pagar o comprar): ${tenantDetails.bankAccounts.trim()}.`;
       } else {
-        detallesExt += `\n- Cuentas bancarias y métodos de pago autorizados: Actualmente no hay cuentas registradas en el sistema. Si el cliente solicita pagar, indícale amablemente que un asesor le brindará los datos de pago en breve.`;
+        detallesExt += `\n- Cuentas bancarias y métodos de pago autorizados: Actualmente no hay cuentas ni métodos de pago registrados en el sistema. PROHIBIDO decir "te brindo los datos", "aquí tienes los datos", "puedes pagar por..." o preguntar "¿Deseas que te brinde los detalles para realizar el pago?". Responde de forma neutral: "Actualmente no tengo un método de pago registrado en el sistema. Ese dato debe confirmarse directamente con el negocio."`;
       }
       if (tenantDetails.termsAndPolicies && tenantDetails.termsAndPolicies.trim()) {
         detallesExt += `\n- Políticas de envío, devolución y términos: ${tenantDetails.termsAndPolicies.trim()}.`;
@@ -2692,7 +2798,7 @@ ${catalogIndexCsv}
 
             // 2. Enviar confirmación determinística al cliente exactamente una vez
             if (!handoffConfirmationSentInSession) {
-              const confirmText = 'Entendido. He transferido esta conversación a un asesor humano para que pueda ayudarte. En breve continuarán contigo por este chat.';
+              const confirmText = 'Entendido. He transferido esta conversación a un asesor humano para que pueda ayudarte por este chat.';
               try {
                 markMessageAsSentByAi(confirmText);
                 const confirmMsgId = await sendWhatsAppReply({
@@ -2814,7 +2920,15 @@ Video: ${product.videoUrl ? 'Sí' : 'No'}
 Descripción Completa: ${product.description || 'Sin descripción adicional'}
 Atributos/Tags: ${Array.isArray(product.tags) ? product.tags.join(', ') : ''}
 
-[GROUNDING TÉCNICO ESTRICTO]: Las únicas especificaciones válidas son las listadas arriba. PROHIBIDO inventar o asumir características no escritas (como resistencia al agua, conectividad Bluetooth, GPS satelital, alcance en metros, duración de batería no especificada, garantías o certificaciones). Si el cliente consulta sobre un dato ausente, responde honestamente que esa característica no está registrada por el fabricante.
+[GROUNDING TÉCNICO ESTRICTO] [USER CLAIM != VERIFIED PRODUCT FACT]:
+- Las ÚNICAS especificaciones válidas y confirmadas son las listadas arriba.
+- REGLA OBLIGATORIA: USER CLAIM != VERIFIED PRODUCT FACT. Una característica, tecnología o hipótesis mencionada o preguntada por el CLIENTE (ej. "¿Es Bluetooth?", "Será que no es por WiFi o Bluetooth", "¿Es resistente al agua?", "¿Tiene GPS?", "¿Tiene garantía?", "¿Funciona a 100 metros?") NO se convierte en verdad ni en hecho confirmado solo porque aparezca en su mensaje.
+- Si la característica NO está en los datos canónicos listados arriba:
+  * PROHIBIDO confirmarla como un hecho.
+  * PROHIBIDO inferirla por conocimiento general o preentrenamiento.
+  * PROHIBIDO completarla por similitud con otros productos del mercado (ej. AirTag, Tile, smart tags comunes).
+- Respuesta conceptual requerida ante hipótesis del usuario:
+  Indica con honestidad lo que sí está confirmado en la ficha y aclara que la característica consultada por el cliente no está confirmada en el sistema y debe confirmarse directamente con el negocio. (Ejemplo: "La ficha registrada confirma compatibilidad con Apple Find My y Android Find Hub, pero no tengo confirmado si utiliza Bluetooth o WiFi. Ese detalle debe confirmarse con el negocio.").
 `.trim();
 
           // Si el cliente expresó una intención explícita de foto/imagen pero Gemini llamó a get_product_details
@@ -3313,6 +3427,13 @@ Atributos/Tags: ${Array.isArray(product.tags) ? product.tags.join(', ') : ''}
     // ─── AUTHORITY MODEL PARA MULTIMEDIA (POST-GENERATION GUARD) ───
     cleanedText = enforceMediaAuthority(cleanedText, Boolean(pendingMediaToSend));
 
+    // ─── AUTHORITY MODEL PARA PAGOS Y ASESORES (BUSINESS AUTHORITY POST-GENERATION GUARD) ───
+    const hasPaymentConfig = Boolean(tenantDetails?.bankAccounts && tenantDetails.bankAccounts.trim());
+    cleanedText = enforceBusinessAuthority(cleanedText, {
+      hasPaymentConfig,
+      handoffSuccess: handoffActivatedInSession
+    });
+
     if (cleanedText || pendingMediaToSend) {
       const isMultiMsg = tenantDetails?.multiMessageMode !== false;
       const sequenceRegex = /(\[SPLIT\])/gi;
@@ -3465,6 +3586,10 @@ Atributos/Tags: ${Array.isArray(product.tags) ? product.tags.join(', ') : ''}
             if (mediaDeliveryFailed) {
               outgoingText = enforceMediaAuthority(outgoingText, false);
             }
+            outgoingText = enforceBusinessAuthority(outgoingText, {
+              hasPaymentConfig,
+              handoffSuccess: handoffActivatedInSession
+            });
 
             // Si tras sanitizar el texto quedó vacío, no enviarlo
             if (!outgoingText.trim()) {
