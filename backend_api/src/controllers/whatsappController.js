@@ -1,6 +1,6 @@
 import axios from 'axios';
 import prisma from '../db.js';
-import { mapEvolutionConnectionState, handleConnectionUpdateWebhook } from '../utils/connectionSyncLogic.js';
+import { mapEvolutionConnectionState, handleConnectionUpdateWebhook, verifyAndReapplyEvolutionWebhook } from '../utils/connectionSyncLogic.js';
 import { generateAIResponse } from '../services/aiService.js';
 import * as flowService from '../services/flowService.js';
 import { validateAndRegisterWhatsAppConnection } from '../services/antiFraudService.js';
@@ -1623,24 +1623,48 @@ async function _processWebhookEvent(body, isMeta, provider, io, query, headers) 
       }
 
       if (state === 'open' && !phone && instance) {
-        try {
-          const evoUrl = process.env.EVOLUTION_API_URL || 'http://localhost:8080';
-          const stateRes = await axios.get(`${evoUrl}/instance/connectionState/${instance}`, getEvoHeaders(requestApiKey));
-          phone = stateRes.data?.instance?.phone || stateRes.data?.instance?.ownerJid || null;
-          if (phone && typeof phone === 'string') phone = phone.split('@')[0];
-        } catch (e) {
-          console.error('Error fetching real phone in fallback:', e.message);
+        const evoUrl = process.env.EVOLUTION_API_URL || 'http://localhost:8080';
+        for (let pAttempt = 0; pAttempt < 3 && !phone; pAttempt++) {
+          try {
+            const stateRes = await axios.get(`${evoUrl}/instance/connectionState/${instance}`, getEvoHeaders(requestApiKey));
+            phone = stateRes.data?.instance?.phone || stateRes.data?.instance?.ownerJid || null;
+            if (phone && typeof phone === 'string') phone = phone.split('@')[0];
+            if (phone) break;
+          } catch (e) {
+            console.error(`Error fetching real phone in fallback (intento ${pAttempt + 1}):`, e.message);
+          }
+          if (!phone && pAttempt < 2) {
+            await new Promise(r => setTimeout(r, 300));
+          }
         }
       }
 
       console.log(`🔌 [Webhook] Connection Update: Instancia ${instance} -> State: ${state}, Phone: ${phone || 'N/A'}`);
+
+      // Webhook readiness verifier: re-aplica y verifica el webhook en Evolution antes de declarar READY
+      const evoUrl = process.env.EVOLUTION_API_URL || 'http://localhost:8080';
+      const baseUrl = process.env.APP_URL || 'https://velion-backend-a7vw.onrender.com';
+      const rawWebhookUrl = process.env.WEBHOOK_URL || `${baseUrl.replace(/\/$/, '')}/api/whatsapp/webhook`;
+      const cleanApiKey = (requestApiKey || process.env.EVOLUTION_API_KEY || '').trim();
+      const apiKeyParam = cleanApiKey ? `?apikey=${cleanApiKey}` : '';
+      const webhookUrl = rawWebhookUrl.includes('?') ? `${rawWebhookUrl}&apikey=${cleanApiKey}` : `${rawWebhookUrl}${apiKeyParam}`;
+
+      const webhookVerifier = (inst) => verifyAndReapplyEvolutionWebhook({
+        instance: inst,
+        evoUrl,
+        headers: getEvoHeaders(cleanApiKey),
+        webhookUrl,
+        cleanApiKey,
+        axiosClient: axios
+      });
 
       await handleConnectionUpdateWebhook({
         instance,
         state,
         phone,
         prisma,
-        validateAndRegister: validateAndRegisterWhatsAppConnection
+        validateAndRegister: validateAndRegisterWhatsAppConnection,
+        webhookVerifier: state === 'open' ? webhookVerifier : null
       });
 
       return; // Fin del procesamiento para este evento

@@ -82,6 +82,106 @@ export async function applyReconciliationUpdates(updates, prismaClient) {
 }
 
 /**
+ * Verifica y asegura que el webhook de Evolution API esté configurado y activo
+ * para la instancia tras una transición a 'open'.
+ */
+export async function verifyAndReapplyEvolutionWebhook({
+  instance,
+  evoUrl = process.env.EVOLUTION_API_URL || 'http://localhost:8080',
+  headers = {},
+  webhookUrl,
+  cleanApiKey = '',
+  axiosClient = null,
+  maxRetries = 2,
+  retryDelayMs = 300
+}) {
+  if (!instance) return { ready: false, reason: 'NO_INSTANCE' };
+
+  let client = axiosClient;
+  if (!client) {
+    const axiosModule = await import('axios');
+    client = axiosModule.default || axiosModule;
+  }
+
+  let lastError = null;
+
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      // 1. Verificar que la instancia realmente está OPEN
+      const stateRes = await client.get(
+        `${evoUrl}/instance/connectionState/${instance}`,
+        headers
+      );
+      const currentState = stateRes.data?.instance?.state;
+      if (currentState !== 'open') {
+        return {
+          ready: false,
+          reason: 'INSTANCE_NOT_OPEN',
+          state: currentState
+        };
+      }
+
+      // 2. Configurar/re-aplicar webhook de forma idempotente
+      const targetWebhookUrl = webhookUrl || process.env.WEBHOOK_URL;
+      if (targetWebhookUrl) {
+        await client.post(
+          `${evoUrl}/webhook/set/${instance}`,
+          {
+            webhook: {
+              enabled: true,
+              url: targetWebhookUrl,
+              headers: {
+                apikey: cleanApiKey
+              },
+              byEvents: false,
+              webhookByEvents: false,
+              events: [
+                'MESSAGES_UPSERT',
+                'CONNECTION_UPDATE'
+              ]
+            }
+          },
+          headers
+        );
+      }
+
+      // 3. Verificar webhook configurado
+      const findRes = await client.get(
+        `${evoUrl}/webhook/find/${instance}`,
+        headers
+      );
+      const webhookData = findRes.data?.webhook || findRes.data;
+
+      const isEnabled = webhookData?.enabled === true;
+      const events = webhookData?.events || [];
+      const hasUpsert = Array.isArray(events) && events.includes('MESSAGES_UPSERT');
+
+      if (isEnabled && hasUpsert) {
+        return {
+          ready: true,
+          webhookUrl: webhookData.url,
+          events: webhookData.events
+        };
+      } else {
+        lastError = new Error(`Webhook not enabled or missing MESSAGES_UPSERT: ${JSON.stringify(webhookData)}`);
+      }
+    } catch (err) {
+      lastError = err;
+    }
+
+    if (attempt < maxRetries && retryDelayMs > 0) {
+      await new Promise(r => setTimeout(r, retryDelayMs));
+    }
+  }
+
+  return {
+    ready: false,
+    reason: 'WEBHOOK_CONFIG_FAILED',
+    error: lastError?.message || 'UNKNOWN_ERROR'
+  };
+}
+
+/**
  * Procesa el evento de webhook connection.update de forma segura y multi-tenant aislada.
  * Busca la conexión por su instanceName exacto en RegisteredWhatsAppNumber.
  * Nunca utiliza prefijos parciales de 8 caracteres ni recorre tenants con startsWith.
@@ -91,7 +191,8 @@ export async function handleConnectionUpdateWebhook({
   state,
   phone = null,
   prisma,
-  validateAndRegister = null
+  validateAndRegister = null,
+  webhookVerifier = null
 }) {
   if (!instance || typeof instance !== 'string') {
     return { success: false, reason: 'NO_INSTANCE', updatedCount: 0 };
@@ -120,6 +221,20 @@ export async function handleConnectionUpdateWebhook({
       }
     }
 
+    // Si state es 'open' y se proporcionó webhookVerifier, verificar antes de marcar como READY (CONNECTED)
+    if (state === 'open' && webhookVerifier) {
+      const vResult = await webhookVerifier(instance);
+      if (!vResult?.ready) {
+        console.warn(`⏳ [ConnectionUpdate] Webhook aún no listo para instancia ${instance}: ${vResult?.reason}`);
+        return {
+          success: false,
+          mode: 'WEBHOOK_NOT_READY',
+          reason: vResult?.reason || 'WEBHOOK_FAILED',
+          updatedCount: 0
+        };
+      }
+    }
+
     const updateResult = await prisma.registeredWhatsAppNumber.updateMany({
       where: {
         id: registered.id,
@@ -137,7 +252,8 @@ export async function handleConnectionUpdateWebhook({
       mode: 'EXISTING_CONNECTION',
       tenantId: registered.tenantId,
       updatedCount: updateResult.count,
-      connectionState: velionState
+      connectionState: velionState,
+      webhookVerified: state === 'open' && Boolean(webhookVerifier)
     };
   }
 
@@ -174,6 +290,21 @@ export async function handleConnectionUpdateWebhook({
             };
           }
         }
+
+        // Verificar webhook antes de marcar READY
+        if (webhookVerifier) {
+          const vResult = await webhookVerifier(instance);
+          if (!vResult?.ready) {
+            console.warn(`⏳ [ConnectionUpdate Onboarding Phone] Webhook aún no listo para ${instance}: ${vResult?.reason}`);
+            return {
+              success: false,
+              mode: 'WEBHOOK_NOT_READY',
+              reason: vResult?.reason || 'WEBHOOK_FAILED',
+              updatedCount: 0
+            };
+          }
+        }
+
         const updateResult = await prisma.registeredWhatsAppNumber.updateMany({
           where: {
             id: existingByPhone.id,
@@ -190,7 +321,8 @@ export async function handleConnectionUpdateWebhook({
           mode: 'ONBOARDING_MATCHED_BY_PHONE',
           tenantId: existingByPhone.tenantId,
           updatedCount: updateResult.count,
-          connectionState: velionState
+          connectionState: velionState,
+          webhookVerified: Boolean(webhookVerifier)
         };
       }
     }
@@ -226,6 +358,21 @@ export async function handleConnectionUpdateWebhook({
           };
         }
       }
+
+      // Verificar webhook antes de marcar READY
+      if (webhookVerifier) {
+        const vResult = await webhookVerifier(instance);
+        if (!vResult?.ready) {
+          console.warn(`⏳ [ConnectionUpdate Onboarding UUID] Webhook aún no listo para ${instance}: ${vResult?.reason}`);
+          return {
+            success: false,
+            mode: 'WEBHOOK_NOT_READY',
+            reason: vResult?.reason || 'WEBHOOK_FAILED',
+            updatedCount: 0
+          };
+        }
+      }
+
       const updateResult = await prisma.registeredWhatsAppNumber.updateMany({
         where: {
           instanceName: instance,
@@ -241,7 +388,8 @@ export async function handleConnectionUpdateWebhook({
         mode: 'ONBOARDING_MATCHED_EXACT_UUID',
         tenantId: exactTenant.id,
         updatedCount: updateResult.count,
-        connectionState: velionState
+        connectionState: velionState,
+        webhookVerified: Boolean(webhookVerifier)
       };
     }
   }
