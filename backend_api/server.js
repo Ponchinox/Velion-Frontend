@@ -25,6 +25,12 @@ import planRoutes from './src/routes/planRoutes.js';
 import operationalItemRoutes from './src/routes/operationalItemRoutes.js';
 import { initBackupScheduler } from './src/services/backupScheduler.js';
 import { initCampaignWorkerV2 } from './src/services/campaignWorkerV2.js';
+import { 
+  resolvePort, 
+  resolveHost, 
+  areBackgroundJobsEnabled, 
+  startBackgroundJobsIfEnabled 
+} from './src/config/serverConfig.js';
 
 // Cargar variables de entorno
 dotenv.config();
@@ -46,7 +52,8 @@ app.use(express.json({
 }));
 app.use(express.urlencoded({ limit: '50mb', extended: true }));
 
-const PORT = process.env.PORT || 3000;
+const PORT = resolvePort(process.env.PORT);
+const HOST = resolveHost(process.env.HOST);
 const httpServer = createServer(app);
 
 // Configuración del servidor WebSocket
@@ -222,13 +229,17 @@ io.on('connection', (socket) => {
 });
 
 
-// Levantar servidor
-httpServer.listen(PORT, () => {
-  console.log(`🚀 Servidor ejecutándose en http://localhost:${PORT}`);
-  // Iniciar la tarea programada de copias de seguridad automáticas
-  initBackupScheduler();
-  // Iniciar el motor persistente de campañas: recovery de logs huérfanos + reanudación
-  initCampaignWorkerV2().catch((err) => {
-    console.error('❌ [Campaign Worker V2] Error al inicializar el motor de campañas:', err);
+// Levantar servidor (solo cuando server.js es el punto de entrada directo del proceso)
+const isMainModule = process.argv[1] && (process.argv[1].endsWith('server.js') || process.argv[1].endsWith('server'));
+if (isMainModule && process.env.NODE_ENV !== 'test') {
+  httpServer.listen(PORT, HOST, () => {
+    console.log(`🚀 Servidor ejecutándose en http://${HOST}:${PORT}`);
+    startBackgroundJobsIfEnabled({
+      backgroundJobsEnabled: areBackgroundJobsEnabled(),
+      initBackupScheduler,
+      initCampaignWorkerV2
+    });
   });
-});
+}
+
+export { app, httpServer, io, PORT, HOST, areBackgroundJobsEnabled };
