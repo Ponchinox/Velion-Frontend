@@ -229,8 +229,9 @@ io.on('connection', (socket) => {
 });
 
 
-// Levantar servidor (solo cuando server.js es el punto de entrada directo del proceso)
-const isMainModule = process.argv[1] && (process.argv[1].endsWith('server.js') || process.argv[1].endsWith('server'));
+// Levantar servidor (solo cuando server.js es el punto de entrada directo del proceso o ejecutado bajo PM2)
+const isMainModule = (process.argv[1] && (process.argv[1].endsWith('server.js') || process.argv[1].endsWith('server'))) ||
+                     Boolean(process.env.pm_id !== undefined || process.env.pm_exec_path);
 if (isMainModule && process.env.NODE_ENV !== 'test') {
   httpServer.listen(PORT, HOST, () => {
     console.log(`🚀 Servidor ejecutándose en http://${HOST}:${PORT}`);
