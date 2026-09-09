@@ -60,7 +60,7 @@ const httpServer = createServer(app);
 // Incluye VPS principal, Vercel temporal (rollback/acceso público temporal) y desarrollo local
 const defaultAllowedOrigins = [
   'https://185.163.116.210',
-  'https://velion-dashboard-visual.vercel.app',
+  'https://velion-agent.vercel.app',
   'http://localhost:5173',
   'http://localhost:3000'
 ];
