@@ -749,17 +749,18 @@ export async function getSystemHealth(req, res) {
     checks.push({ label: 'API Gateway (WhatsApp)', ok: false, status: 'Error interno', latencyMs: 0 });
   }
 
-  // ── 3. Almacenamiento (Cloudinary) ────────────────────────────────
-  const cloudOk = !!(process.env.CLOUDINARY_CLOUD_NAME && process.env.CLOUDINARY_API_KEY && process.env.CLOUDINARY_API_SECRET);
+  // ── 3. Almacenamiento Local (VPS) ────────────────────────────────
+  const mediaRoot = process.env.LOCAL_MEDIA_ROOT || '/var/www/velion-media';
+  const mediaOk = fs.existsSync(mediaRoot);
   checks.push({
-    label: 'Almacenamiento (Cloudinary)',
-    ok: cloudOk,
-    status: cloudOk ? 'Configurado' : 'Credenciales no configuradas',
+    label: 'Almacenamiento Local (VPS)',
+    ok: mediaOk,
+    status: mediaOk ? 'Operacional (/media/)' : 'Ruta no encontrada',
     latencyMs: 0,
   });
 
   // ── 4. Backend (este propio servidor) ─────────────────────────────
-  checks.push({ label: 'Backend API (Render)', ok: true, status: 'Operacional', latencyMs: 0 });
+  checks.push({ label: 'Backend API (VPS)', ok: true, status: 'Operacional', latencyMs: 0 });
 
   return res.json({ services: checks, checkedAt: new Date().toISOString() });
 }

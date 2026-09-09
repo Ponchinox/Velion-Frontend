@@ -1,51 +1,18 @@
 import fs from 'fs';
 import path from 'path';
 import prisma from '../db.js';
-import cloudinary from '../config/cloudinary.js';
 import { invalidateCatalogCache } from '../services/catalogCacheService.js';
 
 const MEDIA_ROOT = path.resolve('/var/www/velion-media');
 
 /**
- * Extrae el public_id de un recurso de Cloudinary a partir de su URL completa
+ * Destruye un recurso multimedia de forma segura del almacenamiento local (/media/...)
+ * con validación estricta de Path Traversal.
  */
-function getPublicIdFromUrl(url) {
-  if (!url || !url.includes('res.cloudinary.com')) return null;
-  try {
-    const parts = url.split('/upload/');
-    if (parts.length < 2) return null;
-    
-    let pathPart = parts[1];
-    // Remover la versión (ej: v1721111716/)
-    if (pathPart.startsWith('v')) {
-      const slashIndex = pathPart.indexOf('/');
-      if (slashIndex !== -1) {
-        pathPart = pathPart.substring(slashIndex + 1);
-      }
-    }
-    
-    // Remover la extensión del archivo
-    const dotIndex = pathPart.lastIndexOf('.');
-    if (dotIndex !== -1) {
-      pathPart = pathPart.substring(0, dotIndex);
-    }
-    
-    return pathPart;
-  } catch (err) {
-    console.error('Error al extraer public_id de Cloudinary:', err);
-    return null;
-  }
-}
-
-/**
- * Destruye un recurso multimedia de forma segura.
- * - Si es /media/ (VPS local): elimina del disco con validación estricta de Path Traversal.
- * - Si es res.cloudinary.com (Legacy): conserva eliminación remota en Cloudinary.
- */
-async function destroyCloudinaryResource(url, isVideo = false) {
+async function destroyMediaResource(url) {
   if (!url || typeof url !== 'string') return;
 
-  // 1. Caso A: Archivo local del VPS (/media/...)
+  // Archivo local del VPS (/media/...)
   if (url.includes('/media/')) {
     try {
       const parts = url.split('/media/');
@@ -68,25 +35,10 @@ async function destroyCloudinaryResource(url, isVideo = false) {
     } catch (err) {
       console.error(`❌ [Local Media Cleanup] Error al eliminar archivo local ${url}:`, err.message);
     }
-    return;
-  }
-
-  // 2. Caso B: Archivo remoto de Cloudinary (res.cloudinary.com)
-  if (url.includes('res.cloudinary.com')) {
-    const publicId = getPublicIdFromUrl(url);
-    if (!publicId) return;
-
-    try {
-      const resourceType = isVideo ? 'video' : 'image';
-      console.log(`[Cloudinary Cleanup] Eliminando ${resourceType}: ${publicId}`);
-      await cloudinary.uploader.destroy(publicId, { resource_type: resourceType });
-      console.log(`[Cloudinary Cleanup] ${resourceType} eliminado con éxito.`);
-    } catch (err) {
-      console.error(`[Cloudinary Cleanup] Error al eliminar ${url}:`, err.message);
-    }
-    return;
   }
 }
+
+const destroyCloudinaryResource = destroyMediaResource;
 
 /**
  * Limpia los archivos subidos al disco si ocurre un error antes de persistir en base de datos

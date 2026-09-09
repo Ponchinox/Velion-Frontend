@@ -128,7 +128,7 @@ export async function createMetaInstance(req, res) {
     }
 
     const evoUrl = process.env.EVOLUTION_API_URL || 'http://localhost:8080';
-    const baseUrl = process.env.APP_URL || 'https://velion-backend-a7vw.onrender.com';
+    const baseUrl = process.env.APP_URL || 'https://185.163.116.210';
     const rawWebhookUrl = process.env.WEBHOOK_URL || `${baseUrl.replace(/\/$/, '')}/api/whatsapp/webhook`;
     const cleanApiKey = (process.env.EVOLUTION_API_KEY || '').trim();
     const apiKeyParam = cleanApiKey ? `?apikey=${cleanApiKey}` : '';
@@ -365,7 +365,7 @@ export async function getQrCode(req, res) {
       // Si falla o no existe, continuamos con el flujo normal de generación de QR
     }
 
-    const baseUrl = process.env.APP_URL || 'https://velion-backend-a7vw.onrender.com';
+    const baseUrl = process.env.APP_URL || 'https://185.163.116.210';
     const rawWebhookUrl = process.env.WEBHOOK_URL || `${baseUrl.replace(/\/$/, '')}/api/whatsapp/webhook`;
     const cleanApiKey = (process.env.EVOLUTION_API_KEY || '').trim();
     const apiKeyParam = cleanApiKey ? `?apikey=${cleanApiKey}` : '';

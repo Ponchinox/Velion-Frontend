@@ -58,8 +58,8 @@ const httpServer = createServer(app);
 
 // Configuración del servidor WebSocket
 const allowedOrigins = process.env.FRONTEND_URL 
-  ? [process.env.FRONTEND_URL, 'https://velion-dashboard-visual.vercel.app', 'http://localhost:5173', 'http://localhost:3000'] 
-  : ['https://velion-dashboard-visual.vercel.app', 'http://localhost:5173', 'http://localhost:3000'];
+  ? [process.env.FRONTEND_URL, 'https://185.163.116.210', 'http://localhost:5173', 'http://localhost:3000'] 
+  : ['https://185.163.116.210', 'http://localhost:5173', 'http://localhost:3000'];
 
 const io = new Server(httpServer, {
   cors: {
@@ -80,11 +80,7 @@ app.use((req, res, next) => {
 // Middlewares generales
 app.use(helmet());
 app.use(cors({
-  origin: [
-    'https://velion-dashboard-visual.vercel.app', // Tu página en producción
-    'http://localhost:5173', // Tu página local (para cuando programes)
-    'http://localhost:3000'
-  ],
+  origin: allowedOrigins,
   methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization', 'X-Tenant-Id'],
   credentials: true

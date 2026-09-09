@@ -911,7 +911,7 @@ export async function connectDevice(req, res) {
   const instanceName = existingConn?.instanceName || getEvoInstanceName(tenantId);
   const evoUrl = process.env.EVOLUTION_API_URL || 'http://localhost:8080';
 
-  const baseUrl = process.env.APP_URL || 'https://velion-backend-a7vw.onrender.com';
+  const baseUrl = process.env.APP_URL || 'https://185.163.116.210';
   const rawWebhookUrl = process.env.WEBHOOK_URL || `${baseUrl.replace(/\/$/, '')}/api/whatsapp/webhook`;
   const cleanApiKey = (process.env.EVOLUTION_API_KEY || '').trim();
   const apiKeyParam = cleanApiKey ? `?apikey=${cleanApiKey}` : '';
@@ -1643,7 +1643,7 @@ async function _processWebhookEvent(body, isMeta, provider, io, query, headers) 
 
       // Webhook readiness verifier: re-aplica y verifica el webhook en Evolution antes de declarar READY
       const evoUrl = process.env.EVOLUTION_API_URL || 'http://localhost:8080';
-      const baseUrl = process.env.APP_URL || 'https://velion-backend-a7vw.onrender.com';
+      const baseUrl = process.env.APP_URL || 'https://185.163.116.210';
       const rawWebhookUrl = process.env.WEBHOOK_URL || `${baseUrl.replace(/\/$/, '')}/api/whatsapp/webhook`;
       const cleanApiKey = (requestApiKey || process.env.EVOLUTION_API_KEY || '').trim();
       const apiKeyParam = cleanApiKey ? `?apikey=${cleanApiKey}` : '';

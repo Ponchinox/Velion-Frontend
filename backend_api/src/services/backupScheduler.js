@@ -1,7 +1,6 @@
 import prisma from '../db.js';
 import fs from 'fs';
 import path from 'path';
-import cloudinary from '../config/cloudinary.js';
 import { google } from 'googleapis';
 import { decryptText } from '../utils/cryptoUtils.js';
 
@@ -122,17 +121,7 @@ export async function runAutomaticBackup() {
 
     if (cloudEnabled === 'true') {
       if (cloudProvider === 'cloudinary') {
-        console.log('[Backup Scheduler] Sincronizando respaldo automático en Cloudinary...');
-        try {
-          await cloudinary.uploader.upload(filePath, {
-            folder: 'saas_backups',
-            resource_type: 'raw',
-            public_id: filename,
-          });
-          console.log('[Backup Scheduler] Respaldo sincronizado en Cloudinary con éxito.');
-        } catch (uploadErr) {
-          console.error('[Backup Scheduler] Error al subir respaldo a Cloudinary:', uploadErr);
-        }
+        console.warn('[Backup Scheduler] Proveedor legado Cloudinary desactivado. Los respaldos integrales se gestionan vía Systemd + Rclone en Google Drive.');
       } else if (cloudProvider === 'gdrive') {
         console.log('[Backup Scheduler] Sincronizando respaldo automático en Google Drive...');
         try {
