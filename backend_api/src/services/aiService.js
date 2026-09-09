@@ -203,7 +203,7 @@ class CircuitBreaker {
     return true;
   }
 }
-const globalCircuitBreaker = new CircuitBreaker();
+export const globalCircuitBreaker = new CircuitBreaker();
 
 // ─────────────────────────────────────────────────────────────────────────────
 // GEMINI KEY MANAGER — Arquitectura Segura (Principal + Backup Opcional)
@@ -459,7 +459,7 @@ const _GENAI_SDK_VERSION = '2.19.0';
  * @param {string[]} mediaItems   - Items multimedia en Base64
  * @returns {Promise<string>}
  */
-async function callGemini(systemPrompt, messages, mediaItems = [], tools = [], toolsHandler = null, tenantId = null) {
+async function callGemini(systemPrompt, messages, mediaItems = [], tools = [], toolsHandler = null, tenantId = null, isSuperseded = null) {
   geminiKeyManager.init();
 
   let lastErr = null;
@@ -510,6 +510,13 @@ async function callGemini(systemPrompt, messages, mediaItems = [], tools = [], t
 
     // Bucle de intentos desacoplado de las keys: exactamente máx 2 intentos
     for (let attempt = 1; attempt <= MAX_TOTAL_ATTEMPTS; attempt++) {
+      if (typeof isSuperseded === 'function' && isSuperseded()) {
+        geminiWarn(`🛑 [SUPERSEDED] Generación obsoleta detectada antes del intento ${attempt}. Abortando inmediatamente.`);
+        const supersededErr = new Error('GENERATION_SUPERSEDED');
+        supersededErr.isSuperseded = true;
+        throw supersededErr;
+      }
+
       const keyInfo = geminiKeyManager.getKeyForAttempt(1); // Always use active key
 
       let isPrimary = true;
@@ -612,6 +619,13 @@ async function callGemini(systemPrompt, messages, mediaItems = [], tools = [], t
           const call = response.functionCalls[0];
           geminiLog(`🛠️ [FC] Ronda ${toolRounds}/${MAX_TOOL_ROUNDS} - Herramienta: ${call.name}`);
 
+          if (typeof isSuperseded === 'function' && isSuperseded()) {
+            geminiWarn(`🛑 [SUPERSEDED] Generación obsoleta detectada antes de ejecutar tool ${call.name}. Abortando inmediatamente.`);
+            const supersededErr = new Error('GENERATION_SUPERSEDED');
+            supersededErr.isSuperseded = true;
+            throw supersededErr;
+          }
+
           try {
             
             let apiResponse;
@@ -631,8 +645,8 @@ async function callGemini(systemPrompt, messages, mediaItems = [], tools = [], t
             }
 
             // ─── SUPERSEDED GENERATION FAST ABORT ───
-            if (apiResponse && (apiResponse.error === 'GENERATION_SUPERSEDED' || apiResponse.reason === 'GENERATION_SUPERSEDED' || apiResponse.superseded === true)) {
-              geminiWarn(`🛑 [SUPERSEDED] Tool ${call.name} retornó GENERATION_SUPERSEDED. Abortando loop de tools y ejecución de IA inmediatamente.`);
+            if ((typeof isSuperseded === 'function' && isSuperseded()) || (apiResponse && (apiResponse.error === 'GENERATION_SUPERSEDED' || apiResponse.reason === 'GENERATION_SUPERSEDED' || apiResponse.superseded === true))) {
+              geminiWarn(`🛑 [SUPERSEDED] Tool ${call.name} retornó GENERATION_SUPERSEDED o generación quedó obsoleta. Abortando loop de tools y ejecución de IA inmediatamente.`);
               const supersededErr = new Error('GENERATION_SUPERSEDED');
               supersededErr.isSuperseded = true;
               throw supersededErr;
@@ -809,13 +823,19 @@ async function handleAiError(error, providerName = 'Google Gemini') {
  * Cascada de resiliencia:
  *   #1 → Google Gemini (gemini-3.7-flash principal, gemini-2.5-flash fallback)
  */
-async function callAiProviderCascade(systemPrompt, messages, mediaItems = [], tools = [], toolsHandler = null, tenantId = null) {
+async function callAiProviderCascade(systemPrompt, messages, mediaItems = [], tools = [], toolsHandler = null, tenantId = null, isSuperseded = null) {
+  if (typeof isSuperseded === 'function' && isSuperseded()) {
+    geminiWarn('🛑 [SUPERSEDED] Generación obsoleta detectada al inicio de callAiProviderCascade. Abortando.');
+    const supersededErr = new Error('GENERATION_SUPERSEDED');
+    supersededErr.isSuperseded = true;
+    throw supersededErr;
+  }
   let lastError = null;
 
   // ── Slot #1: Google Gemini ──────────────────────────────────────────────────
   if (process.env.GEMINI_API_KEY) {
     try {
-      const text = await callGemini(systemPrompt, messages, mediaItems, tools, toolsHandler, tenantId);
+      const text = await callGemini(systemPrompt, messages, mediaItems, tools, toolsHandler, tenantId, isSuperseded);
       if (text) return text;
     } catch (err) {
       if (err?.isSuperseded || err?.message === 'GENERATION_SUPERSEDED') {
@@ -892,7 +912,8 @@ export async function generateAIResponse(
   messageId = null,
   tools = [],
   toolsHandler = null,
-  tenantId = null
+  tenantId = null,
+  isSuperseded = null
 ) {
   // ── Deduplicación por messageId ────────────────────────────────────────────
   if (messageId) {
@@ -904,7 +925,7 @@ export async function generateAIResponse(
   }
 
   if (!userLockKey) {
-    return _processAIRequest(prompt, context, mediaItems, tools, toolsHandler, tenantId);
+    return _processAIRequest(prompt, context, mediaItems, tools, toolsHandler, tenantId, isSuperseded);
   }
 
   // ── Cola de procesamiento secuencial por userLockKey ───────────────────────
@@ -912,7 +933,7 @@ export async function generateAIResponse(
   
   const nextTask = (async () => {
     await prevTask.catch(() => {});
-    return _processAIRequest(prompt, context, mediaItems, tools, toolsHandler, tenantId);
+    return _processAIRequest(prompt, context, mediaItems, tools, toolsHandler, tenantId, isSuperseded);
   })();
 
   userQueues.set(userLockKey, nextTask);
@@ -930,14 +951,14 @@ export async function generateAIResponse(
 /**
  * Función interna que ejecuta la petición real.
  */
-async function _processAIRequest(prompt, context, mediaItems, tools, toolsHandler, tenantId = null) {
+async function _processAIRequest(prompt, context, mediaItems, tools, toolsHandler, tenantId = null, isSuperseded = null) {
   try {
     // La memoria en RAM ha sido completamente eliminada en FASE 2.
     // 'context' ya contiene todo el historial recuperado de PostgreSQL.
     const fullContext = [...context];
 
     // ── Llamada a la cascada ────────────────────────────────────────────────
-    const aiText = await callAiProviderCascade(prompt, fullContext, mediaItems, tools, toolsHandler, tenantId);
+    const aiText = await callAiProviderCascade(prompt, fullContext, mediaItems, tools, toolsHandler, tenantId, isSuperseded);
 
     return aiText;
   } catch (error) {

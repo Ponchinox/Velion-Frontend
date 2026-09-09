@@ -780,6 +780,18 @@ export function _resetChatGenerationVersionsForTesting() {
   chatVersionCleanupTimers.clear();
 }
 
+export function _resetProcessingStateForTesting() {
+  _resetChatGenerationVersionsForTesting();
+  processingLocks.clear();
+  pendingQueues.clear();
+  for (const buf of messageBuffers.values()) {
+    if (buf.timer) clearTimeout(buf.timer);
+  }
+  messageBuffers.clear();
+}
+
+export { processingLocks, pendingQueues, messageBuffers };
+
 // ── aiMessageTracker: delegamos al servicio de dos capas (RAM + PostgreSQL) ──
 // markMessageAsSentByAi es exportada para compatibilidad con importaciones externas
 export function markMessageAsSentByAi(textOrId, opts = {}) {
@@ -2167,25 +2179,38 @@ async function processBufferedMessage(bufferKey) {
   // Sacar y eliminar del buffer inmediatamente para liberar slot
   messageBuffers.delete(bufferKey);
 
-  const {
-    remoteJid: cleanJid,
-    text: userMessageText,
-    mediaItems,
-    tenant,
-    contact,
-    chat,
-    instance,
-    requestApiKey,
-    provider = 'EVOLUTION',
-    metaPhoneNumberId,
-    metaAccessToken,
-    clientNumber,
-    data,
-    reqIo,
-    msgId,
-    sourceMessageId: bufferSourceMessageId,
-    epochAtCreation = 0
-  } = buffer;
+  // ─── LOCK ATÓMICO INMEDIATO (ANTI-PARALELISMO) ───
+  // Adquirir el lock en el mismo tick síncrono antes de cualquier await
+  // para cerrar completamente la ventana de carrera.
+  processingLocks.add(bufferKey);
+
+  // ─── CAPTURA DE VERSIÓN DE GENERACIÓN (Anti-Generación Obsoleta) ───
+  const generationVersion = getChatGenerationVersion(bufferKey);
+  const isGenerationSuperseded = () =>
+    (getChatGenerationVersion(bufferKey) !== generationVersion) || pendingQueues.has(bufferKey);
+
+  let wasSuperseded = false;
+
+  try {
+    const {
+      remoteJid: cleanJid,
+      text: userMessageText,
+      mediaItems,
+      tenant,
+      contact,
+      chat,
+      instance,
+      requestApiKey,
+      provider = 'EVOLUTION',
+      metaPhoneNumberId,
+      metaAccessToken,
+      clientNumber,
+      data,
+      reqIo,
+      msgId,
+      sourceMessageId: bufferSourceMessageId,
+      epochAtCreation = 0
+    } = buffer;
 
   // ─── SOURCE MESSAGE ID BINDING (FASE 2B) ───
   let resolvedSourceMessageId = bufferSourceMessageId || null;
@@ -2237,17 +2262,7 @@ async function processBufferedMessage(bufferKey) {
   console.log(`🤖 [Message Buffer] Procesando ráfaga acumulada para +${clientNumber} (${userMessageText.length} caracteres): "${userMessageText.replace(/\n/g, ' ')}"`);
   const finalCleanNumber = String(clientNumber || '').includes('@lid') ? String(clientNumber || '').trim() : String(clientNumber || '').replace(/[^0-9]/g, '');
 
-  // ─── CAPTURA DE VERSIÓN DE GENERACIÓN (Anti-Generación Obsoleta) ───
-  const generationVersion = getChatGenerationVersion(bufferKey);
-  const isGenerationSuperseded = () =>
-    (getChatGenerationVersion(bufferKey) !== generationVersion) || pendingQueues.has(bufferKey);
-
-  // ─── LOCK DE PROCESAMIENTO (ANTI-PARALELISMO) ───
-  // Marcar al usuario como "ocupado" por tenant para evitar colisiones
-  processingLocks.add(bufferKey);
   console.log(`🔒 [Processing Lock] Lock activado para +${clientNumber} (tenant: ${tenant.id}, genVersion: ${generationVersion}). La IA está generando respuesta.`);
-
-  try {
     const evoUrl = process.env.EVOLUTION_API_URL || 'http://localhost:8080';
 
     // Buscar o registrar al cliente en el CRM (Memoria a Largo Plazo / Anti-Banes)
@@ -2664,6 +2679,9 @@ ${catalogIndexCsv}
       finalPrompt += `\n\n[INSTRUCCIÓN PRIORITARIA DE FOTO/IMAGEN]:\nEl usuario solicita explícitamente ver una foto o imagen del producto en consulta (ID: "${currentCommercialState.productId}"). DEBES llamar INMEDIATAMENTE a la herramienta 'send_product_media' con productId: "${currentCommercialState.productId}". NUNCA uses 'get_product_details' como sustituto de 'send_product_media' cuando el usuario pide ver fotos o imágenes.\n`;
     }
 
+    // Regla vital de intención más reciente (Latest User Intent Wins)
+    finalPrompt += `\n\n[REGLA VITAL: PRIORIDAD DE LA INTENCIÓN MÁS RECIENTE (LATEST INTENT WINS)]:\nSi existen varios mensajes recientes del usuario en la conversación o ráfaga (por ejemplo un saludo o repregunta seguido de una consulta específica como "Hola??" seguido de "Quiero audífonos", o "¿Cómo te llamas?" seguido de "Audífonos" o "¿Tienes fotos?"), prioriza SIEMPRE la intención más reciente y específica. No te limites a responder al saludo o a la duda inicial. Atiende de inmediato el requerimiento más reciente.\n`;
+
     const systemPrompt = finalPrompt;
 
     // ─── FLAGS DE SESIÓN PARA HUMAN HANDOFF DETERMINÍSTICO (FASE 2) ──────
@@ -2740,6 +2758,8 @@ ${catalogIndexCsv}
     const toolsHandler = async (funcName, args) => {
       // ─── TOOL GUARD GENERAL: Abortar si la generación quedó obsoleta ───
       if (isGenerationSuperseded()) {
+        wasSuperseded = true;
+        pendingMediaToSend = null;
         console.warn(`🛑 [Tool Guard] Generación obsoleta para +${clientNumber} (v${generationVersion} vs actual v${getChatGenerationVersion(bufferKey)}). Abortando ejecución de tool '${funcName}'.`);
         return {
           success: false,
@@ -2891,6 +2911,12 @@ ${catalogIndexCsv}
       }
 
       if (funcName === 'get_product_details') {
+        if (isGenerationSuperseded()) {
+          wasSuperseded = true;
+          pendingMediaToSend = null;
+          console.warn(`🛑 [Tool Guard - Details] Generación obsoleta para +${clientNumber}. Abortando get_product_details.`);
+          return { success: false, error: 'GENERATION_SUPERSEDED', message: 'El usuario envió un mensaje más reciente.' };
+        }
         const { productId } = args;
         const fcStart = Date.now();
         console.log(`🔍 [FC] get_product_details — ID: "${productId}"`);
@@ -2957,6 +2983,11 @@ Atributos/Tags: ${Array.isArray(product.tags) ? product.tags.join(', ') : ''}
 
           // Si el cliente expresó una intención explícita de foto/imagen pero Gemini llamó a get_product_details
           // en lugar de send_product_media, encolamos automáticamente la imagen canónica si está disponible
+          if (isGenerationSuperseded()) {
+            wasSuperseded = true;
+            pendingMediaToSend = null;
+            return { success: false, error: 'GENERATION_SUPERSEDED', message: 'El usuario envió un mensaje más reciente.' };
+          }
           if (isExplicitProductMediaIntent(userMessageText) && !pendingMediaToSend && !mediaSentInSession) {
             let canonicalUrl = null;
             if (product.imageUrl && typeof product.imageUrl === 'string' && product.imageUrl.startsWith('http')) {
@@ -2987,6 +3018,12 @@ Atributos/Tags: ${Array.isArray(product.tags) ? product.tags.join(', ') : ''}
       }
 
       if (funcName === 'send_product_media') {
+        if (isGenerationSuperseded()) {
+          wasSuperseded = true;
+          pendingMediaToSend = null;
+          console.warn(`🛑 [Tool Guard - Media] Generación obsoleta para +${clientNumber}. Abortando send_product_media.`);
+          return { success: false, error: 'GENERATION_SUPERSEDED', message: 'El usuario envió un mensaje más reciente.' };
+        }
         const fcStart = Date.now();
         const rawProductId = args?.productId;
         const productId = typeof rawProductId === 'string' ? rawProductId.trim() : String(rawProductId || '').trim();
@@ -3062,6 +3099,13 @@ Atributos/Tags: ${Array.isArray(product.tags) ? product.tags.join(', ') : ''}
             };
           }
 
+          if (isGenerationSuperseded()) {
+            wasSuperseded = true;
+            pendingMediaToSend = null;
+            console.warn(`🛑 [Tool Guard - Media Pre-Queue] Generación obsoleta para +${clientNumber}. Abortando cola de imagen.`);
+            return { success: false, error: 'GENERATION_SUPERSEDED', message: 'El usuario envió un mensaje más reciente.' };
+          }
+
           pendingMediaToSend = {
             productId: product.id,
             productName: product.name,
@@ -3090,6 +3134,8 @@ Atributos/Tags: ${Array.isArray(product.tags) ? product.tags.join(', ') : ''}
       }
       if (funcName === 'update_commercial_state') {
         if (isGenerationSuperseded()) {
+          wasSuperseded = true;
+          pendingMediaToSend = null;
           console.warn(`🛑 [Tool Guard - Commercial] Generación obsoleta para +${clientNumber}. Abortando update_commercial_state.`);
           return { success: false, error: 'GENERATION_SUPERSEDED', message: 'El usuario envió un mensaje más reciente. No aplicar cambios.' };
         }
@@ -3205,14 +3251,19 @@ Atributos/Tags: ${Array.isArray(product.tags) ? product.tags.join(', ') : ''}
         null, // msgId deduplication happens at db layer
         tools,
         toolsHandler,
-        tenant.id // <- tenantId para medición persistente de consumo de IA
+        tenant.id, // <- tenantId para medición persistente de consumo de IA
+        isGenerationSuperseded // <- abort callback para corte inmediato
       );
       if (aiResponse?.superseded || isGenerationSuperseded()) {
+        wasSuperseded = true;
+        pendingMediaToSend = null;
         console.log(`🛑 [Generation Superseded Fast Abort] Generación abortada tempranamente para +${clientNumber} (v${generationVersion} vs actual v${getChatGenerationVersion(bufferKey)}). 0 llamadas extra a Gemini.`);
         return; // Sale limpiamente al bloque finally para liberar lock y re-inyectar pendingQueue
       }
     } catch (aiErr) {
       if (aiErr?.isSuperseded || aiErr?.message === 'GENERATION_SUPERSEDED' || isGenerationSuperseded()) {
+        wasSuperseded = true;
+        pendingMediaToSend = null;
         console.log(`🛑 [Generation Superseded Fast Abort] Generación abortada tempranamente para +${clientNumber} (v${generationVersion} vs actual v${getChatGenerationVersion(bufferKey)}). 0 llamadas extra a Gemini.`);
         return; // Sale limpiamente al bloque finally para liberar lock y re-inyectar pendingQueue
       }
@@ -3226,6 +3277,8 @@ Atributos/Tags: ${Array.isArray(product.tags) ? product.tags.join(', ') : ''}
 
     // ─── GENERATION SUPERSEDED CHECK (Post-Gemini Gate) ───
     if (isGenerationSuperseded()) {
+      wasSuperseded = true;
+      pendingMediaToSend = null;
       console.log(`🛑 [Generation Superseded] Respuesta descartada para +${clientNumber} porque llegó un mensaje nuevo durante la generación (v${generationVersion} vs actual v${getChatGenerationVersion(bufferKey)}).`);
       return; // Sale limpiamente al bloque finally para liberar lock y re-inyectar pendingQueue
     }
@@ -3540,19 +3593,20 @@ Atributos/Tags: ${Array.isArray(product.tags) ? product.tags.join(', ') : ''}
       for (let i = 0; i < dispatchSequence.length; i++) {
         // ─── INTERRUPCIÓN DE SECUENCIA (CANCELACIÓN DE COLA / GENERACIÓN OBSOLETA) ───
         if (isGenerationSuperseded()) {
+          wasSuperseded = true;
+          pendingMediaToSend = null;
           console.log(`🛑 [Interrupción Activa] El usuario +${finalCleanNumber} envió un nuevo mensaje (generación obsoleta v${generationVersion} vs actual v${getChatGenerationVersion(bufferKey)}). Cancelando el envío de ${dispatchSequence.length - i} globos restantes de la ráfaga anterior...`);
           break; // Rompe el bucle de despacho. El bloque finally procesará la nueva cola.
         }
 
         const item = dispatchSequence[i];
         
-        // --- RETRASO DINÁMICO DE RESPUESTA (Simulación Humana) ---
-        let typingDelay = 2000;
+        // --- RETRASO DINÁMICO DE RESPUESTA (Simulación Humana Razonable: min 1.2s, max 2.5s) ---
+        let typingDelay = 1200;
         if (item.type === 'text') {
-          // 40ms por caracter. Mínimo 2s, máximo 12s.
-          typingDelay = Math.max(2000, Math.min(12000, item.content.length * 40));
+          typingDelay = Math.max(1200, Math.min(2500, item.content.length * 20));
         } else if (item.type === 'image' && item.caption) {
-          typingDelay = Math.max(2000, Math.min(6000, item.caption.length * 30));
+          typingDelay = Math.max(1200, Math.min(2500, item.caption.length * 20));
         }
 
         // Enviar estado "escribiendo..." justo el tiempo que tardará en enviarse
@@ -3572,6 +3626,8 @@ Atributos/Tags: ${Array.isArray(product.tags) ? product.tags.join(', ') : ''}
 
         // ─── GENERATION SUPERSEDED CHECK (Post-Typing Check) ───
         if (isGenerationSuperseded()) {
+          wasSuperseded = true;
+          pendingMediaToSend = null;
           console.log(`🛑 [Post-Typing Guard] Mensaje nuevo detectado durante el tiempo de tipeo para +${clientNumber} (v${generationVersion} vs actual v${getChatGenerationVersion(bufferKey)}). Abortando fragmento actual y restantes.`);
           break; // Rompe el bucle de despacho; no se envía este fragmento ni los siguientes
         }
@@ -3662,6 +3718,12 @@ Atributos/Tags: ${Array.isArray(product.tags) ? product.tags.join(', ') : ''}
             console.error(`❌ [${provider} Gateway] Error al enviar texto:`, sendErr.message);
           }
         } else if (item.type === 'image' || item.type === 'video') {
+          if (isGenerationSuperseded()) {
+            wasSuperseded = true;
+            pendingMediaToSend = null;
+            console.log(`🛑 [Pre-Media Guard] Generación obsoleta antes de enviar multimedia. Abortando.`);
+            break;
+          }
           try {
             const mediaMsgId = await sendWhatsAppMedia({ 
               ...gatewayCtx, 
@@ -3725,13 +3787,17 @@ Atributos/Tags: ${Array.isArray(product.tags) ? product.tags.join(', ') : ''}
 
 
       }
+    }  } catch (error) {
+    if (error?.isSuperseded || error?.message === 'GENERATION_SUPERSEDED') {
+      wasSuperseded = true;
+      pendingMediaToSend = null;
+      console.log(`🛑 [Generation Superseded Catch] Generación abortada limpiamente para ${bufferKey}.`);
+    } else {
+      console.error('❌ Error en el procesamiento del buffer de mensajes:', error.message);
     }
-
-  } catch (error) {
-    console.error('âŒ Error en el procesamiento del buffer de mensajes:', error.message);
   } finally {
     // ─── LIBERAR LOCK Y DESPACHAR COLA PENDIENTE ───
-    // Sea cual sea el resultado (éxito o error), siempre liberamos el lock tenant-scoped.
+    // Sea cual sea el resultado (éxito o error o superseded), siempre liberamos el lock tenant-scoped.
     processingLocks.delete(bufferKey);
     console.log(`🔓 [Processing Lock] Lock liberado para ${bufferKey}.`);
 
@@ -3759,13 +3825,14 @@ Atributos/Tags: ${Array.isArray(product.tags) ? product.tags.join(', ') : ''}
         return;
       }
 
-      console.log(`📬 [Pending Queue] Despachando ${pending.text.length} caracteres encolados para +${pending.clientNumber} con nuevo buffer de 4000ms.`);
-      // Re-inyectar como nuevo buffer con debounce fresco
+      // ─── FAST COALESCING: 500ms si superseded, 4000ms normal ───
+      const coalescingMs = (wasSuperseded || isGenerationSuperseded()) ? 500 : 4000;
+      console.log(`📬 [Pending Queue] Despachando ${pending.text.length} caracteres encolados para +${pending.clientNumber} con buffer de ${coalescingMs}ms (wasSuperseded: ${wasSuperseded}).`);
       const newBufferEntry = {
         ...pending,
         timer: setTimeout(() => {
           processBufferedMessage(bufferKey);
-        }, 4000)
+        }, coalescingMs)
       };
       messageBuffers.set(bufferKey, newBufferEntry);
     } else {
