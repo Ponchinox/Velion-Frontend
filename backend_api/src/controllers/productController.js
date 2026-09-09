@@ -1,6 +1,10 @@
+import fs from 'fs';
+import path from 'path';
 import prisma from '../db.js';
 import cloudinary from '../config/cloudinary.js';
 import { invalidateCatalogCache } from '../services/catalogCacheService.js';
+
+const MEDIA_ROOT = path.resolve('/var/www/velion-media');
 
 /**
  * Extrae el public_id de un recurso de Cloudinary a partir de su URL completa
@@ -34,20 +38,77 @@ function getPublicIdFromUrl(url) {
 }
 
 /**
- * Destruye un recurso de Cloudinary de forma segura según sea imagen o video
+ * Destruye un recurso multimedia de forma segura.
+ * - Si es /media/ (VPS local): elimina del disco con validación estricta de Path Traversal.
+ * - Si es res.cloudinary.com (Legacy): conserva eliminación remota en Cloudinary.
  */
 async function destroyCloudinaryResource(url, isVideo = false) {
-  if (!url) return;
-  const publicId = getPublicIdFromUrl(url);
-  if (!publicId) return;
+  if (!url || typeof url !== 'string') return;
 
+  // 1. Caso A: Archivo local del VPS (/media/...)
+  if (url.includes('/media/')) {
+    try {
+      const parts = url.split('/media/');
+      if (parts.length < 2) return;
+      const relPath = parts[1].split('?')[0]; // Descartar querystrings
+      const targetPath = path.resolve(MEDIA_ROOT, relPath);
+
+      // Verificación estricta: debe residir estrictamente dentro de MEDIA_ROOT
+      if (!targetPath.startsWith(MEDIA_ROOT + path.sep)) {
+        console.error(`⚠️ [Security Alert] Path traversal bloqueado al eliminar: ${url} -> ${targetPath}`);
+        return;
+      }
+
+      if (fs.existsSync(targetPath)) {
+        await fs.promises.unlink(targetPath);
+        console.log(`🗑️ [Local Media Cleanup] Archivo local eliminado con éxito: ${targetPath}`);
+      } else {
+        console.log(`ℹ️ [Local Media Cleanup] Archivo no existía en disco: ${targetPath}`);
+      }
+    } catch (err) {
+      console.error(`❌ [Local Media Cleanup] Error al eliminar archivo local ${url}:`, err.message);
+    }
+    return;
+  }
+
+  // 2. Caso B: Archivo remoto de Cloudinary (res.cloudinary.com)
+  if (url.includes('res.cloudinary.com')) {
+    const publicId = getPublicIdFromUrl(url);
+    if (!publicId) return;
+
+    try {
+      const resourceType = isVideo ? 'video' : 'image';
+      console.log(`[Cloudinary Cleanup] Eliminando ${resourceType}: ${publicId}`);
+      await cloudinary.uploader.destroy(publicId, { resource_type: resourceType });
+      console.log(`[Cloudinary Cleanup] ${resourceType} eliminado con éxito.`);
+    } catch (err) {
+      console.error(`[Cloudinary Cleanup] Error al eliminar ${url}:`, err.message);
+    }
+    return;
+  }
+}
+
+/**
+ * Limpia los archivos subidos al disco si ocurre un error antes de persistir en base de datos
+ */
+function cleanupUploadedFiles(req) {
+  if (!req.files) return;
   try {
-    const resourceType = isVideo ? 'video' : 'image';
-    console.log(`[Cloudinary Cleanup] Eliminando ${resourceType}: ${publicId}`);
-    await cloudinary.uploader.destroy(publicId, { resource_type: resourceType });
-    console.log(`[Cloudinary Cleanup] ${resourceType} eliminado con éxito.`);
+    for (const field of Object.keys(req.files)) {
+      for (const file of req.files[field]) {
+        const localPath = file.localFullPath;
+        if (localPath && fs.existsSync(localPath)) {
+          try {
+            fs.unlinkSync(localPath);
+            console.log(`🧹 [Upload Cleanup] Archivo huérfano limpiado tras error: ${localPath}`);
+          } catch (e) {
+            console.error(`⚠️ [Upload Cleanup] No se pudo borrar archivo huérfano: ${localPath}`, e.message);
+          }
+        }
+      }
+    }
   } catch (err) {
-    console.error(`[Cloudinary Cleanup] Error al eliminar ${url}:`, err.message);
+    console.error('Error during uploaded files cleanup:', err);
   }
 }
 
@@ -60,14 +121,17 @@ export async function createProduct(req, res) {
     const userId = req.user.userId || req.user.id;
 
     if (!userId) {
+      cleanupUploadedFiles(req);
       return res.status(401).json({ error: 'Usuario no autenticado o sesión inválida.' });
     }
 
     if (req.user?.role === 'superadmin' && !req.user?.tenantId) {
+      cleanupUploadedFiles(req);
       return res.status(400).json({ error: 'El SuperAdmin no administra inventario propio. Inicia sesión en Modo Soporte sobre una empresa.' });
     }
 
     if (!name || price === undefined) {
+      cleanupUploadedFiles(req);
       return res.status(400).json({ error: 'Faltan parámetros obligatorios (name, price).' });
     }
 
@@ -76,6 +140,7 @@ export async function createProduct(req, res) {
     if (type !== undefined && type !== null && String(type).trim() !== '') {
       const normalizedType = String(type).trim().toUpperCase();
       if (normalizedType !== 'PHYSICAL_PRODUCT' && normalizedType !== 'SERVICE') {
+        cleanupUploadedFiles(req);
         return res.status(400).json({ error: 'Tipo de producto no válido. Debe ser PHYSICAL_PRODUCT o SERVICE.' });
       }
       finalType = normalizedType;
@@ -128,6 +193,7 @@ export async function createProduct(req, res) {
 
     return res.status(201).json(product);
   } catch (error) {
+    cleanupUploadedFiles(req);
     console.error('🚨 Error al crear producto:', error);
     return res.status(500).json({ error: error.message || 'Error interno del servidor' });
   }
@@ -296,6 +362,7 @@ export async function updateProduct(req, res) {
     const userId = req.user.userId || req.user.id;
 
     if (!userId) {
+      cleanupUploadedFiles(req);
       return res.status(401).json({ error: 'Usuario no autenticado o sesión inválida.' });
     }
 
@@ -304,6 +371,7 @@ export async function updateProduct(req, res) {
     });
 
     if (!currentProduct) {
+      cleanupUploadedFiles(req);
       return res.status(404).json({ error: 'Producto no encontrado o no autorizado para su modificación.' });
     }
 
@@ -326,6 +394,7 @@ export async function updateProduct(req, res) {
     if (type !== undefined && type !== null && String(type).trim() !== '') {
       const normalizedType = String(type).trim().toUpperCase();
       if (normalizedType !== 'PHYSICAL_PRODUCT' && normalizedType !== 'SERVICE') {
+        cleanupUploadedFiles(req);
         return res.status(400).json({ error: 'Tipo de producto no válido. Debe ser PHYSICAL_PRODUCT o SERVICE.' });
       }
       dataToUpdate.type = normalizedType;
@@ -395,6 +464,7 @@ export async function updateProduct(req, res) {
 
     return res.json(updatedProduct);
   } catch (error) {
+    cleanupUploadedFiles(req);
     console.error('Error en updateProduct:', error);
     return res.status(500).json({ error: 'Error al modificar el producto en la base de datos.' });
   }
