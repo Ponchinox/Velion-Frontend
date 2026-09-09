@@ -56,10 +56,18 @@ const PORT = resolvePort(process.env.PORT);
 const HOST = resolveHost(process.env.HOST);
 const httpServer = createServer(app);
 
-// Configuración del servidor WebSocket
+// Configuración de orígenes permitidos (CORS & Socket.IO)
+// Incluye VPS principal, Vercel temporal (rollback/acceso público temporal) y desarrollo local
+const defaultAllowedOrigins = [
+  'https://185.163.116.210',
+  'https://velion-dashboard-visual.vercel.app',
+  'http://localhost:5173',
+  'http://localhost:3000'
+];
+
 const allowedOrigins = process.env.FRONTEND_URL 
-  ? [process.env.FRONTEND_URL, 'https://185.163.116.210', 'http://localhost:5173', 'http://localhost:3000'] 
-  : ['https://185.163.116.210', 'http://localhost:5173', 'http://localhost:3000'];
+  ? Array.from(new Set([process.env.FRONTEND_URL, ...defaultAllowedOrigins])) 
+  : defaultAllowedOrigins;
 
 const io = new Server(httpServer, {
   cors: {
