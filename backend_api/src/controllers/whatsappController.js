@@ -50,13 +50,18 @@ export const REQUEST_HUMAN_HANDOFF_DECLARATION = {
 // ── DEFINICIÓN FORMAL DE FUNCTION TOOL: send_product_media ───────────────────
 export const SEND_PRODUCT_MEDIA_DECLARATION = {
   name: 'send_product_media',
-  description: 'Envía la imagen o foto oficial del producto o servicio al cliente por WhatsApp. Úsala SIEMPRE que el cliente solicite de forma EXPLÍCITA ver una foto, imagen o folleto gráfico del producto/servicio (ej. "¿tienes foto?", "¿tienes fotos?", "¿además tiene foto?", "mándame una foto", "envíame una imagen", "¿cómo se ve?", "quiero verlo", "muéstrame el producto"). Si el cliente pide ver la foto/imagen de un producto, es OBLIGATORIO llamar a send_product_media y NUNCA sustituirla por get_product_details. PROHIBIDO usarla en consultas de precio o características sin solicitud explícita de imagen.',
+  description: 'Envía la imagen, foto o video oficial del producto o servicio al cliente por WhatsApp. Úsala SIEMPRE que el cliente solicite de forma EXPLÍCITA ver una foto, imagen o video demostrativo del producto/servicio (ej. "¿tienes foto?", "mándame una foto", "¿tienes video?", "muéstrame el video", "video", "videos", "¿cómo se ve?", "quiero verlo"). Si el cliente pide foto o video de un producto, es OBLIGATORIO llamar a send_product_media y NUNCA sustituirla por get_product_details. Especifica mediaType: "image" (por defecto) o "video". PROHIBIDO usarla en simples consultas de precio sin solicitud explícita de multimedia.',
   parameters: {
     type: 'OBJECT',
     properties: {
       productId: {
         type: 'STRING',
         description: 'El ID exacto del producto obtenido del <catalog_index>, estado comercial o de get_product_details.'
+      },
+      mediaType: {
+        type: 'STRING',
+        enum: ['image', 'video'],
+        description: 'Tipo de multimedia a enviar: "image" para foto/imagen (por defecto) o "video" para video demostrativo.'
       }
     },
     required: ['productId']
@@ -64,10 +69,67 @@ export const SEND_PRODUCT_MEDIA_DECLARATION = {
 };
 
 /**
+ * ─── HELPER: DETECCIÓN DE INTENCIÓN EXPLÍCITA DE VIDEO DE PRODUCTO ───
+ * Retorna true si el mensaje del usuario pide explícitamente ver un video del producto.
+ */
+export function isExplicitProductVideoIntent(text) {
+  if (!text || typeof text !== 'string') return false;
+  const normalized = text
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .trim();
+
+  // Guardas negativas (ej. "no quiero video", "sin video", "no mandes video")
+  const negativePattern = /\b(no\s+(?:quiero|deseo|necesito|mandes|envies)|sin\s+videos?)\b/;
+  if (negativePattern.test(normalized)) return false;
+
+  // Segmentos individuales en ráfagas multilínea o separadas por comas/puntos (ej. "Quiero JBL go 4\nVideo\nDisponible")
+  const segments = normalized.split(/[\n,;]+/).map(s => s.trim()).filter(Boolean);
+  if (segments.some(seg => /^(?:el\s+|un\s+)?videos?(?:\s+(?:por\s+favor|pf|plz|pleas|favor))?[\s?.!]*$/.test(seg))) {
+    return true;
+  }
+
+  const patterns = [
+    // "tienes video", "hay video", "tendrás video", "tienen video"
+    /\b(?:no\s+)?(tienes?|tienen|hay|tendra)\s+(?:un\s+|el\s+|algun\s+|algunos\s+)?(videos?|clip|grabacion)\b/,
+    // "videos tienes?", "video tienes?", "video hay?", "videos de casualidad tienes?"
+    /\b(videos?|clip|grabacion)\b.*?\b(tienes?|tienen|hay|tendra)\b/,
+    // "mándame video", "envíame el video", "pásame video", "puedes enviarme el video"
+    /\b(mandame|enviame|pasa(?:me)?|comparte(?:me)?|puedes\s+enviar(?:me)?|puedes\s+mandar(?:me)?)\s+(?:un\s+|el\s+)?(videos?|clip)\b/,
+    // "quiero ver el video", "deseo ver video", "ver video"
+    /\b(?:quiero|deseo|puedo)?\s*(?:ver|verlo|verla)\s+(?:el\s+|un\s+)?(videos?|clip)\b/,
+    // "quiero video", "quiero el video", "deseo video"
+    /\b(?:quiero|deseo|puedo)\b.*?\b(videos?|clip)\b/,
+    // "muéstrame el video", "enséñame video"
+    /\b(muestrame|ensename)\s+(?:el\s+|un\s+)?(videos?|clip)\b/,
+    // "video?", "videos?"
+    /\bvideo(s)?\s*\?/,
+    // Mensaje simple: "video", "videos", "el video", "un video", "video por favor"
+    /^(?:el\s+|un\s+)?videos?(?:\s+(?:por\s+favor|pf|plz|pleas|favor))?$/m
+  ];
+
+  return patterns.some(rgx => rgx.test(normalized));
+}
+
+/**
+ * Retorna true si el texto es exclusivamente la expresión "a ver" / "aver" sin producto especificado
+ */
+export function isStandaloneAVer(text) {
+  if (!text || typeof text !== 'string') return false;
+  const normalized = text
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .trim();
+  return /^(?:a\s*ver|aver)(?:\s+(?:por\s+favor|pf|plz|favor))?[\s?.!]*$/.test(normalized);
+}
+
+/**
  * ─── HELPER: DETECCIÓN DE INTENCIÓN EXPLÍCITA DE FOTO/IMAGEN DE PRODUCTO ───
  * Retorna true si el mensaje del usuario pide explícitamente ver una foto o imagen del producto.
  */
-export function isExplicitProductMediaIntent(text) {
+export function isExplicitProductPhotoIntent(text) {
   if (!text || typeof text !== 'string') return false;
   const normalized = text
     .toLowerCase()
@@ -81,45 +143,109 @@ export function isExplicitProductMediaIntent(text) {
     return false;
   }
 
+  // Segmentos individuales en ráfagas multilínea o separadas por comas/puntos (ej. "Quiero JBL go 4\nFoto\nDisponible")
+  const segments = normalized.split(/[\n,;]+/).map(s => s.trim()).filter(Boolean);
+  if (segments.some(seg => /^(?:la\s+|una?\s+)?(?:fotos?|imagen(?:es)?)(?:\s+(?:por\s+favor|pf|plz|favor))?[\s?.!]*$/.test(seg))) {
+    return true;
+  }
+  if (segments.some(seg => /^(?:a\s*ver|aver)(?:\s+(?:por\s+favor|pf|plz|favor))?[\s?.!]*$/.test(seg) || /^(?:a\s*ver|aver)\s+(?:lo|la|los|las|el\s+producto|la\s+foto|la\s+imagen)[\s?.!]*$/.test(seg))) {
+    return true;
+  }
+
   // 2. Patrones positivos de solicitud explícita de foto / imagen / aspecto visual
   const patterns = [
     /\b(?:no\s+)?(tienes?|tienen|hay|tendra|tienen?)\s+(?:una?\s+)?(fotos?|imagen(?:es)?|pics?)\b/,
+    /\b(fotos?|imagen(?:es)?)\b.*?\b(tienes?|tienen|hay|tendra)\b/,
     /\b(mandame|enviame|pasa(?:me)?|comparte(?:me)?|puedes\s+enviar(?:me)?|puedes\s+mandar(?:me)?)\s+(?:una?\s+|la\s+)?(fotos?|imagen(?:es)?|pics?)\b/,
-    /\b(quiero|deseo|puedo)\s+(?:verlo|verla|verlos|verlas|ver\s+(?:el\s+producto|la\s+foto|la\s+imagen|una?\s+(?:foto|imagen)|fotos?|imagenes?))\b/,
+    /\b(?:quiero|deseo|puedo)\s+(?:verlo|verla|verlos|verlas)\b/,
+    /\b(?:quiero|deseo|puedo)?\s*ver\s+(?:el\s+producto|la\s+foto|la\s+imagen|una?\s+(?:foto|imagen)|fotos?|imagenes?)\b/,
+    /\b(?:quiero|deseo|puedo)\b.*?\b(fotos?|imagen(?:es)?)\b/,
     /\bcomo\s+se\s+ve\b/,
-    /\bmuestrame\s+(?:el\s+producto|la\s+foto|la\s+imagen|el|la|fotos?|imagen(?:es)?|una?\s+(?:foto|imagen))\b/,
-    /\bensename\s+(?:el\s+producto|la\s+foto|la\s+imagen|el|la|fotos?|imagen(?:es)?|una?\s+(?:foto|imagen))\b/,
+    /\bmuestrame(?:lo|la|los|las)?(?:\s+(?:el\s+producto|la\s+foto|la\s+imagen|el|la|fotos?|imagen(?:es)?|una?\s+(?:foto|imagen)))?\b/,
+    /\bensename(?:lo|la|los|las)?(?:\s+(?:el\s+producto|la\s+foto|la\s+imagen|el|la|fotos?|imagen(?:es)?|una?\s+(?:foto|imagen)))?\b/,
     /\b(?:ademas\s+)?(tiene|hay|tienen)\s+(?:una?\s+)?(foto|fotos|imagen|imagenes)\b/,
     /\b(alguna|algunas)\s+(fotos?|imagen(?:es)?)\b/,
     /\bfoto(s)?\s*\?/,
-    /\bimagen(es)?\s*\?/
+    /\bimagen(es)?\s*\?/,
+    /^(?:la\s+|una?\s+)?fotos?(?:\s+(?:por\s+favor|pf|plz|favor))?$/m,
+    /^(?:la\s+|una?\s+)?imagen(?:es)?(?:\s+(?:por\s+favor|pf|plz|favor))?$/m,
+    /^(?:a\s*ver|aver)(?:\s+(?:por\s+favor|pf|plz|favor))?[\s?.!]*$/m,
+    /^(?:a\s*ver|aver)\s+(?:lo|la|los|las|el\s+producto|la\s+foto|la\s+imagen)[\s?.!]*$/m
   ];
 
   return patterns.some(rgx => rgx.test(normalized));
 }
 
 /**
+ * ─── HELPER: DETECTOR UNIFICADO DE INTENCIÓN MULTIMEDIA ('video' | 'image' | null) ───
+ */
+export function detectProductMediaIntent(text) {
+  if (!text || typeof text !== 'string') return null;
+  const normalized = text
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .trim();
+
+  // Si hay múltiples segmentos (ej. ráfaga de mensajes separados por salto de línea, coma o punto y coma),
+  // evaluamos desde el más reciente al más antiguo (Latest Intent Wins)
+  const segments = normalized.split(/[\n,;]+/).map(s => s.trim()).filter(Boolean);
+  if (segments.length > 1) {
+    for (let i = segments.length - 1; i >= 0; i--) {
+      const seg = segments[i];
+      if (isExplicitProductVideoIntent(seg)) return 'video';
+      if (isExplicitProductPhotoIntent(seg)) return 'image';
+    }
+  }
+
+  if (isExplicitProductVideoIntent(normalized)) return 'video';
+  if (isExplicitProductPhotoIntent(normalized)) return 'image';
+  return null;
+}
+
+/**
+ * Retorna true si el mensaje del usuario pide explícitamente ver multimedia (foto o video).
+ */
+export function isExplicitProductMediaIntent(text) {
+  return detectProductMediaIntent(text) !== null;
+}
+
+/**
  * ─── HELPER: AUTHORITY MODEL PARA MULTIMEDIA ───
- * Garantiza que el asistente nunca afirme estar enviando o adjuntando una foto si no existe
- * multimedia canónica real preparada en el turno (hasPendingMedia === false).
+ * Garantiza que el asistente nunca afirme estar enviando o adjuntando una foto o video si no existe
+ * multimedia canónica real preparada en el turno (hasPendingMedia === false), y elimina defensivamente
+ * cualquier marcador interno o URL interna de media de la salida visible.
  */
 export function enforceMediaAuthority(text, hasPendingMedia) {
   if (!text || typeof text !== 'string') return text || '';
-  if (hasPendingMedia) return text;
 
-  // Colección limpia de patrones para detectar afirmaciones de entrega o envío de foto/imagen
-  // Soporta tildes/sin tildes (aquí/aqui, envío/envio), artículos (la/esta/una/un) y perífrasis
+  // Defensa en profundidad: eliminar cualquier marcador interno semántico de salida visible
+  let result = text
+    .replace(/\[(?:Imagen|Video|Media|Multimedia)\s+enviad[ao](?:\s+al\s+cliente)?\]/gi, '')
+    .replace(/\[(?:Imagen|Video|Media|Multimedia)\](?::\s*(?:https?:\/\/[^\s\n]+|\/[^\s\n]+)?)?/gi, '')
+    .replace(/\[(?:archivo\s+multimedia|multimedia)\]/gi, '')
+    .replace(/(?:https?:\/\/[^\s\n]+)?\/(?:media\/tenants|products\/(?:images|videos))\/[^\s\n]+/gi, '')
+    .replace(/^\s*[\r\n]+/gm, '\n')
+    .trim();
+
+  if (hasPendingMedia) return result;
+
+  // Colección limpia de patrones para detectar afirmaciones de entrega o envío de foto/imagen o video
   const falseMediaPatterns = [
-    /(?:claro(?:\s+que\s+s[ií])?,?\s*)?(?:aqu[ií]\s+(?:tienes|te\s+(?:muestro|comparto|dejo|adjunto|env[ií]o))|aqu[ií]\s+est[aá])\s+(?:la\s+|esta\s+|una?\s+)?(?:imagen|foto|fotograf[ií]a)(?:\s+del?\s+[^:.\n!,]+)?(?:\s*[:.¡!,])?/gi,
-    /(?:claro(?:\s+que\s+s[ií])?,?\s*)?te\s+(?:env[ií]o|mando|adjunto|comparto)\s+(?:la\s+|esta\s+|una?\s+)?(?:imagen|foto|fotograf[ií]a)(?:\s+del?\s+[^:.\n!,]+)?(?:\s*[:.¡!,])?/gi,
-    /(?:claro(?:\s+que\s+s[ií])?,?\s*)?(?:(?:voy\s+a\s+(?:enviarte|mandarte|compartirte)|d[eé]jame\s+(?:enviarte|mandarte|compartirte)|te\s+voy\s+a\s+(?:enviar|mandar|compartir)))\s+(?:la\s+|esta\s+|una?\s+)?(?:imagen|foto|fotograf[ií]a)(?:\s+del?\s+[^:.\n!,]+)?(?:\s*[:.¡!,])?/gi,
-    /(?:claro(?:\s+que\s+s[ií])?,?\s*)?mira\s+(?:esta\s+|la\s+|una?\s+)?(?:imagen|foto|fotograf[ií]a)(?:\s+del?\s+[^:.\n!,]+)?(?:\s*[:.¡!,])?/gi
+    /(?:claro(?:\s+que\s+s[ií])?,?\s*)?(?:aqu[ií]\s+(?:tienes|te\s+(?:muestro|comparto|dejo|adjunto|env[ií]o))|aqu[ií]\s+est[aá])\s+(?:la\s+|esta\s+|una?\s+|el\s+|este\s+|un\s+)?(?:imagen|foto|fotograf[ií]a|video)(?:\s+del?\s+[^:.\n!,]+)?(?:\s*[:.¡!,])?/gi,
+    /(?:claro(?:\s+que\s+s[ií])?,?\s*)?te\s+(?:env[ií]o|mando|adjunto|comparto)\s+(?:la\s+|esta\s+|una?\s+|el\s+|este\s+|un\s+)?(?:imagen|foto|fotograf[ií]a|video)(?:\s+del?\s+[^:.\n!,]+)?(?:\s*[:.¡!,])?/gi,
+    /(?:claro(?:\s+que\s+s[ií])?,?\s*)?(?:(?:voy\s+a\s+(?:enviarte|mandarte|compartirte)|d[eé]jame\s+(?:enviarte|mandarte|compartirte)|te\s+voy\s+a\s+(?:enviar|mandar|compartir)))\s+(?:la\s+|esta\s+|una?\s+|el\s+|este\s+|un\s+)?(?:imagen|foto|fotograf[ií]a|video)(?:\s+del?\s+[^:.\n!,]+)?(?:\s*[:.¡!,])?/gi,
+    /(?:claro(?:\s+que\s+s[ií])?,?\s*)?mira\s+(?:esta\s+|la\s+|una?\s+|este\s+|el\s+|un\s+)?(?:imagen|foto|fotograf[ií]a|video)(?:\s+del?\s+[^:.\n!,]+)?(?:\s*[:.¡!,])?/gi
   ];
 
   let modified = false;
-  let result = text;
   for (const pattern of falseMediaPatterns) {
-    const replaced = result.replace(pattern, 'No tengo una imagen disponible para enviarte en este momento.');
+    const replaced = result.replace(pattern, (match) => {
+      const isVideoMatch = /video/i.test(match);
+      return isVideoMatch
+        ? 'No tengo un video disponible para enviarte en este momento.'
+        : 'No tengo una imagen disponible para enviarte en este momento.';
+    });
     if (replaced !== result) {
       modified = true;
       result = replaced;
@@ -127,12 +253,16 @@ export function enforceMediaAuthority(text, hasPendingMedia) {
   }
 
   if (modified) {
-    let clean = result.replace(/(?:No tengo una imagen disponible para enviarte en este momento\.\s*)+/g, 'No tengo una imagen disponible para enviarte en este momento. ');
-    clean = clean.replace(/No tengo una imagen disponible para enviarte en este momento\.\s*\./g, 'No tengo una imagen disponible para enviarte en este momento.');
+    let clean = result
+      .replace(/(?:No tengo una imagen disponible para enviarte en este momento\.\s*)+/g, 'No tengo una imagen disponible para enviarte en este momento. ')
+      .replace(/(?:No tengo un video disponible para enviarte en este momento\.\s*)+/g, 'No tengo un video disponible para enviarte en este momento. ')
+      .replace(/No tengo una imagen disponible para enviarte en este momento\.\s*\./g, 'No tengo una imagen disponible para enviarte en este momento.')
+      .replace(/No tengo un video disponible para enviarte en este momento\.\s*\./g, 'No tengo un video disponible para enviarte en este momento.');
     return clean.trim();
   }
-  return text;
+  return result;
 }
+
 
 /**
  * Helper: enforceBusinessAuthority
@@ -2627,16 +2757,17 @@ Puedes usar las siguientes etiquetas dentro de tu respuesta para ejecutar accion
     }
     
     systemCommands += `📦 MULTIMEDIA:
-- Para enviar fotos o imágenes del producto/servicio: Llama a la herramienta 'send_product_media' con el productId ÚNICAMENTE si el cliente te pide explícitamente ver fotos o imágenes ("¿tienes foto?", "muéstrame la imagen", "enséñame el producto", "quiero ver el curso"). NUNCA envíes imágenes ante simples consultas de información, precio o características.
+- Para enviar fotos, imágenes o videos demostrativos del producto/servicio: Llama a la herramienta 'send_product_media' con el productId y mediaType ('image' o 'video') ÚNICAMENTE si el cliente te pide explícitamente ver fotos, imágenes o videos ("¿tienes foto?", "muéstrame la imagen", "video", "tienes video?", "¿cómo se ve?", "quiero ver el video").
+- REGLA DE VIDEO: Si el cliente solicita video y el producto tiene video registrado (Video: Sí en la ficha técnica), DEBES llamar a 'send_product_media' con mediaType: 'video'. NUNCA inventes políticas como "no enviamos videos por este medio" o "no contamos con videos por aquí" si el producto sí tiene video.
+- Si el producto NO tiene video (Video: No en la ficha técnica), indícale amablemente al cliente con honestidad que por el momento no disponemos de un video para ese producto, sin inventar políticas de la empresa ni enlaces externos.
+- PROHIBIDO escribir o pegar URLs de archivos o enlaces web internos en el texto de tu respuesta. El sistema despacha los archivos automáticamente al invocar 'send_product_media'.
+- PROHIBIDO generar o incluir en tu texto visible marcadores internos como [Video enviado al cliente], [Imagen enviada al cliente], [Multimedia enviada al cliente], [Video] o [Imagen]. El sistema despacha los archivos automáticamente; tú solo debes escribir el mensaje conversacional amigable para el cliente.\n\n`;
 
-⚙️ ACCIONES INVISIBLES (Estas DEBEN ir siempre al FINAL ABSOLUTO de tu respuesta):
-`;
-
-
-    systemCommands += `- Registro de nota operacional: Llama a la herramienta 'register_operational_note' cuando el cliente comparta información útil, recados, instrucciones o novedades operativas para el equipo (ej. "Hoy Gustavito quiere practicar álgebra").\n`;
-    systemCommands += `- Creación de tarea operacional: Llama a la herramienta 'create_operational_task' cuando el cliente solicite una acción de contacto o compromiso futuro del equipo con fecha/hora (ej. "Llámame mañana a las 5").\n`;
-    systemCommands += `- Transferencia a asesor humano: Llama a la herramienta 'request_human_handoff' con el motivo ÚNICAMENTE si el cliente solicita explícitamente hablar con una persona/asesor ("quiero un asesor", "pásame con alguien"), si acepta explícitamente tu ofrecimiento previo ("sí, comunícame con un asesor"), o si presenta un reclamo/disputa compleja. NUNCA llames a 'request_human_handoff' ni uses [HUMAN_HANDOFF: ...] simplemente porque falte información, una fecha no esté confirmada o desconozcas profesores/horarios. En esos casos responde que no está confirmado y mantén el bot activo. (Compatibilidad fallback: [HUMAN_HANDOFF: Motivo]).\n`;
-    systemCommands += `- [BAN_USER]: Usa ESTA etiqueta como tu ÚNICA respuesta si el cliente te envía groserías o contenido inapropiado.\n`;
+    systemCommands += `⚙️ ACCIONES INVISIBLES (Estas DEBEN ir siempre al FINAL ABSOLUTO de tu respuesta):
+- Registro de nota operacional: Llama a la herramienta 'register_operational_note' cuando el cliente comparta información útil, recados, instrucciones o novedades operativas para el equipo (ej. "Hoy Gustavito quiere practicar álgebra").\n
+- Creación de tarea operacional: Llama a la herramienta 'create_operational_task' cuando el cliente solicite una acción de contacto o compromiso futuro del equipo con fecha/hora (ej. "Llámame mañana a las 5").\n
+- Transferencia a asesor humano: Llama a la herramienta 'request_human_handoff' con el motivo ÚNICAMENTE si el cliente solicita explícitamente hablar con una persona/asesor ("quiero un asesor", "pásame con alguien"), si acepta explícitamente tu ofrecimiento previo ("sí, comunícame con un asesor"), o si presenta un reclamo/disputa compleja. NUNCA llames a 'request_human_handoff' ni uses [HUMAN_HANDOFF: ...] simplemente porque falte información, una fecha no esté confirmada o desconozcas profesores/horarios. En esos casos responde que no está confirmado y mantén el bot activo. (Compatibilidad fallback: [HUMAN_HANDOFF: Motivo]).\n
+- [BAN_USER]: Usa ESTA etiqueta como tu ÚNICA respuesta si el cliente te envía groserías o contenido inapropiado.\n`;
 
     // ENSAMBLAJE FINAL - Orden critico para maximizar la atencion del LLM
     // Los guardrails de rol van PRIMERO (max atencion), el tenant personaliza DENTRO de ese rol.
@@ -2674,9 +2805,16 @@ ${catalogIndexCsv}
     // Capa 5 + 6 - Guardrails de formato/ventas y comandos (hardcoded, al final = maxima atencion)
     finalPrompt += `${globalGuardrails}\n\n${systemCommands}`;
 
-    // Directiva de máxima prioridad para solicitudes explícitas de fotos/imágenes
+    // Directiva de máxima prioridad para solicitudes explícitas de fotos/imágenes o videos
+    const rawMediaIntent = detectProductMediaIntent(userMessageText);
+    const isAmbiguousAVerPrompt = isStandaloneAVer(userMessageText) && !currentCommercialState?.productId;
+    const detectedMediaIntent = isAmbiguousAVerPrompt ? null : rawMediaIntent;
     if (isExplicitProductMediaIntent(userMessageText) && currentCommercialState?.productId) {
-      finalPrompt += `\n\n[INSTRUCCIÓN PRIORITARIA DE FOTO/IMAGEN]:\nEl usuario solicita explícitamente ver una foto o imagen del producto en consulta (ID: "${currentCommercialState.productId}"). DEBES llamar INMEDIATAMENTE a la herramienta 'send_product_media' con productId: "${currentCommercialState.productId}". NUNCA uses 'get_product_details' como sustituto de 'send_product_media' cuando el usuario pide ver fotos o imágenes.\n`;
+      if (detectedMediaIntent === 'video') {
+        finalPrompt += `\n\n[INSTRUCCIÓN PRIORITARIA DE VIDEO]:\nEl usuario solicita explícitamente ver un video del producto en consulta (ID: "${currentCommercialState.productId}"). DEBES llamar INMEDIATAMENTE a la herramienta 'send_product_media' con productId: "${currentCommercialState.productId}" y mediaType: "video". Si el producto tiene video registrado, envíalo. NUNCA digas que no tienes o no envías videos si el producto sí tiene video registrado.\n`;
+      } else {
+        finalPrompt += `\n\n[INSTRUCCIÓN PRIORITARIA DE FOTO/IMAGEN]:\nEl usuario solicita explícitamente ver una foto o imagen del producto en consulta (ID: "${currentCommercialState.productId}"). DEBES llamar INMEDIATAMENTE a la herramienta 'send_product_media' con productId: "${currentCommercialState.productId}" y mediaType: "image". NUNCA uses 'get_product_details' como sustituto de 'send_product_media' cuando el usuario pide ver fotos o imágenes.\n`;
+      }
     }
 
     // Regla vital de intención más reciente (Latest User Intent Wins)
@@ -2702,7 +2840,7 @@ ${catalogIndexCsv}
         CREATE_OPERATIONAL_TASK_DECLARATION,
         {
           name: 'get_product_details',
-          description: 'Obtiene especificaciones técnicas escritas de un producto (descripción larga, stock, variantes, características). NO envía fotos ni imágenes. Si el usuario pide fotos o imágenes, usa send_product_media.',
+          description: 'Obtiene especificaciones técnicas escritas de un producto (descripción larga, stock, variantes, características). NO envía fotos ni videos. Si el usuario pide fotos, imágenes o videos, usa send_product_media.',
           parameters: {
             type: 'OBJECT',
             properties: {
@@ -2981,29 +3119,46 @@ Atributos/Tags: ${Array.isArray(product.tags) ? product.tags.join(', ') : ''}
   Indica con honestidad lo que sí está confirmado en la ficha y aclara que la característica consultada por el cliente no está confirmada en el sistema y debe confirmarse directamente con el negocio. (Ejemplo: "La ficha registrada confirma compatibilidad con Apple Find My y Android Find Hub, pero no tengo confirmado si utiliza Bluetooth o WiFi. Ese detalle debe confirmarse con el negocio.").
 `.trim();
 
-          // Si el cliente expresó una intención explícita de foto/imagen pero Gemini llamó a get_product_details
-          // en lugar de send_product_media, encolamos automáticamente la imagen canónica si está disponible
+          // Si el cliente expresó una intención explícita de multimedia (foto o video) pero Gemini llamó a get_product_details
+          // en lugar de send_product_media, encolamos automáticamente el recurso canónico si está disponible
           if (isGenerationSuperseded()) {
             wasSuperseded = true;
             pendingMediaToSend = null;
             return { success: false, error: 'GENERATION_SUPERSEDED', message: 'El usuario envió un mensaje más reciente.' };
           }
-          if (isExplicitProductMediaIntent(userMessageText) && !pendingMediaToSend && !mediaSentInSession) {
-            let canonicalUrl = null;
-            if (product.imageUrl && typeof product.imageUrl === 'string' && product.imageUrl.startsWith('http')) {
-              canonicalUrl = product.imageUrl;
-            } else if (Array.isArray(product.images) && product.images.length > 0) {
-              const firstValid = product.images.find(img => typeof img === 'string' && img.startsWith('http'));
-              if (firstValid) canonicalUrl = firstValid;
-            }
-            if (canonicalUrl) {
-              pendingMediaToSend = {
-                url: canonicalUrl,
-                type: 'image',
-                productId: productId
-              };
-              mediaSentInSession = true;
-              console.log(`🖼️ [FC - get_product_details Auto-Media] Imagen canónica encolada para producto "${productId}" debido a intención explícita de foto: ${canonicalUrl}`);
+          const rawAutoIntent = detectProductMediaIntent(userMessageText);
+          const isAmbiguousAVerAuto = isStandaloneAVer(userMessageText) && (!currentCommercialState?.productId || currentCommercialState.productId !== productId);
+          const autoMediaIntent = isAmbiguousAVerAuto ? null : rawAutoIntent;
+          if (autoMediaIntent && !pendingMediaToSend && !mediaSentInSession) {
+            if (autoMediaIntent === 'video') {
+              if (product.videoUrl && typeof product.videoUrl === 'string' && product.videoUrl.trim() !== '' && product.videoUrl.trim() !== 'Sin video') {
+                pendingMediaToSend = {
+                  productId: productId,
+                  productName: product.name,
+                  url: product.videoUrl.trim(),
+                  mediaType: 'video'
+                };
+                mediaSentInSession = true;
+                console.log(`🎥 [FC - get_product_details Auto-Media] Video canónico encolado para producto "${productId}" (${product.name})`);
+              }
+            } else {
+              let canonicalUrl = null;
+              if (product.imageUrl && typeof product.imageUrl === 'string' && product.imageUrl.startsWith('http')) {
+                canonicalUrl = product.imageUrl;
+              } else if (Array.isArray(product.images) && product.images.length > 0) {
+                const firstValid = product.images.find(img => typeof img === 'string' && img.startsWith('http'));
+                if (firstValid) canonicalUrl = firstValid;
+              }
+              if (canonicalUrl) {
+                pendingMediaToSend = {
+                  productId: productId,
+                  productName: product.name,
+                  url: canonicalUrl,
+                  mediaType: 'image'
+                };
+                mediaSentInSession = true;
+                console.log(`🖼️ [FC - get_product_details Auto-Media] Imagen canónica encolada para producto "${productId}" (${product.name})`);
+              }
             }
           }
 
@@ -3027,16 +3182,22 @@ Atributos/Tags: ${Array.isArray(product.tags) ? product.tags.join(', ') : ''}
         const fcStart = Date.now();
         const rawProductId = args?.productId;
         const productId = typeof rawProductId === 'string' ? rawProductId.trim() : String(rawProductId || '').trim();
-        console.log(`🖼️ [FC] send_product_media — ID: "${productId}"`);
+        const rawMediaType = args?.mediaType;
+        const detectedType = detectProductMediaIntent(userMessageText);
+        const requestedMediaType = (rawMediaType === 'video' || (detectedType === 'video' && rawMediaType !== 'image'))
+          ? 'video'
+          : 'image';
+
+        console.log(`🖼️ [FC] send_product_media — ID: "${productId}", Type: "${requestedMediaType}"`);
 
         // Guardia de deduplicación: máximo 1 media por turno
         if (mediaSentInSession || pendingMediaToSend) {
-          console.warn(`⚠️ [FC] send_product_media rechazado: ya se encoló una imagen para este turno (productId: "${productId}").`);
+          console.warn(`⚠️ [FC] send_product_media rechazado: ya se encoló multimedia para este turno (productId: "${productId}").`);
           return {
             success: false,
             hasMedia: false,
             reason: 'MEDIA_ALREADY_QUEUED',
-            message: 'Ya se preparó una imagen para este turno. No se permiten envíos duplicados.'
+            message: 'Ya se preparó un elemento multimedia para este turno. No se permiten envíos duplicados.'
           };
         }
 
@@ -3061,6 +3222,7 @@ Atributos/Tags: ${Array.isArray(product.tags) ? product.tags.join(', ') : ''}
               name: true,
               imageUrl: true,
               images: true,
+              videoUrl: true,
               type: true
             }
           });
@@ -3070,12 +3232,53 @@ Atributos/Tags: ${Array.isArray(product.tags) ? product.tags.join(', ') : ''}
             return {
               success: false,
               hasMedia: false,
-              reason: 'NO_IMAGE_REGISTERED',
+              reason: requestedMediaType === 'video' ? 'NO_VIDEO_REGISTERED' : 'NO_IMAGE_REGISTERED',
               message: 'El producto no fue encontrado en esta tienda. Informa con amabilidad al cliente.'
             };
           }
 
-          // Precedencia canónica segura:
+          if (requestedMediaType === 'video') {
+            let canonicalVideoUrl = null;
+            if (product.videoUrl && typeof product.videoUrl === 'string' && product.videoUrl.trim() !== '' && product.videoUrl.trim() !== 'Sin video') {
+              canonicalVideoUrl = product.videoUrl.trim();
+            }
+
+            if (!canonicalVideoUrl) {
+              console.log(`ℹ️ [FC] send_product_media: Producto "${product.name}" (${product.id}) no tiene video registrado.`);
+              return {
+                success: false,
+                hasMedia: false,
+                reason: 'NO_VIDEO_REGISTERED',
+                message: `El producto o servicio "${product.name}" no cuenta con un video registrado en el catálogo digital en este momento. Informa esto al cliente con honestidad y amabilidad sin inventar enlaces ni decir que no se envían videos.`
+              };
+            }
+
+            if (isGenerationSuperseded()) {
+              wasSuperseded = true;
+              pendingMediaToSend = null;
+              return { success: false, error: 'GENERATION_SUPERSEDED', message: 'El usuario envió un mensaje más reciente.' };
+            }
+
+            pendingMediaToSend = {
+              productId: product.id,
+              productName: product.name,
+              url: canonicalVideoUrl,
+              mediaType: 'video'
+            };
+            mediaSentInSession = true;
+
+            const fcMs = Date.now() - fcStart;
+            console.log(`✅ [FC] send_product_media completado en ${fcMs}ms. Video preparado: ${product.name}`);
+            return {
+              success: true,
+              hasMedia: true,
+              mediaType: 'video',
+              productName: product.name,
+              message: `El video oficial de "${product.name}" ha sido preparado y se enviará al cliente por WhatsApp. Acompaña el video con un mensaje breve y amigable.`
+            };
+          }
+
+          // Precedencia canónica segura para imagen:
           // 1. imageUrl
           // 2. images[0] (si imageUrl está vacío y images[0] es válido)
           // 3. sin media
@@ -3119,6 +3322,7 @@ Atributos/Tags: ${Array.isArray(product.tags) ? product.tags.join(', ') : ''}
           return {
             success: true,
             hasMedia: true,
+            mediaType: 'image',
             productName: product.name,
             message: `La imagen oficial de "${product.name}" ha sido preparada y se enviará al cliente. Acompaña la imagen con un mensaje breve y amigable.`
           };
@@ -3128,7 +3332,7 @@ Atributos/Tags: ${Array.isArray(product.tags) ? product.tags.join(', ') : ''}
             success: false,
             hasMedia: false,
             reason: 'INTERNAL_ERROR',
-            message: 'Ocurrió un error interno al recuperar la imagen.'
+            message: 'Ocurrió un error interno al recuperar el recurso multimedia.'
           };
         }
       }
@@ -3492,13 +3696,20 @@ Atributos/Tags: ${Array.isArray(product.tags) ? product.tags.join(', ') : ''}
     }
     // ────────────────────────────────────────────────────────────────────────────────────────────
 
-    // Sanitizar texto visible: eliminar comandos legacy [MEDIA: ...] y [SHOW_GALLERY: ...]
-    // para impedir cualquier inyección de URLs arbitrarias generadas por el modelo,
-    // y sanear quirúrgicamente sufijos espurios "*:)" antes de despacho y persistencia.
+    // Sanitizar texto visible: eliminar comandos legacy [MEDIA: ...] y [SHOW_GALLERY: ...],
+    // marcadores internos ([Video enviado al cliente], [Imagen enviada al cliente], [Multimedia enviada al cliente], etc.)
+    // y URLs de media interna (/media/tenants/, etc.) para impedir cualquier filtración hacia el cliente,
+    // preservando enlaces legítimos que el negocio desee compartir (ej. redes sociales, webs externas).
     const textWithoutCommands = aiResponse
       .replace(handoffRegex, '')
       .replace(/\[MEDIA:.*?\]/gi, '')
-      .replace(/\[SHOW_GALLERY:.*?\]/gi, '');
+      .replace(/\[SHOW_GALLERY:.*?\]/gi, '')
+      .replace(/\[(?:Imagen|Video|Media|Multimedia)\s+enviad[ao](?:\s+al\s+cliente)?\]/gi, '')
+      .replace(/\[(?:Imagen|Video|Media|Multimedia)\](?::\s*(?:https?:\/\/[^\s\n]+|\/[^\s\n]+)?)?/gi, '')
+      .replace(/\[(?:archivo\s+multimedia|multimedia)\]/gi, '')
+      .replace(/(?:https?:\/\/[^\s\n]+)?\/(?:media\/tenants|products\/(?:images|videos))\/[^\s\n]+/gi, '')
+      .replace(/^\s*[\r\n]+/gm, '\n')
+      .trim();
     let cleanedText = sanitizeSpuriousEmoticons(textWithoutCommands);
 
     // ─── AUTHORITY MODEL PARA MULTIMEDIA (POST-GENERATION GUARD) ───
@@ -3522,19 +3733,19 @@ Atributos/Tags: ${Array.isArray(product.tags) ? product.tags.join(', ') : ''}
       const hasSplit = tokens.some(t => t.trim().toUpperCase() === '[SPLIT]');
 
       if (pendingMediaToSend && !hasSplit && cleanedText.length <= 1000) {
-        // Preferencia arquitectural: Si hay imagen y el texto es conciso sin splits,
-        // integramos el texto como caption de la imagen para una experiencia fluida
+        // Preferencia arquitectural: Si hay multimedia y el texto es conciso sin splits,
+        // integramos el texto como caption de la multimedia para una experiencia fluida
         // sin esperas artificiales ni duplicación de mensajes.
         dispatchSequence.push({
-          type: 'image',
+          type: pendingMediaToSend.mediaType || 'image',
           url: pendingMediaToSend.url,
           caption: cleanedText || undefined
         });
       } else {
-        // Si hay imagen pero el texto tiene splits o es largo, enviamos la imagen primero y luego los textos
+        // Si hay multimedia pero el texto tiene splits o es largo, enviamos la multimedia primero y luego los textos
         if (pendingMediaToSend) {
           dispatchSequence.push({
-            type: 'image',
+            type: pendingMediaToSend.mediaType || 'image',
             url: pendingMediaToSend.url
           });
         }
@@ -3605,7 +3816,7 @@ Atributos/Tags: ${Array.isArray(product.tags) ? product.tags.join(', ') : ''}
         let typingDelay = 1200;
         if (item.type === 'text') {
           typingDelay = Math.max(1200, Math.min(2500, item.content.length * 20));
-        } else if (item.type === 'image' && item.caption) {
+        } else if ((item.type === 'image' || item.type === 'video') && item.caption) {
           typingDelay = Math.max(1200, Math.min(2500, item.caption.length * 20));
         }
 
@@ -3734,11 +3945,44 @@ Atributos/Tags: ${Array.isArray(product.tags) ? product.tags.join(', ') : ''}
               isAutomated: true,
               origin: 'ai'
             });
-            if (mediaMsgId) {
-              mediaDeliveryConfirmed = true;
-            } else {
+
+            if (!mediaMsgId) {
               mediaDeliveryFailed = true;
+              console.warn(`⚠️ [${provider} Gateway] Multimedia (${item.type}) no retornó confirmación de entrega para ${finalCleanNumber}. No se registrará como entregado.`);
+              // Si el item tenía caption informativo, despacharlo como texto amigable sin afirmar entrega de media
+              if (item.caption && typeof item.caption === 'string' && item.caption.trim()) {
+                const fallbackText = enforceBusinessAuthority(
+                  enforceMediaAuthority(item.caption, false),
+                  { hasPaymentConfig, handoffSuccess: handoffActivatedInSession }
+                );
+                if (fallbackText.trim()) {
+                  try {
+                    markMessageAsSentByAi(fallbackText);
+                    const msgId = await sendWhatsAppReply({ ...gatewayCtx, to: finalCleanNumber, text: fallbackText });
+                    if (msgId) markMessageAsSentByAi(msgId);
+                    const fallbackNow = new Date();
+                    await prisma.$transaction([
+                      prisma.message.create({
+                        data: {
+                          content: fallbackText,
+                          senderRole: 'agent',
+                          status: 'sent',
+                          externalId: msgId || null,
+                          chatId: chat.id,
+                          tenantId: tenant.id
+                        }
+                      }),
+                      prisma.chat.update({ where: { id: chat.id }, data: { updatedAt: fallbackNow } })
+                    ]);
+                  } catch (fbErr) {
+                    console.error('❌ Error enviando texto de fallback tras fallo de media:', fbErr.message);
+                  }
+                }
+              }
+              continue;
             }
+
+            mediaDeliveryConfirmed = true;
             console.log(`✅ [${provider} Gateway] Multimedia (${item.type}) enviado a ${finalCleanNumber} (msgId: ${mediaMsgId})`);
 
             const aiMediaNow = new Date();
@@ -3782,6 +4026,35 @@ Atributos/Tags: ${Array.isArray(product.tags) ? product.tags.join(', ') : ''}
           } catch (mediaSendError) {
             mediaDeliveryFailed = true;
             console.error(`❌ [${provider} Gateway] Error al enviar multimedia:`, mediaSendError.message);
+            if (item.caption && typeof item.caption === 'string' && item.caption.trim()) {
+              const fallbackText = enforceBusinessAuthority(
+                enforceMediaAuthority(item.caption, false),
+                { hasPaymentConfig, handoffSuccess: handoffActivatedInSession }
+              );
+              if (fallbackText.trim()) {
+                try {
+                  markMessageAsSentByAi(fallbackText);
+                  const msgId = await sendWhatsAppReply({ ...gatewayCtx, to: finalCleanNumber, text: fallbackText });
+                  if (msgId) markMessageAsSentByAi(msgId);
+                  const fallbackNow = new Date();
+                  await prisma.$transaction([
+                    prisma.message.create({
+                      data: {
+                        content: fallbackText,
+                        senderRole: 'agent',
+                        status: 'sent',
+                        externalId: msgId || null,
+                        chatId: chat.id,
+                        tenantId: tenant.id
+                      }
+                    }),
+                    prisma.chat.update({ where: { id: chat.id }, data: { updatedAt: fallbackNow } })
+                  ]);
+                } catch (fbErr) {
+                  console.error('❌ Error enviando texto de fallback tras fallo de media:', fbErr.message);
+                }
+              }
+            }
           }
         }
 
@@ -3804,6 +4077,15 @@ Atributos/Tags: ${Array.isArray(product.tags) ? product.tags.join(', ') : ''}
     const pending = pendingQueues.get(bufferKey);
     if (pending) {
       pendingQueues.delete(bufferKey);
+
+      // ─── RAPID INTENT PRESERVATION: si fue superseded, no perder el requerimiento previo no respondido ───
+      if (wasSuperseded && userMessageText && typeof userMessageText === 'string') {
+        const trimmedPrev = userMessageText.trim();
+        if (trimmedPrev && !pending.text.includes(trimmedPrev)) {
+          console.log(`🔄 [Superseding Context] Preservando texto no respondido de generación cancelada: "${trimmedPrev.slice(0, 60)}..."`);
+          pending.text = `${trimmedPrev}\n${pending.text}`;
+        }
+      }
 
       // ─── AI CONFIG EPOCH CHECK en re-inyección de pendingQueue ───
       const reInjectEpoch = getTenantAiEpoch(pending.tenant?.id);
@@ -3859,6 +4141,15 @@ export function buildChatContext(rawMessages, MAX_USER_MESSAGE_CHARS = 2000) {
 
     const role = msg.senderRole === 'contact' ? 'user' : 'model';
     let content = msg.content || '';
+
+    // Sanitizar URLs de multimedia internas para evitar que Gemini las memorice o emita en texto
+    // Transforma marcadores históricos [Imagen]: https://... y [Video]: https://... a descriptores semánticos limpios
+    content = content
+      .replace(/\[Imagen\]:\s*(?:https?:\/\/[^\s\n]+|\/[^\s\n]+)?/gi, '[Imagen enviada al cliente]')
+      .replace(/\[Video\]:\s*(?:https?:\/\/[^\s\n]+|\/[^\s\n]+)?/gi, '[Video enviado al cliente]')
+      .replace(/\[Media\]:\s*(?:https?:\/\/[^\s\n]+|\/[^\s\n]+)?/gi, '[Multimedia enviada al cliente]')
+      .replace(/(?:https?:\/\/[^\s\n]+)?\/(?:media\/tenants|products\/(?:images|videos))\/[^\s\n]+/gi, '[archivo multimedia]');
+
     if (role === 'user' && content.length > MAX_USER_MESSAGE_CHARS) {
       content = content.slice(0, MAX_USER_MESSAGE_CHARS) + '\n[... Mensaje truncado a 2000 caracteres por seguridad]';
     }
