@@ -30,6 +30,7 @@ import OpenAI from 'openai';
 import sharp from 'sharp';
 import prisma from '../db.js';
 import { recordTenantAiUsage } from './aiUsageService.js';
+import { convertGeminiToolsToOpenAI } from './aiToolAdapters.js';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // CONSTANTES DE CONFIGURACIÓN
@@ -40,6 +41,12 @@ const GEMINI_TIMEOUT_PRIMARY_MS = 12_000;
 
 /** Timeout por request HTTP para el modelo secundario (12s) */
 const GEMINI_TIMEOUT_SECONDARY_MS = 12_000;
+
+/** Timeout por request HTTP para el fallback de Groq (8s) */
+export const GROQ_TIMEOUT_MS = 8_000;
+
+/** Modelo Groq por defecto si no se especifica en variables de entorno */
+export const DEFAULT_GROQ_MODEL = 'llama-3.3-70b-versatile';
 
 /** Constantes de compatibilidad para auditoría estática */
 const GEMINI_TIMEOUT_ATTEMPT_1_MS = 15_000;
@@ -163,9 +170,9 @@ function classifyError(err) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 // ─────────────────────────────────────────────────────────────────────────────
-// CIRCUIT BREAKER EN RAM
+// CIRCUIT BREAKERS EN RAM (GEMINI + GROQ INDEPENDIENTES)
 // ─────────────────────────────────────────────────────────────────────────────
-class CircuitBreaker {
+export class CircuitBreaker {
   constructor() {
     this.state = 'CLOSED';
     this.consecutiveFailures = 0;
@@ -204,6 +211,67 @@ class CircuitBreaker {
   }
 }
 export const globalCircuitBreaker = new CircuitBreaker();
+
+/**
+ * Circuit Breaker dedicado e independiente para Groq (Fase 7).
+ * Los fallos o rate limits de Gemini jamás abren este breaker ni viceversa.
+ */
+export class GroqCircuitBreaker {
+  constructor() {
+    this.state = 'CLOSED';
+    this.consecutiveFailures = 0;
+    this.lastFailureTime = 0;
+    this.threshold = 3;
+    this.cooldownMs = 120 * 1000;
+  }
+
+  recordFailure(err) {
+    if (err?.isSuperseded || err?.message === 'GENERATION_SUPERSEDED') {
+      return;
+    }
+    const msg = (err?.message || String(err)).toLowerCase();
+    const status = err?.status || err?.response?.status;
+    const isTimeout = err?.name === 'AbortError' || err?.code === 'ABORT_ERR' || msg.includes('abort') || msg.includes('timeout');
+    const isNetwork = msg.includes('network') || msg.includes('econnrefused') || msg.includes('enotfound') || msg.includes('fetch');
+    const is429 = status === 429 || msg.includes('429') || msg.includes('rate limit');
+    const is5xx = (status >= 500 && status < 600) || msg.includes('internal server') || msg.includes('service unavailable') || msg.includes('overloaded');
+
+    if (!isTimeout && !isNetwork && !is429 && !is5xx) {
+      return;
+    }
+
+    this.consecutiveFailures++;
+    this.lastFailureTime = Date.now();
+    if (this.state === 'HALF_OPEN' || (this.consecutiveFailures >= this.threshold && this.state === 'CLOSED')) {
+      this.state = 'OPEN';
+      console.error(`[GroqCircuitBreaker] ⚠️ GROQ fallback OPEN due to failure (consecutive: ${this.consecutiveFailures}).`);
+    }
+  }
+
+  recordSuccess() {
+    this.consecutiveFailures = 0;
+    this.lastFailureTime = 0;
+    if (this.state !== 'CLOSED') {
+      this.state = 'CLOSED';
+      console.log(`[GroqCircuitBreaker] ✅ GROQ fallback CLOSED (Recovery success).`);
+    }
+  }
+
+  canExecute() {
+    if (this.state === 'CLOSED') return true;
+    if (this.state === 'OPEN') {
+      if (Date.now() - this.lastFailureTime > this.cooldownMs) {
+        this.state = 'HALF_OPEN';
+        console.warn(`[GroqCircuitBreaker] ⏳ HALF_OPEN: Testing GROQ fallback.`);
+        return true;
+      }
+      return false;
+    }
+    if (this.state === 'HALF_OPEN') return false;
+    return true;
+  }
+}
+export const groqCircuitBreaker = new GroqCircuitBreaker();
 
 // ─────────────────────────────────────────────────────────────────────────────
 // GEMINI KEY MANAGER — Arquitectura Segura (Principal + Backup Opcional)
@@ -459,11 +527,21 @@ const _GENAI_SDK_VERSION = '2.19.0';
  * @param {string[]} mediaItems   - Items multimedia en Base64
  * @returns {Promise<string>}
  */
-async function callGemini(systemPrompt, messages, mediaItems = [], tools = [], toolsHandler = null, tenantId = null, isSuperseded = null) {
+async function callGemini(
+  systemPrompt,
+  messages,
+  mediaItems = [],
+  tools = [],
+  toolsHandler = null,
+  tenantId = null,
+  isSuperseded = null,
+  sessionToolsCache = new Map(),
+  sessionState = {}
+) {
   geminiKeyManager.init();
 
   let lastErr = null;
-  const executedToolsCache = new Map();
+  const executedToolsCache = sessionToolsCache;
 
   // Objeto para acumular el uso real de toda esta interacción (incluye Function Calling y retries)
   const sessionUsage = {
@@ -642,6 +720,9 @@ async function callGemini(systemPrompt, messages, mediaItems = [], tools = [], t
               if (isToolSuccess) {
                 executedToolsCache.set(toolSignature, apiResponse);
               }
+              if (apiResponse?.handoffActive === true) {
+                sessionState.handoffActivated = true;
+              }
             }
 
             // ─── SUPERSEDED GENERATION FAST ABORT ───
@@ -650,6 +731,11 @@ async function callGemini(systemPrompt, messages, mediaItems = [], tools = [], t
               const supersededErr = new Error('GENERATION_SUPERSEDED');
               supersededErr.isSuperseded = true;
               throw supersededErr;
+            }
+
+            if (sessionState.handoffActivated) {
+              geminiLog(`👤 [FC] Handoff a humano activado durante tool ${call.name}. Deteniendo rondas adicionales.`);
+              break;
             }
 
 
@@ -816,14 +902,353 @@ async function handleAiError(error, providerName = 'Google Gemini') {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// CLIENTE Y LLAMADA A GROQ (TERCER NIVEL DE FALLBACK)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Inicializa lazy el cliente OpenAI apuntando a Groq API.
+ * No genera conexiones en import de módulo.
+ */
+export function getGroqClient() {
+  const apiKey = (process.env.GROQ_API_KEY || '').trim();
+  if (!apiKey) {
+    throw new Error('[GROQ] Falta GROQ_API_KEY para inicializar el cliente Groq.');
+  }
+  return new OpenAI({
+    apiKey,
+    baseURL: 'https://api.groq.com/openai/v1',
+  });
+}
+
+/**
+ * Ejecuta inferencia con Groq como tercer fallback de IA.
+ * Compatible con Function Calling, System Prompt, Contexto Conversacional y AbortSignal.
+ *
+ * @param {string}   systemPrompt
+ * @param {Array}    messages
+ * @param {string[]} mediaItems
+ * @param {Array}    tools
+ * @param {Function} toolsHandler
+ * @param {string}   tenantId
+ * @param {Function} isSuperseded
+ * @param {object}   customClient - Inyección opcional para testing/mocks
+ * @returns {Promise<string>}
+ */
+export async function callGroq(
+  systemPrompt,
+  messages,
+  mediaItems = [],
+  tools = [],
+  toolsHandler = null,
+  tenantId = null,
+  isSuperseded = null,
+  customClient = null,
+  sessionToolsCache = new Map(),
+  sessionState = {}
+) {
+  if (typeof isSuperseded === 'function' && isSuperseded()) {
+    console.warn(`🛑 [SUPERSEDED] Generación obsoleta detectada antes de iniciar Groq.`);
+    const supersededErr = new Error('GENERATION_SUPERSEDED');
+    supersededErr.isSuperseded = true;
+    throw supersededErr;
+  }
+
+  const rawModel = process.env.GROQ_MODEL;
+  const modelSlug = (rawModel && typeof rawModel === 'string' && rawModel.trim())
+    ? rawModel.trim()
+    : DEFAULT_GROQ_MODEL;
+
+  const client = customClient || getGroqClient();
+
+  const sessionUsage = {
+    inputTokens: 0,
+    outputTokens: 0,
+    totalTokens: 0,
+    requestCount: 0,
+    toolCalls: 0,
+    retryCount: 0,
+    modelSlug,
+    provider: 'groq'
+  };
+
+  const startTime = Date.now();
+
+  // ── 1. Construir mensajes en formato OpenAI ──
+  const openAiMessages = [];
+  if (systemPrompt && typeof systemPrompt === 'string') {
+    openAiMessages.push({ role: 'system', content: systemPrompt });
+  }
+
+  for (let i = 0; i < messages.length; i++) {
+    const msg = messages[i];
+    if (!msg) continue;
+    const role = (msg.role === 'user') ? 'user' : (msg.role === 'model' || msg.role === 'assistant') ? 'assistant' : 'user';
+    let textContent = '';
+    if (typeof msg.content === 'string') {
+      textContent = msg.content;
+    } else if (Array.isArray(msg.content)) {
+      const textParts = msg.content.filter(p => p && p.type === 'text').map(p => p.text);
+      textContent = textParts.join('\n');
+    } else if (msg.parts && Array.isArray(msg.parts)) {
+      // Si llega un formato de parts tipo Gemini, extraer SOLO el texto y filtrar cualquier inlineData/functionCall
+      const textParts = msg.parts.filter(p => p && typeof p.text === 'string').map(p => p.text);
+      textContent = textParts.join('\n');
+    }
+
+    // Truncar contenido si es usuario y excede MAX_USER_MESSAGE_CHARS
+    if (role === 'user' && textContent.length > MAX_USER_MESSAGE_CHARS) {
+      textContent = textContent.slice(0, MAX_USER_MESSAGE_CHARS) + '\n[... Mensaje truncado por seguridad]';
+    }
+
+    // Contingencia de medios en Groq (Fase 6): NO enviar base64 ni imágenes
+    const isLastUserMsg = role === 'user' && i === messages.length - 1;
+    if (isLastUserMsg && mediaItems && mediaItems.length > 0) {
+      const mediaNotice = '\n\n[El cliente adjuntó contenido multimedia. La interpretación visual no está disponible en este modo de contingencia.]';
+      textContent = (textContent ? textContent + mediaNotice : mediaNotice).trim();
+    }
+
+    openAiMessages.push({ role, content: textContent || '.' });
+  }
+
+  if (openAiMessages.length === 0 || (openAiMessages.length === 1 && openAiMessages[0].role === 'system')) {
+    openAiMessages.push({ role: 'user', content: 'Hola' });
+  }
+
+  // ── 2. Convertir tools al formato OpenAI ──
+  const openAiTools = convertGeminiToolsToOpenAI(tools);
+  const validToolNames = new Set(openAiTools.map(t => t.function?.name).filter(Boolean));
+
+  const executedToolsCache = sessionToolsCache;
+
+  let toolRounds = 0;
+  let finalAiText = '';
+
+  try {
+    while (true) {
+      if (typeof isSuperseded === 'function' && isSuperseded()) {
+        console.warn(`🛑 [SUPERSEDED] Generación obsoleta detectada antes de request a Groq.`);
+        const supersededErr = new Error('GENERATION_SUPERSEDED');
+        supersededErr.isSuperseded = true;
+        throw supersededErr;
+      }
+
+      const controller = new AbortController();
+      const timeoutHandle = setTimeout(() => controller.abort(), GROQ_TIMEOUT_MS);
+
+      let completion;
+      try {
+        const completionParams = {
+          model: modelSlug,
+          messages: openAiMessages,
+          max_tokens: MAX_OUTPUT_TOKENS,
+        };
+        if (openAiTools.length > 0) {
+          completionParams.tools = openAiTools;
+        }
+
+        completion = await client.chat.completions.create(completionParams, {
+          signal: controller.signal
+        });
+      } finally {
+        clearTimeout(timeoutHandle);
+      }
+
+      sessionUsage.requestCount++;
+      if (completion.usage) {
+        sessionUsage.inputTokens += Number(completion.usage.prompt_tokens) || 0;
+        sessionUsage.outputTokens += Number(completion.usage.completion_tokens) || 0;
+        sessionUsage.totalTokens += Number(completion.usage.total_tokens) || (sessionUsage.inputTokens + sessionUsage.outputTokens);
+      }
+
+      const choice = completion.choices?.[0];
+      const assistantMessage = choice?.message;
+      if (!assistantMessage) {
+        throw new Error('Respuesta vacía o formato inválido de Groq.');
+      }
+
+      // Añadir la respuesta del assistant al contexto
+      openAiMessages.push(assistantMessage);
+
+      // Si Groq solicitó Function Calling
+      if (assistantMessage.tool_calls && assistantMessage.tool_calls.length > 0 && toolsHandler) {
+        if (toolRounds >= MAX_TOOL_ROUNDS) {
+          console.warn(`⚠️ [GROQ FC] Límite de ${MAX_TOOL_ROUNDS} rondas de herramientas alcanzado en Groq. Deteniendo loop.`);
+          finalAiText = assistantMessage.content || '';
+          break;
+        }
+
+        toolRounds++;
+        sessionUsage.toolCalls += assistantMessage.tool_calls.length;
+
+        for (const toolCall of assistantMessage.tool_calls) {
+          const toolName = toolCall.function?.name;
+          const rawArgs = toolCall.function?.arguments;
+
+          // 1. Validar si la tool existe
+          if (!validToolNames.has(toolName)) {
+            console.warn(`⚠️ [GROQ FC] Tool desconocida '${toolName}'. No se ejecutará.`);
+            openAiMessages.push({
+              role: 'tool',
+              tool_call_id: toolCall.id,
+              content: JSON.stringify({
+                success: false,
+                error: 'UNKNOWN_TOOL',
+                message: `Herramienta '${toolName}' no está disponible.`
+              })
+            });
+            continue;
+          }
+
+          // 2. Safe JSON.parse
+          let parsedArgs;
+          try {
+            parsedArgs = typeof rawArgs === 'string' ? JSON.parse(rawArgs) : (rawArgs || {});
+          } catch (parseErr) {
+            console.warn(`⚠️ [GROQ FC] Argumentos JSON inválidos para '${toolName}': ${parseErr.message}`);
+            openAiMessages.push({
+              role: 'tool',
+              tool_call_id: toolCall.id,
+              content: JSON.stringify({
+                success: false,
+                error: 'INVALID_JSON_ARGUMENTS',
+                message: 'Los argumentos proporcionados no son un JSON válido.'
+              })
+            });
+            continue;
+          }
+
+          // 3. Verificar superseded antes de ejecutar
+          if (typeof isSuperseded === 'function' && isSuperseded()) {
+            console.warn(`🛑 [SUPERSEDED] Generación obsoleta antes de ejecutar tool Groq '${toolName}'.`);
+            const supersededErr = new Error('GENERATION_SUPERSEDED');
+            supersededErr.isSuperseded = true;
+            throw supersededErr;
+          }
+
+          // 4. Ejecutar tool con deduplicación
+          let toolResult;
+          const toolSignature = `${toolName}_${JSON.stringify(parsedArgs)}`;
+          if (executedToolsCache.has(toolSignature)) {
+            console.warn(`⚠️ [GROQ FC] Tool ${toolName} ya fue ejecutada en esta sesión. Reutilizando resultado sin mutación duplicada.`);
+            toolResult = executedToolsCache.get(toolSignature);
+          } else {
+            try {
+              toolResult = await toolsHandler(toolName, parsedArgs);
+              const isToolSuccess = toolResult &&
+                toolResult.success !== false &&
+                !toolResult.error &&
+                !toolResult.reason;
+              if (isToolSuccess) {
+                executedToolsCache.set(toolSignature, toolResult);
+              }
+              if (toolResult?.handoffActive === true) {
+                sessionState.handoffActivated = true;
+              }
+            } catch (handlerErr) {
+              console.warn(`⚠️ [GROQ FC] Error en toolsHandler para ${toolName}: ${handlerErr.message}`);
+              toolResult = { success: false, error: handlerErr.message };
+            }
+          }
+
+          // 5. Verificar superseded después de ejecutar
+          if (
+            (typeof isSuperseded === 'function' && isSuperseded()) ||
+            (toolResult && (toolResult.error === 'GENERATION_SUPERSEDED' || toolResult.reason === 'GENERATION_SUPERSEDED' || toolResult.superseded === true))
+          ) {
+            console.warn(`🛑 [SUPERSEDED] Generación obsoleta detectada tras ejecutar tool Groq '${toolName}'.`);
+            const supersededErr = new Error('GENERATION_SUPERSEDED');
+            supersededErr.isSuperseded = true;
+            throw supersededErr;
+          }
+
+          // 6. Inyectar resultado de la tool
+          openAiMessages.push({
+            role: 'tool',
+            tool_call_id: toolCall.id,
+            content: JSON.stringify(toolResult)
+          });
+
+          // Si la tool activó handoff, detener ejecución de herramientas adicionales
+          if (sessionState.handoffActivated) {
+            console.log(`👤 [GROQ FC] Handoff humano activado. Deteniendo herramientas adicionales.`);
+            break;
+          }
+        }
+
+        // Continuar siguiente ronda del bucle
+        continue;
+      }
+
+      // Si no hubo tool_calls o terminaron las rondas, extraemos el contenido final
+      finalAiText = assistantMessage.content || '';
+      break;
+    }
+
+    const latencyMs = Date.now() - startTime;
+    const cleanText = finalAiText
+      .replace(/<think>[\s\S]*?<\/think>/gi, '')
+      .replace(/^\s*\.{3,}\s*/m, '')
+      .trim();
+
+    if (!cleanText) {
+      throw new Error('Respuesta de texto vacía desde Groq tras finalizar inferencia.');
+    }
+
+    // Outbound text guard
+    const leakPatterns = [
+      /response:\s*default_api:/i,
+      /functionCall/i,
+      /call:\s*[a-zA-Z0-9_]+/i,
+      /^{\s*"product"\s*:/i,
+      /\[\s*object\s+Object\s*\]/i
+    ];
+    if (leakPatterns.some(p => p.test(cleanText))) {
+      console.warn(`[SECURITY] Outbound Text Guard interceptó fuga en respuesta de Groq.`);
+      throw new Error('Outbound Text Guard interceptó estructura interna.');
+    }
+
+    // Telemetría estructurada sin PII (Fase 10)
+    console.log(`[AI_TELEMETRY] ${JSON.stringify({
+      timestamp: new Date().toISOString(),
+      tenantId: tenantId ? tenantId.slice(0, 8) : 'none',
+      provider: 'groq',
+      model: modelSlug,
+      attempt: 3,
+      latencyMs,
+      success: true,
+      inputTokens: sessionUsage.inputTokens,
+      outputTokens: sessionUsage.outputTokens,
+      toolCalls: sessionUsage.toolCalls
+    })}`);
+
+    return cleanText;
+
+  } finally {
+    if (tenantId && (sessionUsage.requestCount > 0 || sessionUsage.toolCalls > 0)) {
+      const recordUsage = recordTenantAiUsage;
+      recordUsage({ tenantId, ...sessionUsage }).catch(() => {});
+    }
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // CASCADA DE PROVEEDORES
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
  * Cascada de resiliencia:
- *   #1 → Google Gemini (gemini-3.7-flash principal, gemini-2.5-flash fallback)
+ *   #1 → Google Gemini (gemini-3.5-flash-lite principal, gemini-3.5-flash fallback)
+ *   #2 → Groq Fallback (configurable vía GROQ_MODEL, por defecto llama-3.3-70b-versatile)
  */
-async function callAiProviderCascade(systemPrompt, messages, mediaItems = [], tools = [], toolsHandler = null, tenantId = null, isSuperseded = null) {
+async function callAiProviderCascade(
+  systemPrompt,
+  messages,
+  mediaItems = [],
+  tools = [],
+  toolsHandler = null,
+  tenantId = null,
+  isSuperseded = null
+) {
   if (typeof isSuperseded === 'function' && isSuperseded()) {
     geminiWarn('🛑 [SUPERSEDED] Generación obsoleta detectada al inicio de callAiProviderCascade. Abortando.');
     const supersededErr = new Error('GENERATION_SUPERSEDED');
@@ -832,10 +1257,24 @@ async function callAiProviderCascade(systemPrompt, messages, mediaItems = [], to
   }
   let lastError = null;
 
-  // ── Slot #1: Google Gemini ──────────────────────────────────────────────────
+  // Cache e idempotencia de herramientas compartido a nivel de sesión (Previene re-ejecución entre providers)
+  const sessionToolsCache = new Map();
+  const sessionState = { handoffActivated: false };
+
+  // ── Slot #1: Google Gemini (Primary + Secondary) ────────────────────────────
   if (process.env.GEMINI_API_KEY) {
     try {
-      const text = await callGemini(systemPrompt, messages, mediaItems, tools, toolsHandler, tenantId, isSuperseded);
+      const text = await callGemini(
+        systemPrompt,
+        messages,
+        mediaItems,
+        tools,
+        toolsHandler,
+        tenantId,
+        isSuperseded,
+        sessionToolsCache,
+        sessionState
+      );
       if (text) return text;
     } catch (err) {
       if (err?.isSuperseded || err?.message === 'GENERATION_SUPERSEDED') {
@@ -844,10 +1283,67 @@ async function callAiProviderCascade(systemPrompt, messages, mediaItems = [], to
       geminiWarn(`Gemini falló completamente (${err.message?.slice(0, 80)}).`);
       lastError = err;
       await handleAiError(err, 'Google Gemini');
+
+      // Errores que NO deben activar Groq (Fase 9):
+      // Si el error fue por Outbound Text Guard (fuga interna detectada), abortar sin activar Groq
+      if (err?.message?.includes('Outbound Text Guard')) {
+        geminiError('Fallo por Outbound Text Guard en Gemini. No activar Groq por seguridad.');
+        return null;
+      }
     }
   } else {
     geminiWarn('No hay GEMINI_API_KEY configurada.');
+  }
+
+  // Si durante la ejecución de Gemini se activó handoff a humano, NO activar Groq
+  if (sessionState.handoffActivated) {
+    geminiLog('👤 [Handoff Gate] Handoff humano activado durante sesión de herramientas. Omitiendo Groq para respetar la transferencia.');
     return null;
+  }
+
+  // ── Slot #2: Groq Fallback (Tercer Nivel) ──────────────────────────────────
+  if (typeof isSuperseded === 'function' && isSuperseded()) {
+    geminiWarn('🛑 [SUPERSEDED] Generación obsoleta antes de intentar Groq Fallback. Abortando.');
+    const supersededErr = new Error('GENERATION_SUPERSEDED');
+    supersededErr.isSuperseded = true;
+    throw supersededErr;
+  }
+
+  const groqApiKey = (process.env.GROQ_API_KEY || '').trim();
+  if (groqApiKey) {
+    if (!groqCircuitBreaker.canExecute()) {
+      geminiWarn(`⚠️ [Groq Fallback] groqCircuitBreaker está en estado ${groqCircuitBreaker.state}. Omitiendo intento a Groq.`);
+    } else {
+      geminiLog(`🔄 [Groq Fallback] Activando tercer nivel de resiliencia (Groq)...`);
+      try {
+        const groqText = await callGroq(
+          systemPrompt,
+          messages,
+          mediaItems,
+          tools,
+          toolsHandler,
+          tenantId,
+          isSuperseded,
+          null,
+          sessionToolsCache,
+          sessionState
+        );
+        if (groqText) {
+          groqCircuitBreaker.recordSuccess();
+          geminiLog(`✅ [Groq Fallback] Respuesta generada exitosamente por Groq.`);
+          return groqText;
+        }
+      } catch (groqErr) {
+        if (groqErr?.isSuperseded || groqErr?.message === 'GENERATION_SUPERSEDED') {
+          throw groqErr;
+        }
+        geminiWarn(`Groq Fallback falló (${groqErr.message?.slice(0, 80)}).`);
+        groqCircuitBreaker.recordFailure(groqErr);
+        lastError = groqErr;
+      }
+    }
+  } else {
+    geminiLog('Groq Fallback omitido: GROQ_API_KEY no configurada.');
   }
 
   geminiError(lastError ? lastError.message : 'Todos los proveedores de IA configurados fallaron.');
@@ -983,6 +1479,11 @@ export const MODELO_PRINCIPAL = MODEL_PRIMARY;
 export const MODELO_SECUNDARIO = MODEL_SECONDARY;
 export const MODELOS_GEMINI = [MODEL_PRIMARY, MODEL_SECONDARY];
 
+export {
+  callGemini,
+  callAiProviderCascade,
+};
+
 /**
  * Expone el estado de las API keys para diagnóstico / dashboard.
  * @returns {Array<{index: number, name: string, maskedKey: string, status: string}>}
@@ -1012,3 +1513,4 @@ export function getGeminiPoolStatus() {
     return [];
   }
 }
+

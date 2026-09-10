@@ -26,6 +26,7 @@ import { runRapidMessagesScenario } from './scenarios/rapidMessages.scenario.js'
 import { runTenantIsolationScenario } from './scenarios/tenantIsolation.scenario.js';
 import { runAuthorityScenario } from './scenarios/authority.scenario.js';
 import { runHandoffScenario } from './scenarios/handoff.scenario.js';
+import { runGroqFallbackScenario } from './scenarios/groqFallback.scenario.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -68,6 +69,12 @@ const QA_CATEGORIES = [
     name: 'Handoff',
     type: 'internal_fn',
     fn: runHandoffScenario
+  },
+  {
+    id: 'groq_fallback',
+    name: 'Groq 3rd Fallback',
+    type: 'internal_fn',
+    fn: runGroqFallbackScenario
   },
   {
     id: 'core',
