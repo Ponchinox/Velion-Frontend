@@ -6,7 +6,8 @@
   "type": "module",
   "scripts": {
     "start": "node server.js",
-    "dev": "nodemon server.js"
+    "dev": "nodemon server.js",
+    "qa": "node qa/runner.js"
   },
   "dependencies": {
     "@google/genai": "^2.19.0",

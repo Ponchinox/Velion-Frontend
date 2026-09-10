@@ -537,7 +537,9 @@ async function main() {
     assert.strictEqual(res.success, true);
     const created = mockDb._store.operationalItems.get(res.itemId);
     // El dueAt real debe ser calculado por backend (22:00 UTC), jamás el 1999 inyectado
-    assert.strictEqual(created.dueAt.toISOString(), '2026-09-07T22:00:00.000Z');
+    const expectedDueAt = calculateDueAtUtc(calculateDueDateLocal(1, 'America/Lima'), '17:00', 'America/Lima');
+    assert.strictEqual(created.dueAt.toISOString(), expectedDueAt.toISOString());
+    assert.notStrictEqual(created.dueAt.toISOString(), '1999-01-01T00:00:00.000Z');
   });
 
   // ─────────────────────────────────────────────────────────────────────────────

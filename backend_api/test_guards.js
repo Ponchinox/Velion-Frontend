@@ -1,5 +1,4 @@
 import { evaluateAiBudgetGuard } from './src/services/aiBudgetGuardService.js';
-import prisma from './src/db.js';
 
 async function runTests() {
   console.log("🚀 Iniciando prueba de guards y campañas...");
