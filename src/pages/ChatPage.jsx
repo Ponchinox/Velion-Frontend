@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useCallback } from 'react';
+import { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import {
   MagnifyingGlass,
   PaperPlaneRight,
@@ -11,9 +11,13 @@ import {
   ArrowClockwise,
   Check,
   Checks,
+  ClipboardText,
 } from '@phosphor-icons/react';
 import * as chatService from '../services/chatService';
 import * as contactService from '../services/contactService';
+import * as operationalService from '../services/operationalService';
+import OperationalDrawer from '../components/chat/OperationalDrawer';
+import { calculateActiveBadgeCount, upsertItem, reconcileItems } from '../utils/operationalFormatters';
 import { io } from 'socket.io-client';
 import { Play } from 'lucide-react';
 
@@ -210,7 +214,20 @@ function ChatItem({ chat, index, isActive, onClick }) {
 }
 
 /* ─── Panel de conversación ─── */
-function ConversationPanel({ chat, index, messages, isLoadingMessages, onSendMessage, onBack, isMobile, onImageClick, onResumeBot }) {
+function ConversationPanel({
+  chat,
+  index,
+  messages,
+  isLoadingMessages,
+  onSendMessage,
+  onBack,
+  isMobile,
+  onImageClick,
+  onResumeBot,
+  onToggleOperationalDrawer,
+  isOperationalDrawerOpen,
+  activeOperationalCount = 0,
+}) {
   const [input, setInput] = useState('');
   const [attachment, setAttachment] = useState(null);
   const [showAttachMenu, setShowAttachMenu] = useState(false);
@@ -284,7 +301,7 @@ function ConversationPanel({ chat, index, messages, isLoadingMessages, onSendMes
      * Sin min-h-0, un hijo flex-1 en Safari/WebKit puede crecer infinitamente
      * y romper el overflow-y-auto del área de mensajes.
      */
-    <div className="flex flex-col w-full h-full min-h-0 bg-card">
+    <div className="flex flex-col flex-1 min-w-0 h-full min-h-0 bg-card">
 
       {/* ── Header del chat ── */}
       <div className="flex items-center gap-3 px-4 py-3 border-b border-line bg-card flex-shrink-0">
@@ -349,7 +366,37 @@ function ConversationPanel({ chat, index, messages, isLoadingMessages, onSendMes
           </div>
         </div>
 
-        {/* ELIMINADOS: botones "Ver Ficha" y "⋮" (inservibles) */}
+        {/* Botón Notas y tareas operacionales */}
+        <button
+          onClick={onToggleOperationalDrawer}
+          className={`
+            inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl text-xs font-semibold transition-all cursor-pointer flex-shrink-0
+            ${isOperationalDrawerOpen
+              ? 'bg-brand text-white shadow-card'
+              : 'bg-app hover:bg-line text-mid hover:text-hi border border-line'
+            }
+          `}
+          title="Notas y tareas operacionales del chat"
+          aria-label="Abrir notas y tareas"
+          aria-expanded={isOperationalDrawerOpen}
+        >
+          <ClipboardText size={16} weight={isOperationalDrawerOpen ? 'bold' : 'regular'} />
+          <span className="hidden sm:inline">Notas y tareas</span>
+          {activeOperationalCount > 0 && (
+            <span
+              className={`
+                inline-flex items-center justify-center min-w-4.5 h-4.5 px-1 rounded-full text-[10px] font-bold
+                ${isOperationalDrawerOpen
+                  ? 'bg-white text-brand'
+                  : 'bg-brand text-white'
+                }
+              `}
+              title={`${activeOperationalCount} pendientes activas`}
+            >
+              {activeOperationalCount}
+            </span>
+          )}
+        </button>
       </div>
 
       {/* ── Área de mensajes ──
@@ -524,8 +571,64 @@ export default function ChatPage() {
   const [showConversation, setShowConversation] = useState(false);
   const [fullscreenImage, setFullscreenImage] = useState(null);
 
+  /* ─── Estado de Items Operacionales (Notas y Tareas) ─── */
+  const [operationalItems, setOperationalItems] = useState([]);
+  const [isOperationalLoading, setIsOperationalLoading] = useState(false);
+  const [operationalError, setOperationalError] = useState('');
+  const [isOperationalDrawerOpen, setIsOperationalDrawerOpen] = useState(false);
+
+  const activeOperationalCount = useMemo(() => {
+    return calculateActiveBadgeCount(operationalItems);
+  }, [operationalItems]);
+
   const activeChat = chats.find(c => c.id === activeChatId);
   const activeChatIndex = chats.findIndex(c => c.id === activeChatId);
+
+  /* ─── Carga de items operacionales con protección AbortController ─── */
+  const operationalAbortControllerRef = useRef(null);
+
+  const loadOperationalItems = useCallback(async (chatId) => {
+    if (!chatId) {
+      setOperationalItems([]);
+      setIsOperationalLoading(false);
+      return;
+    }
+
+    // Cancelar petición anterior en vuelo si existe (protección contra respuestas tardías)
+    if (operationalAbortControllerRef.current) {
+      operationalAbortControllerRef.current.abort();
+    }
+
+    const controller = new AbortController();
+    operationalAbortControllerRef.current = controller;
+
+    // Resetear inmediatamente items del chat anterior
+    setOperationalItems([]);
+    setIsOperationalLoading(true);
+    setOperationalError('');
+
+    try {
+      const items = await operationalService.getOperationalItems(chatId, {
+        signal: controller.signal,
+      });
+
+      // Asegurar que esta respuesta corresponde al chat activo actual y no fue cancelada
+      if (activeChatIdRef.current === chatId && !controller.signal.aborted) {
+        setOperationalItems((prev) => reconcileItems(prev, items || []));
+      }
+    } catch (err) {
+      if (err.name === 'AbortError' || controller.signal.aborted) {
+        return;
+      }
+      if (activeChatIdRef.current === chatId) {
+        setOperationalError(err.message || 'Error al cargar notas y tareas.');
+      }
+    } finally {
+      if (activeChatIdRef.current === chatId && !controller.signal.aborted) {
+        setIsOperationalLoading(false);
+      }
+    }
+  }, []);
 
   /* ─── Ordenar chats: más reciente primero ─── */
   const sortedChats = [...chats].sort((a, b) => getChatTimestamp(b) - getChatTimestamp(a));
@@ -688,12 +791,51 @@ export default function ChatPage() {
       );
     });
 
+    /* ─── Listeners Realtime para Items Operacionales (Notas y Tareas) ─── */
+    const handleOperationalCreated = (data) => {
+      console.log('📋 [Socket.IO] Operational item created:', data);
+      if (!data || !data.item) return;
+      // Hardening: descartar si data.chatId y data.item.chatId existen y difieren
+      if (data.chatId && data.item.chatId && data.chatId !== data.item.chatId) return;
+      const targetChatId = data.item.chatId || data.chatId;
+      // Solo integrar si corresponde al chat activo actual
+      if (targetChatId && targetChatId === activeChatIdRef.current) {
+        setOperationalItems((prev) => upsertItem(prev, data.item));
+      }
+    };
+
+    const handleOperationalUpdated = (data) => {
+      console.log('📋 [Socket.IO] Operational item updated:', data);
+      if (!data || !data.item) return;
+      // Hardening: descartar si data.chatId y data.item.chatId existen y difieren
+      if (data.chatId && data.item.chatId && data.chatId !== data.item.chatId) return;
+      const targetChatId = data.item.chatId || data.chatId;
+      // Solo integrar si corresponde al chat activo actual
+      if (targetChatId && targetChatId === activeChatIdRef.current) {
+        setOperationalItems((prev) => upsertItem(prev, data.item));
+      }
+    };
+
+    socket.on('operational_item_created', handleOperationalCreated);
+    socket.on('operational_item_updated', handleOperationalUpdated);
+
     return () => {
       if (reloadTimeoutRef.current) clearTimeout(reloadTimeoutRef.current);
+      socket.off('operational_item_created', handleOperationalCreated);
+      socket.off('operational_item_updated', handleOperationalUpdated);
       socket.disconnect();
       console.log('🔌 [Socket.IO] Conexión WebSocket desconectada.');
     };
   }, [debouncedReloadChats]);
+
+  // Limpiar peticiones REST en vuelo al desmontar el componente
+  useEffect(() => {
+    return () => {
+      if (operationalAbortControllerRef.current) {
+        operationalAbortControllerRef.current.abort();
+      }
+    };
+  }, []);
 
   const handleSelectChat = (chat) => {
     setActiveChatId(chat.id);
@@ -701,6 +843,48 @@ export default function ChatPage() {
     // Limpiar unread al abrir
     setChats(prev => prev.map(c => c.id === chat.id ? { ...c, unread: 0 } : c));
     loadMessages(chat.id);
+    loadOperationalItems(chat.id);
+  };
+
+  /* ─── Acciones de Ciclo de Vida y Creación Operacional ─── */
+  const handleStartTask = async (task) => {
+    const updated = await operationalService.startTask(task.id);
+    if (updated && updated.chatId === activeChatIdRef.current) {
+      setOperationalItems(prev => upsertItem(prev, updated));
+    }
+    return updated;
+  };
+
+  const handleCompleteTask = async (task) => {
+    const updated = await operationalService.completeTask(task.id);
+    if (updated && updated.chatId === activeChatIdRef.current) {
+      setOperationalItems(prev => upsertItem(prev, updated));
+    }
+    return updated;
+  };
+
+  const handleCancelTask = async (task) => {
+    const updated = await operationalService.cancelTask(task.id);
+    if (updated && updated.chatId === activeChatIdRef.current) {
+      setOperationalItems(prev => upsertItem(prev, updated));
+    }
+    return updated;
+  };
+
+  const handleArchiveNote = async (note) => {
+    const updated = await operationalService.archiveNote(note.id);
+    if (updated && updated.chatId === activeChatIdRef.current) {
+      setOperationalItems(prev => upsertItem(prev, updated));
+    }
+    return updated;
+  };
+
+  const handleCreateOperationalItem = async (payload) => {
+    const newItem = await operationalService.createOperationalItem(payload);
+    if (newItem && newItem.chatId === activeChatIdRef.current) {
+      setOperationalItems(prev => upsertItem(prev, newItem));
+    }
+    return newItem;
   };
 
   const handleSendMessage = async (text, attachment = null) => {
@@ -866,18 +1050,39 @@ export default function ChatPage() {
         ${showConversation || !activeChat ? 'flex' : 'hidden md:flex'}
       `}>
         {activeChat ? (
-          <ConversationPanel
-            key={activeChat.id}
-            chat={activeChat}
-            index={activeChatIndex}
-            messages={activeChatMessages}
-            isLoadingMessages={isLoadingMessages}
-            onSendMessage={handleSendMessage}
-            onBack={() => setShowConversation(false)}
-            isMobile={showConversation}
-            onImageClick={setFullscreenImage}
-            onResumeBot={handleResumeBot}
-          />
+          <div className="flex h-full min-h-0 w-full relative overflow-hidden">
+            <ConversationPanel
+              key={activeChat.id}
+              chat={activeChat}
+              index={activeChatIndex}
+              messages={activeChatMessages}
+              isLoadingMessages={isLoadingMessages}
+              onSendMessage={handleSendMessage}
+              onBack={() => setShowConversation(false)}
+              isMobile={showConversation}
+              onImageClick={setFullscreenImage}
+              onResumeBot={handleResumeBot}
+              onToggleOperationalDrawer={() => setIsOperationalDrawerOpen(prev => !prev)}
+              isOperationalDrawerOpen={isOperationalDrawerOpen}
+              activeOperationalCount={activeOperationalCount}
+            />
+
+            <OperationalDrawer
+              isOpen={isOperationalDrawerOpen}
+              onClose={() => setIsOperationalDrawerOpen(false)}
+              items={operationalItems}
+              isLoading={isOperationalLoading}
+              error={operationalError}
+              onRetry={() => loadOperationalItems(activeChat.id)}
+              onStart={handleStartTask}
+              onComplete={handleCompleteTask}
+              onCancel={handleCancelTask}
+              onArchive={handleArchiveNote}
+              onCreate={handleCreateOperationalItem}
+              chatId={activeChat.id}
+              customerName={activeChat.name}
+            />
+          </div>
         ) : (
           <EmptyState />
         )}
