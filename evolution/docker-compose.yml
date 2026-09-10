@@ -1,0 +1,50 @@
+version: '3.8'
+
+services:
+  postgres_evo:
+    image: postgres:15-alpine
+    container_name: postgres_evo
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    volumes:
+      - velion_evo_pgdata:/var/lib/postgresql/data
+    networks:
+      - velion_evolution_net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  evolution_api:
+    image: velion-evolution-api:v2.3.7-p2
+    container_name: evolution_api
+    restart: unless-stopped
+    env_file:
+      - .env
+    ports:
+      - "127.0.0.1:8080:8080"
+    depends_on:
+      postgres_evo:
+        condition: service_healthy
+    volumes:
+      - velion_evo_instances:/evolution/instances
+    networks:
+      - velion_evolution_net
+
+volumes:
+  velion_evo_pgdata:
+    name: velion_evo_pgdata
+  velion_evo_instances:
+    name: velion_evo_instances
+
+networks:
+  velion_evolution_net:
+    name: velion_evolution_net
+    driver: bridge
