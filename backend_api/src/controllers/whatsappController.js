@@ -27,6 +27,7 @@ import {
   persistAuthoritativeIdentityMapping,
 } from '../services/whatsappIdentityService.js';
 import { saveInboundMedia, generateMediaAccessToken, MEDIA_SIZE_LIMITS } from '../services/mediaStorageService.js';
+import { decryptText } from '../utils/cryptoUtils.js';
 
 // ── HUMAN HANDOFF: ventana de pausa manual (30 minutos) ──────────────────────
 export const HUMAN_HANDOFF_MINUTES = 30;
@@ -2101,7 +2102,8 @@ async function _processWebhookEvent(body, isMeta, provider, io, query, headers) 
       console.log(`✅ [Meta Gateway] Tenant resuelto: ${tenant.name} (${tenant.id})`);
 
       // ── DESCARGA DE MULTIMEDIA EN META CLOUD API ──
-      const metaToken = metaNumberRecord.metaAccessToken || process.env.META_ACCESS_TOKEN;
+      const rawMetaToken = metaNumberRecord.metaAccessToken || process.env.META_ACCESS_TOKEN;
+      const metaToken = rawMetaToken ? decryptText(rawMetaToken) : null;
       if (normalized.audioId && metaToken) {
         console.log(`🎙️ [Meta Audio] Descargando nota de voz (${normalized.audioId}) vía Graph API...`);
         const audioRes = await downloadMetaMedia(normalized.audioId, metaToken);

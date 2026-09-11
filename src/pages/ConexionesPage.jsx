@@ -453,15 +453,12 @@ export default function ConexionesPage() {
         }
       },
       {
-        config_id:                    metaConfigId,
-        response_type:                'code',
+        config_id:                      metaConfigId,
+        response_type:                  'code',
         override_default_response_type: true,
         extras: {
-          setup:               {},
-          version:             'v4',
-          featureType:         'whatsapp_business_app_onboarding',
-          sessionInfoVersion:  '3',
-          coex:                true,  // Activa el flujo Coexistence
+          setup:       {},
+          featureType: 'whatsapp_business_app_onboarding',
         },
       }
     );
@@ -641,12 +638,28 @@ export default function ConexionesPage() {
           {!showLegacyMeta && (
             <div className="space-y-4">
 
-              {/* Info Banner */}
+              {/* Título y badge Recomendado */}
+              <div className="flex items-center justify-between pb-1">
+                <div className="flex items-center gap-2">
+                  <div className="w-7 h-7 rounded-lg bg-blue-500/15 text-blue-600 flex items-center justify-center">
+                    <MetaLogo size={18} weight="bold" />
+                  </div>
+                  <div>
+                    <h4 className="font-extrabold text-sm text-hi leading-none">API Oficial de Meta</h4>
+                    <span className="text-3xs text-lo mt-0.5 block">Cloud API Directa</span>
+                  </div>
+                </div>
+                <span className="px-2.5 py-0.5 rounded-full text-3xs font-extrabold uppercase tracking-wide bg-blue-500/15 text-blue-600 dark:text-blue-400 border border-blue-500/30">
+                  Recomendado
+                </span>
+              </div>
+
+              {/* Info Banner Coexistence */}
               <div className="flex items-start gap-3 p-3.5 rounded-xl bg-blue-500/8 border border-blue-500/20">
                 <ShieldCheck size={18} weight="duotone" className="text-blue-500 mt-0.5 flex-shrink-0" />
                 <div className="text-xs text-blue-700 dark:text-blue-400 leading-relaxed space-y-1">
-                  <p className="font-semibold">Conecta tu WhatsApp Business existente.</p>
-                  <p>Con <strong>Coexistence</strong> podrás seguir usando la app de WhatsApp Business en tu teléfono mientras el bot de IA responde automáticamente a través de la API oficial de Meta.</p>
+                  <p className="font-semibold">Conecta tu WhatsApp Business mediante Meta.</p>
+                  <p>Si tu cuenta es compatible con <strong>Coexistence</strong> podrás seguir utilizando WhatsApp Business en tu teléfono mientras Velion automatiza mediante la API oficial.</p>
                 </div>
               </div>
 
@@ -699,32 +712,34 @@ export default function ConexionesPage() {
 
               {/* Nota de Coexistence */}
               <p className="text-2xs text-lo text-center leading-relaxed">
-                Se abrirá una ventana de Meta para autorizar el acceso. Tu número continuará
-                funcionando en la app de WhatsApp Business <span className="font-semibold text-blue-500">simultáneamente</span>.
+                Se abrirá el diálogo oficial de Meta. Tu número continuará funcionando en la app de WhatsApp Business simultáneamente cuando aplique Coexistence.
               </p>
 
-              {/* Botón fallback: mostrar formulario manual */}
-              <div className="border-t border-line pt-3">
+              {/* Botón fallback: mostrar configuración manual avanzada */}
+              <div className="border-t border-line pt-3 text-center space-y-1">
+                <p className="text-3xs text-muted">¿Ya tienes Cloud API configurada?</p>
                 <button
                   id="meta-show-legacy-form-btn"
                   onClick={() => setShowLegacyMeta(true)}
-                  className="flex items-center gap-1 text-2xs text-muted hover:text-hi transition-colors cursor-pointer mx-auto"
+                  className="text-xs font-semibold text-brand hover:underline cursor-pointer transition-colors inline-block"
                 >
-                  <CaretDown size={12} />
-                  <span>¿Problemas? Conectar manualmente con credenciales</span>
+                  Configuración manual avanzada
                 </button>
               </div>
             </div>
           )}
 
-          {/* ── Panel legado: Formulario manual (oculto por defecto) ── */}
+          {/* ── Panel avanzado: Formulario manual (oculto por defecto) ── */}
           {showLegacyMeta && (
             <div className="space-y-4">
               <div className="flex items-center justify-between">
-                <p className="text-xs font-semibold text-hi">Configuración manual de credenciales Meta</p>
+                <div>
+                  <h4 className="text-xs font-bold text-hi">Configuración manual avanzada</h4>
+                  <p className="text-3xs text-lo">Para cuentas con WABA existente en Meta Developers.</p>
+                </div>
                 <button
                   onClick={() => setShowLegacyMeta(false)}
-                  className="text-2xs text-muted hover:text-hi cursor-pointer transition-colors"
+                  className="text-2xs text-brand hover:underline cursor-pointer transition-colors font-medium"
                 >
                   ← Volver al flujo oficial
                 </button>
@@ -826,6 +841,11 @@ export default function ConexionesPage() {
               <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-bold bg-red-500/15 text-red-600 dark:text-red-400">
                 <span className="w-2 h-2 rounded-full bg-red-500" />
                 Desconectado
+              </span>
+            ) : conn.connectionState === 'TOKEN_EXPIRED' ? (
+              <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-bold bg-amber-500/15 text-amber-600 dark:text-amber-400">
+                <span className="w-2 h-2 rounded-full bg-amber-500 animate-pulse" />
+                Sesión Expirada
               </span>
             ) : conn.connectionState === 'CONNECTING' ? (
               <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-bold bg-yellow-500/15 text-yellow-600 dark:text-yellow-400">

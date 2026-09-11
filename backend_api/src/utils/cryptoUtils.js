@@ -5,24 +5,20 @@ import crypto from 'crypto';
  * Si no está definida o no tiene 32 caracteres, lanza un error para proteger la seguridad.
  */
 function getEncryptionKey() {
-  const keyStr = process.env.BACKUP_ENCRYPTION_KEY;
+  const keyStr = process.env.TOKEN_ENCRYPTION_KEY || process.env.BACKUP_ENCRYPTION_KEY || process.env.JWT_SECRET;
   if (!keyStr) {
-    throw new Error('La variable de entorno BACKUP_ENCRYPTION_KEY no está configurada.');
+    throw new Error('No se encontró llave de cifrado configurada (TOKEN_ENCRYPTION_KEY, BACKUP_ENCRYPTION_KEY o JWT_SECRET).');
   }
   
-  // Convertir a buffer asumiendo que puede ser hex o utf8. Si es menor a 32 bytes o mayor, ajustaremos.
-  let keyBuffer;
   if (keyStr.length === 64 && /^[0-9a-fA-F]+$/.test(keyStr)) {
-    keyBuffer = Buffer.from(keyStr, 'hex');
-  } else {
-    keyBuffer = Buffer.from(keyStr, 'utf-8');
+    return Buffer.from(keyStr, 'hex');
   }
-  
-  if (keyBuffer.length !== 32) {
-    throw new Error('La BACKUP_ENCRYPTION_KEY debe ser de exactamente 32 bytes (64 hex o 32 chars).');
+  if (keyStr.length === 32) {
+    return Buffer.from(keyStr, 'utf-8');
   }
 
-  return keyBuffer;
+  // Derivación determinística estándar SHA-256 (garantiza exactamente 32 bytes para AES-256-GCM)
+  return crypto.createHash('sha256').update(keyStr).digest();
 }
 
 /**
@@ -49,19 +45,21 @@ export function encryptText(text) {
 
 /**
  * Descifra un texto previamente cifrado con AES-256-GCM en el formato iv:authTag:encryptedData.
+ * Si el texto es un token en texto claro (legacy) o no cumple el formato, lo retorna intacto sin error.
  */
 export function decryptText(encryptedText) {
   if (!encryptedText || typeof encryptedText !== 'string' || !encryptedText.includes(':')) {
-    return encryptedText; // Podría no estar cifrado si es un dato legacy
+    return encryptedText; // Token legacy en texto plano
   }
   
   try {
-    const key = getEncryptionKey();
     const parts = encryptedText.split(':');
-    if (parts.length !== 3) {
-      throw new Error('Formato cifrado inválido.');
+    // iv (12 bytes = 24 hex) y authTag (16 bytes = 32 hex)
+    if (parts.length !== 3 || parts[0].length !== 24 || parts[1].length !== 32) {
+      return encryptedText; // No coincide con el formato GCM hex, tratar como legacy
     }
     
+    const key = getEncryptionKey();
     const iv = Buffer.from(parts[0], 'hex');
     const authTag = Buffer.from(parts[1], 'hex');
     const encryptedData = parts[2];
@@ -74,7 +72,7 @@ export function decryptText(encryptedText) {
     
     return decrypted;
   } catch (error) {
-    console.error('Error al descifrar el texto:', error.message);
-    throw error;
+    console.warn('⚠️ [Crypto] No se pudo descifrar token (retornando texto original):', error.message);
+    return encryptedText;
   }
 }

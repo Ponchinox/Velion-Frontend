@@ -6,6 +6,8 @@
 import axios from 'axios';
 import prisma from '../db.js';
 import { markMessageAsSentByAi } from './aiMessageTracker.js';
+import { decryptText } from '../utils/cryptoUtils.js';
+import { getMetaGraphVersion } from '../controllers/metaOnboardingController.js';
 
 function getEvoHeaders(apiKey) {
   const key = (apiKey || process.env.EVOLUTION_API_KEY || '').trim();
@@ -34,12 +36,14 @@ export async function resolveGatewayCtx(tenantId) {
   const provider = connection?.provider || 'EVOLUTION';
 
   if (provider === 'META') {
+    const rawToken = connection?.metaAccessToken || process.env.META_ACCESS_TOKEN || null;
+    const decryptedToken = rawToken ? decryptText(rawToken) : null;
     return {
       provider: 'META',
       instance: null,
       apiKey: '',
       metaPhoneNumberId: connection?.metaPhoneNumberId || process.env.META_PHONE_NUMBER_ID || null,
-      metaAccessToken: connection?.metaAccessToken || process.env.META_ACCESS_TOKEN || null,
+      metaAccessToken: decryptedToken,
     };
   }
 
@@ -63,10 +67,12 @@ export async function resolveGatewayCtx(tenantId) {
 export async function downloadMetaMedia(mediaId, token) {
   assertNotInTestMode('downloadMetaMedia', mediaId);
   if (!mediaId || !token) return null;
+  const effectiveToken = decryptText(token);
+  const graphVersion = getMetaGraphVersion();
   try {
     // 1. Obtener la URL temporal de descarga del archivo
-    const metaRes = await axios.get(`https://graph.facebook.com/v20.0/${mediaId}`, {
-      headers: { Authorization: `Bearer ${token}` },
+    const metaRes = await axios.get(`https://graph.facebook.com/${graphVersion}/${mediaId}`, {
+      headers: { Authorization: `Bearer ${effectiveToken}` },
       timeout: 15000
     });
     const downloadUrl = metaRes.data?.url;
@@ -75,7 +81,7 @@ export async function downloadMetaMedia(mediaId, token) {
 
     // 2. Descargar el binario usando el token en el header
     const binaryRes = await axios.get(downloadUrl, {
-      headers: { Authorization: `Bearer ${token}` },
+      headers: { Authorization: `Bearer ${effectiveToken}` },
       responseType: 'arraybuffer',
       timeout: 15000
     });
@@ -119,15 +125,18 @@ export async function sendText(opts) {
   }
 
   if (provider === 'META') {
-    const token = metaAccessToken || process.env.META_ACCESS_TOKEN;
+    const rawToken = metaAccessToken || process.env.META_ACCESS_TOKEN;
+    const token = rawToken ? decryptText(rawToken) : null;
     const phoneId = metaPhoneNumberId || process.env.META_PHONE_NUMBER_ID;
+    const graphVersion = getMetaGraphVersion();
+
     if (!token || !phoneId) {
       console.error('WA Gateway META: Faltan credenciales. Abortando envio de texto.');
       return null;
     }
     try {
       const res = await axios.post(
-        `https://graph.facebook.com/v20.0/${phoneId}/messages`,
+        `https://graph.facebook.com/${graphVersion}/${phoneId}/messages`,
         { messaging_product: 'whatsapp', to: cleanTo, type: 'text', text: { body: text } },
         { headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' } }
       );
@@ -228,8 +237,11 @@ export async function sendMedia(opts) {
     lowerUrl.includes('/video/upload/');
 
   if (provider === 'META') {
-    const token = metaAccessToken || process.env.META_ACCESS_TOKEN;
+    const rawToken = metaAccessToken || process.env.META_ACCESS_TOKEN;
+    const token = rawToken ? decryptText(rawToken) : null;
     const phoneId = metaPhoneNumberId || process.env.META_PHONE_NUMBER_ID;
+    const graphVersion = getMetaGraphVersion();
+
     if (!token || !phoneId) {
       console.error('[WA Gateway META] Faltan credenciales. Abortando envío multimedia.');
       return null;
@@ -240,7 +252,7 @@ export async function sendMedia(opts) {
         : { messaging_product: 'whatsapp', to: cleanTo, type: 'image', image: { link: url, caption: caption || '' } };
 
       const res = await axios.post(
-        `https://graph.facebook.com/v20.0/${phoneId}/messages`,
+        `https://graph.facebook.com/${graphVersion}/${phoneId}/messages`,
         payload,
         { headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' } }
       );

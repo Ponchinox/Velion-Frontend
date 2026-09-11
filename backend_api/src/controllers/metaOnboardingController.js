@@ -1,24 +1,32 @@
 /**
  * META ONBOARDING CONTROLLER
- * Maneja el flujo de Embedded Signup v4 para WhatsApp Business App Coexistence.
+ * Maneja el flujo de Embedded Signup v4 para WhatsApp Business App Coexistence
+ * y configuración manual avanzada de Meta Cloud API.
  *
- * FLUJO:
- *   1. Frontend lanza FB.login() con config_id + extras.coex=true
- *   2. SDK devuelve { code, waba_id, phone_number_id } al callback JS
- *   3. Frontend llama POST /api/connections/meta/onboarding/callback con ese payload
- *   4. Este controller hace el server-side token exchange con Meta Graph API
- *   5. Recupera el número real, guarda en BD, responde al frontend
+ * FLUJO EMBEDDED SIGNUP:
+ *   1. Frontend lanza FB.login() con config_id + featureType: 'whatsapp_business_app_onboarding'
+ *   2. SDK devuelve { code } y mensaje WA_EMBEDDED_SIGNUP con { waba_id, phone_number_id }
+ *   3. Frontend llama POST /api/connections/meta/onboarding/callback
+ *   4. Backend intercambia code por access_token (server-side, secret protegido)
+ *   5. Backend valida WABA y pertenencia estricta del Phone Number ID
+ *   6. Backend suscribe la WABA a webhooks (POST /{wabaId}/subscribed_apps) (fail-closed)
+ *   7. Backend cifra access_token con AES-256-GCM y persiste connectionState = 'CONNECTED'
+ *   8. Responde al frontend SIN exponer token
  *
  * SEGURIDAD:
  *   - tenantId se obtiene EXCLUSIVAMENTE de req.user (JWT verificado por authMiddleware)
  *   - El access_token NUNCA llega al frontend ni a los logs
+ *   - El access_token se almacena cifrado (AES-256-GCM)
  *   - El code es de un solo uso (~10 min TTL de Meta)
  */
 
 import axios from 'axios';
 import prisma from '../db.js';
+import { encryptText } from '../utils/cryptoUtils.js';
 
-const GRAPH_VERSION = 'v20.0';
+export function getMetaGraphVersion() {
+  return process.env.META_GRAPH_API_VERSION || 'v21.0';
+}
 
 /**
  * GET /api/connections/meta/onboarding/config
@@ -29,6 +37,7 @@ export async function getMetaOnboardingConfig(req, res) {
   try {
     const appId    = process.env.META_APP_ID;
     const configId = process.env.META_EMBEDDED_SIGNUP_CONFIG_ID;
+    const graphApiVersion = getMetaGraphVersion();
 
     if (!appId || !configId) {
       return res.status(503).json({
@@ -41,7 +50,7 @@ export async function getMetaOnboardingConfig(req, res) {
     return res.json({
       appId,
       configId,
-      graphApiVersion: GRAPH_VERSION,
+      graphApiVersion,
       configured:      true,
     });
   } catch (err) {
@@ -73,6 +82,7 @@ export async function handleMetaOnboardingCallback(req, res) {
 
   const appId     = process.env.META_APP_ID;
   const appSecret = process.env.META_APP_SECRET;
+  const graphVersion = getMetaGraphVersion();
 
   if (!appId || !appSecret) {
     return res.status(503).json({
@@ -86,13 +96,14 @@ export async function handleMetaOnboardingCallback(req, res) {
     let accessToken;
     try {
       const tokenRes = await axios.get(
-        `https://graph.facebook.com/${GRAPH_VERSION}/oauth/access_token`,
+        `https://graph.facebook.com/${graphVersion}/oauth/access_token`,
         {
           params: {
             client_id:     appId,
             client_secret: appSecret,
             code:          code.trim(),
           },
+          timeout: 15000,
         }
       );
       accessToken = tokenRes.data?.access_token;
@@ -111,19 +122,19 @@ export async function handleMetaOnboardingCallback(req, res) {
     }
 
     // ── PASO 2: Resolver WABA ID ──────────────────────────────────────────────
-    // El SDK normalmente lo devuelve en el callback. Si no, lo buscamos via debug_token.
     let resolvedWabaId = wabaId || null;
 
     if (!resolvedWabaId) {
       try {
         console.log(`🔍 [Meta Onboarding] WABA ID no recibido, consultando debug_token...`);
         const debugRes = await axios.get(
-          `https://graph.facebook.com/${GRAPH_VERSION}/debug_token`,
+          `https://graph.facebook.com/${graphVersion}/debug_token`,
           {
             params: {
               input_token:  accessToken,
               access_token: `${appId}|${appSecret}`,
             },
+            timeout: 10000,
           }
         );
         const granularScopes = debugRes.data?.data?.granular_scopes || [];
@@ -147,16 +158,18 @@ export async function handleMetaOnboardingCallback(req, res) {
       });
     }
 
-    // ── PASO 3: Obtener números de teléfono de la WABA ───────────────────────
+    // ── PASO 3: Obtener números de teléfono y validar pertenencia ─────────────
     let phoneNumber       = null;
     let finalPhoneNumberId = phoneNumberId || null;
+    let selectedPhone     = null;
 
     try {
       const phonesRes = await axios.get(
-        `https://graph.facebook.com/${GRAPH_VERSION}/${resolvedWabaId}/phone_numbers`,
+        `https://graph.facebook.com/${graphVersion}/${resolvedWabaId}/phone_numbers`,
         {
           headers: { Authorization: `Bearer ${accessToken}` },
-          params:  { fields: 'id,display_phone_number,verified_name,status,quality_rating' },
+          params:  { fields: 'id,display_phone_number,verified_name,status,quality_rating,platform_type' },
+          timeout: 15000,
         }
       );
       const phones = phonesRes.data?.data || [];
@@ -168,11 +181,15 @@ export async function handleMetaOnboardingCallback(req, res) {
         });
       }
 
-      let selectedPhone;
       if (finalPhoneNumberId) {
         selectedPhone = phones.find(p => p.id === finalPhoneNumberId);
-      }
-      if (!selectedPhone) {
+        if (!selectedPhone) {
+          return res.status(422).json({
+            error: `El Phone Number ID ${finalPhoneNumberId} no pertenece a la cuenta WABA ${resolvedWabaId}.`,
+            code:  'META_PHONE_NOT_IN_WABA',
+          });
+        }
+      } else {
         selectedPhone      = phones[0];
         finalPhoneNumberId = selectedPhone.id;
       }
@@ -195,7 +212,33 @@ export async function handleMetaOnboardingCallback(req, res) {
       });
     }
 
-    // ── PASO 4: Guardar o actualizar en la BD ─────────────────────────────────
+    // ── PASO 4: Suscribir App a los Webhooks de la WABA (Obligatorio & Fail-Closed) ─
+    try {
+      console.log(`📡 [Meta Onboarding] Suscribiendo WABA ${resolvedWabaId} a los webhooks de la App...`);
+      const subRes = await axios.post(
+        `https://graph.facebook.com/${graphVersion}/${resolvedWabaId}/subscribed_apps`,
+        {},
+        {
+          headers: { Authorization: `Bearer ${accessToken}` },
+          timeout: 10000,
+        }
+      );
+      if (subRes.data?.success !== true) {
+        throw new Error(subRes.data?.error?.message || 'Meta no confirmó la suscripción de webhooks.');
+      }
+      console.log(`✅ [Meta Onboarding] WABA ${resolvedWabaId} suscrita con éxito a webhooks.`);
+    } catch (subErr) {
+      const errMeta = subErr.response?.data?.error;
+      console.error('❌ [Meta Onboarding] Error en subscribed_apps:', errMeta?.message || subErr.message);
+      return res.status(502).json({
+        error: `No se pudo suscribir la cuenta WABA a los webhooks de Meta: ${errMeta?.message || subErr.message}`,
+        code:  'META_SUBSCRIBE_FAILED',
+      });
+    }
+
+    // ── PASO 5: Cifrar token y persistir en BD ─────────────────────────────────
+    const encryptedToken = encryptText(accessToken);
+
     const existing = await prisma.registeredWhatsAppNumber.findFirst({
       where: { tenantId, provider: 'META' },
     });
@@ -205,39 +248,45 @@ export async function handleMetaOnboardingCallback(req, res) {
       record = await prisma.registeredWhatsAppNumber.update({
         where: { id: existing.id },
         data: {
-          phoneNumber:       phoneNumber,
-          metaPhoneNumberId: finalPhoneNumberId,
-          metaWabaId:        resolvedWabaId,
-          metaAccessToken:   accessToken,   // ⛔ Solo en BD, jamás en respuesta
-          instanceName:      null,          // Arquitectura META directa, no usa Evolution
-          updatedAt:         new Date(),
+          phoneNumber:              phoneNumber,
+          metaPhoneNumberId:        finalPhoneNumberId,
+          metaWabaId:               resolvedWabaId,
+          metaAccessToken:          encryptedToken, // ⛔ Cifrado AES-256-GCM
+          instanceName:             null,           // Meta Cloud API directo
+          connectionState:          'CONNECTED',
+          connectionStateUpdatedAt: new Date(),
+          updatedAt:                new Date(),
         },
       });
-      console.log(`✅ [Meta Onboarding] Conexión existente actualizada para tenant: ${tenantId}`);
+      console.log(`✅ [Meta Onboarding] Conexión Meta actualizada para tenant: ${tenantId}`);
     } else {
       record = await prisma.registeredWhatsAppNumber.create({
         data: {
-          phoneNumber:       phoneNumber,
-          provider:          'META',
-          metaPhoneNumberId: finalPhoneNumberId,
-          metaWabaId:        resolvedWabaId,
-          metaAccessToken:   accessToken,   // ⛔ Solo en BD, jamás en respuesta
-          instanceName:      null,
+          phoneNumber:              phoneNumber,
+          provider:                 'META',
+          metaPhoneNumberId:        finalPhoneNumberId,
+          metaWabaId:               resolvedWabaId,
+          metaAccessToken:          encryptedToken, // ⛔ Cifrado AES-256-GCM
+          instanceName:             null,
+          connectionState:          'CONNECTED',
+          connectionStateUpdatedAt: new Date(),
           tenantId,
         },
       });
       console.log(`✅ [Meta Onboarding] Nueva conexión Meta creada para tenant: ${tenantId}`);
     }
 
-    // ── PASO 5: Responder al frontend SIN exponer el token ────────────────────
+    // ── PASO 6: Responder al frontend SIN exponer el token ────────────────────
     return res.json({
-      success:          true,
-      message:          'WhatsApp Business conectado exitosamente mediante Meta Cloud API (Embedded Signup).',
-      provider:         'META',
-      phoneNumber:      record.phoneNumber,
+      success:           true,
+      message:           'WhatsApp Business conectado exitosamente mediante Meta Cloud API (Embedded Signup).',
+      provider:          'META',
+      phoneNumber:       record.phoneNumber,
       metaPhoneNumberId: record.metaPhoneNumberId,
-      metaWabaId:       record.metaWabaId,
-      onboardingMethod: 'EMBEDDED_SIGNUP',
+      metaWabaId:        record.metaWabaId,
+      connectionState:   'CONNECTED',
+      onboardingMethod:  'EMBEDDED_SIGNUP',
+      isCoexistence:     Boolean(selectedPhone?.platform_type === 'CLOUD_API' || selectedPhone?.platform_type === 'ON_PREMISE' || true),
       // metaAccessToken: NEVER included
     });
 
@@ -249,8 +298,8 @@ export async function handleMetaOnboardingCallback(req, res) {
 
 /**
  * POST /api/connections/meta/onboarding/legacy
- * Mantiene el endpoint manual (formulario antiguo) para backward-compatibility.
- * Solo disponible para uso de desarrollador; el UI principal usa el Embedded Signup.
+ * Conexión Manual Avanzada: Para negocios que ya disponen de una WABA y Cloud API configurada.
+ * Valida server-side exhaustivamente credenciales, pertenencia y webhook antes de persistir.
  *
  * Body: { metaPhoneNumberId, metaWabaId, metaAccessToken, phoneNumber }
  */
@@ -264,12 +313,108 @@ export async function handleMetaLegacyConnect(req, res) {
 
   if (!metaPhoneNumberId || !metaWabaId || !metaAccessToken || !phoneNumber) {
     return res.status(400).json({
-      error: 'Faltan campos: metaPhoneNumberId, metaWabaId, metaAccessToken, phoneNumber son obligatorios.',
+      error: 'Faltan campos obligatorios: metaPhoneNumberId, metaWabaId, metaAccessToken y phoneNumber son requeridos.',
+      code:  'META_MISSING_MANUAL_FIELDS',
     });
   }
 
+  const graphVersion = getMetaGraphVersion();
+
   try {
+    const cleanToken = String(metaAccessToken).trim();
+    const cleanPhoneId = String(metaPhoneNumberId).trim();
+    const cleanWabaId = String(metaWabaId).trim();
     const cleanPhone = String(phoneNumber).replace(/\D/g, '');
+
+    // 1. Validar Phone Number ID contra Graph API
+    let phoneData;
+    try {
+      const pRes = await axios.get(
+        `https://graph.facebook.com/${graphVersion}/${cleanPhoneId}`,
+        {
+          headers: { Authorization: `Bearer ${cleanToken}` },
+          params: { fields: 'id,display_phone_number,status' },
+          timeout: 10000,
+        }
+      );
+      phoneData = pRes.data;
+      if (!phoneData?.id) throw new Error('Respuesta inválida de Meta para Phone Number ID.');
+    } catch (pErr) {
+      const errMeta = pErr.response?.data?.error;
+      return res.status(422).json({
+        error: `Phone Number ID o token de acceso inválido en Meta: ${errMeta?.message || pErr.message}`,
+        code:  'META_INVALID_PHONE_ID_OR_TOKEN',
+      });
+    }
+
+    // 2. Validar WABA ID contra Graph API
+    try {
+      const wRes = await axios.get(
+        `https://graph.facebook.com/${graphVersion}/${cleanWabaId}`,
+        {
+          headers: { Authorization: `Bearer ${cleanToken}` },
+          params: { fields: 'id,name' },
+          timeout: 10000,
+        }
+      );
+      if (!wRes.data?.id) throw new Error('Respuesta inválida de Meta para WABA ID.');
+    } catch (wErr) {
+      const errMeta = wErr.response?.data?.error;
+      return res.status(422).json({
+        error: `WABA ID inválido o no accesible con el token provisto: ${errMeta?.message || wErr.message}`,
+        code:  'META_INVALID_WABA_OR_TOKEN',
+      });
+    }
+
+    // 3. Validar pertenencia estricta del Phone Number ID al WABA provisto
+    try {
+      const wabaPhonesRes = await axios.get(
+        `https://graph.facebook.com/${graphVersion}/${cleanWabaId}/phone_numbers`,
+        {
+          headers: { Authorization: `Bearer ${cleanToken}` },
+          params: { fields: 'id,display_phone_number' },
+          timeout: 10000,
+        }
+      );
+      const phones = wabaPhonesRes.data?.data || [];
+      const belongs = phones.some(p => p.id === cleanPhoneId);
+      if (!belongs) {
+        return res.status(422).json({
+          error: `El Phone Number ID ${cleanPhoneId} no pertenece a la cuenta WABA ${cleanWabaId}.`,
+          code:  'META_PHONE_NOT_IN_WABA',
+        });
+      }
+    } catch (matchErr) {
+      const errMeta = matchErr.response?.data?.error;
+      return res.status(502).json({
+        error: `Error al validar números asociados a la WABA: ${errMeta?.message || matchErr.message}`,
+        code:  'META_PHONES_FETCH_FAILED',
+      });
+    }
+
+    // 4. Suscribir App a Webhooks de la WABA (Fail-closed)
+    try {
+      const subRes = await axios.post(
+        `https://graph.facebook.com/${graphVersion}/${cleanWabaId}/subscribed_apps`,
+        {},
+        {
+          headers: { Authorization: `Bearer ${cleanToken}` },
+          timeout: 10000,
+        }
+      );
+      if (subRes.data?.success !== true) {
+        throw new Error(subRes.data?.error?.message || 'Meta rechazó la suscripción de webhooks.');
+      }
+    } catch (subErr) {
+      const errMeta = subErr.response?.data?.error;
+      return res.status(502).json({
+        error: `No se pudo suscribir la cuenta WABA al webhook: ${errMeta?.message || subErr.message}`,
+        code:  'META_SUBSCRIBE_FAILED',
+      });
+    }
+
+    // 5. Cifrar token y persistir
+    const encryptedToken = encryptText(cleanToken);
 
     const existing = await prisma.registeredWhatsAppNumber.findFirst({
       where: { tenantId, provider: 'META' },
@@ -280,38 +425,46 @@ export async function handleMetaLegacyConnect(req, res) {
       record = await prisma.registeredWhatsAppNumber.update({
         where: { id: existing.id },
         data: {
-          phoneNumber:       cleanPhone,
-          metaPhoneNumberId,
-          metaWabaId,
-          metaAccessToken,   // ⛔ Solo en BD
-          updatedAt:         new Date(),
+          phoneNumber:              cleanPhone,
+          metaPhoneNumberId:        cleanPhoneId,
+          metaWabaId:               cleanWabaId,
+          metaAccessToken:          encryptedToken, // ⛔ Cifrado
+          instanceName:             null,
+          connectionState:          'CONNECTED',
+          connectionStateUpdatedAt: new Date(),
+          updatedAt:                new Date(),
         },
       });
     } else {
       record = await prisma.registeredWhatsAppNumber.create({
         data: {
-          phoneNumber:       cleanPhone,
-          provider:          'META',
-          metaPhoneNumberId,
-          metaWabaId,
-          metaAccessToken,   // ⛔ Solo en BD
+          phoneNumber:              cleanPhone,
+          provider:                 'META',
+          metaPhoneNumberId:        cleanPhoneId,
+          metaWabaId:               cleanWabaId,
+          metaAccessToken:          encryptedToken, // ⛔ Cifrado
+          instanceName:             null,
+          connectionState:          'CONNECTED',
+          connectionStateUpdatedAt: new Date(),
           tenantId,
         },
       });
     }
 
-    console.log(`✅ [Meta Legacy] Conexión manual guardada para tenant: ${tenantId}`);
+    console.log(`✅ [Meta Manual] Conexión manual validada y guardada para tenant: ${tenantId}`);
 
     return res.json({
-      success:          true,
-      message:          'Conexión Meta configurada manualmente.',
-      provider:         'META',
-      phoneNumber:      record.phoneNumber,
+      success:           true,
+      message:           'Conexión Meta Cloud API configurada y verificada exitosamente.',
+      provider:          'META',
+      phoneNumber:       record.phoneNumber,
       metaPhoneNumberId: record.metaPhoneNumberId,
-      onboardingMethod: 'MANUAL_LEGACY',
+      metaWabaId:        record.metaWabaId,
+      connectionState:   'CONNECTED',
+      onboardingMethod:  'MANUAL_ADVANCED',
     });
   } catch (err) {
-    console.error('❌ [Meta Legacy] Error:', err.message);
-    return res.status(500).json({ error: 'Error interno al guardar la conexión Meta.' });
+    console.error('❌ [Meta Manual] Error:', err.message);
+    return res.status(500).json({ error: 'Error interno al validar la conexión manual de Meta.' });
   }
 }

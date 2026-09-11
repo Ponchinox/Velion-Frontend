@@ -2,6 +2,8 @@ import axios from 'axios';
 import prisma from '../db.js';
 import { validateAndRegisterWhatsAppConnection } from '../services/antiFraudService.js';
 import { determineReconciliationUpdates, applyReconciliationUpdates } from '../utils/connectionSyncLogic.js';
+import { decryptText } from '../utils/cryptoUtils.js';
+import { getMetaGraphVersion } from './metaOnboardingController.js';
 
 /**
  * GET /api/connections/provider
@@ -32,7 +34,8 @@ export async function getProvider(req, res) {
       },
     });
 
-    // ── RECONCILIACIÓN DEFENSIVA ──
+    // ── RECONCILIACIÓN DEFENSIVA (Solo instancias Evolution) ──
+    const evoConnections = connections.filter(c => c.provider !== 'META');
     const evoUrl = process.env.EVOLUTION_API_URL || 'http://localhost:8080';
     const headers = getEvoHeaders();
 
@@ -48,8 +51,10 @@ export async function getProvider(req, res) {
       }
     };
 
-    const updates = await determineReconciliationUpdates(connections, fetchEvolutionState);
-    await applyReconciliationUpdates(updates, prisma);
+    if (evoConnections.length > 0) {
+      const updates = await determineReconciliationUpdates(evoConnections, fetchEvolutionState);
+      await applyReconciliationUpdates(updates, prisma);
+    }
 
     const activeConnectionsCount = connections.length;
 
@@ -250,6 +255,79 @@ export async function getStatus(req, res) {
   const tenantId = req.user?.tenantId;
   if (!tenantId) {
     return res.status(400).json({ error: 'El usuario no está asociado a ningún Tenant.' });
+  }
+
+  // Verificar primero si el tenant posee una conexión META
+  const metaConn = await prisma.registeredWhatsAppNumber.findFirst({
+    where: { tenantId, provider: 'META' },
+    orderBy: { createdAt: 'desc' }
+  });
+
+  if (metaConn) {
+    const shouldVerifyRemote = req.query.verify === 'true';
+
+    if (shouldVerifyRemote && metaConn.metaPhoneNumberId && metaConn.metaAccessToken) {
+      const graphVersion = getMetaGraphVersion();
+      const decryptedToken = decryptText(metaConn.metaAccessToken);
+      try {
+        const vRes = await axios.get(
+          `https://graph.facebook.com/${graphVersion}/${metaConn.metaPhoneNumberId}`,
+          {
+            headers: { Authorization: `Bearer ${decryptedToken}` },
+            params: { fields: 'id,status,display_phone_number' },
+            timeout: 8000,
+          }
+        );
+        if (vRes.data?.id) {
+          if (metaConn.connectionState !== 'CONNECTED') {
+            await prisma.registeredWhatsAppNumber.update({
+              where: { id: metaConn.id },
+              data: { connectionState: 'CONNECTED', connectionStateUpdatedAt: new Date() }
+            });
+          }
+          return res.json({
+            status: 'open',
+            provider: 'META',
+            instanceName: null,
+            phone: metaConn.phoneNumber,
+            metaPhoneNumberId: metaConn.metaPhoneNumberId,
+            metaWabaId: metaConn.metaWabaId,
+            connectionState: 'CONNECTED',
+          });
+        }
+      } catch (vErr) {
+        const errData = vErr.response?.data?.error;
+        const isAuthRevoked = vErr.response?.status === 401 || errData?.code === 190;
+        const newState = isAuthRevoked ? 'TOKEN_EXPIRED' : 'CONNECTION_ERROR';
+        await prisma.registeredWhatsAppNumber.update({
+          where: { id: metaConn.id },
+          data: { connectionState: newState, connectionStateUpdatedAt: new Date() }
+        });
+        return res.json({
+          status: 'close',
+          provider: 'META',
+          instanceName: null,
+          phone: metaConn.phoneNumber,
+          metaPhoneNumberId: metaConn.metaPhoneNumberId,
+          metaWabaId: metaConn.metaWabaId,
+          connectionState: newState,
+          error: isAuthRevoked
+            ? 'El token de acceso de Meta fue revocado o expiró. Reautorización requerida.'
+            : (errData?.message || vErr.message),
+        });
+      }
+    }
+
+    const isOpen = metaConn.connectionState === 'CONNECTED';
+    return res.json({
+      status: isOpen ? 'open' : 'close',
+      provider: 'META',
+      instanceName: null,
+      phone: metaConn.phoneNumber,
+      metaPhoneNumberId: metaConn.metaPhoneNumberId,
+      metaWabaId: metaConn.metaWabaId,
+      connectionState: metaConn.connectionState || (isOpen ? 'CONNECTED' : 'DISCONNECTED'),
+    });
   }
 
   let effectiveInstanceName = req.query.instanceName;
@@ -501,16 +579,60 @@ export async function logoutDevice(req, res) {
     const { instanceName: bodyInstanceName, connectionId, provider } = req.body;
     const evoUrl = process.env.EVOLUTION_API_URL || 'http://localhost:8080';
 
-    // Determinar qué instancia de Evolution eliminar (reutilizando instanceName persistido si no viene en body)
-    let instanceName = bodyInstanceName;
-    if (!instanceName) {
-      const existingConn = connectionId
-        ? await prisma.registeredWhatsAppNumber.findFirst({ where: { id: connectionId, tenantId }, select: { instanceName: true } })
-        : await prisma.registeredWhatsAppNumber.findFirst({ where: { tenantId }, orderBy: { createdAt: 'desc' }, select: { instanceName: true } });
-      instanceName = existingConn?.instanceName || (provider !== 'META' ? getEvoInstanceName(tenantId) : null);
+    // 0. Identificar si es una conexión META
+    let targetConn = null;
+    if (connectionId) {
+      targetConn = await prisma.registeredWhatsAppNumber.findFirst({ where: { id: connectionId, tenantId } });
+    } else {
+      targetConn = await prisma.registeredWhatsAppNumber.findFirst({ where: { tenantId }, orderBy: { createdAt: 'desc' } });
     }
 
-    // Para ambos proveedores (EVOLUTION y META) eliminamos la instancia de Evolution
+    const isMeta = provider === 'META' || targetConn?.provider === 'META';
+
+    if (isMeta) {
+      // ── DESVINCULACIÓN META (Safe & Tenant-Scoped) ──
+      // Intento best-effort de desuscribir la app de los webhooks de la WABA
+      if (targetConn?.metaWabaId && targetConn?.metaAccessToken) {
+        try {
+          const graphVersion = getMetaGraphVersion();
+          const decryptedToken = decryptText(targetConn.metaAccessToken);
+          await axios.delete(
+            `https://graph.facebook.com/${graphVersion}/${targetConn.metaWabaId}/subscribed_apps`,
+            {
+              headers: { Authorization: `Bearer ${decryptedToken}` },
+              timeout: 6000,
+            }
+          );
+          console.log(`🔌 [Meta] App desuscrita de WABA ${targetConn.metaWabaId} para tenant: ${tenantId}`);
+        } catch (unsubErr) {
+          console.warn(`ℹ️ [Meta] Aviso al desuscribir app de WABA (continuando):`, unsubErr.response?.data?.error?.message || unsubErr.message);
+        }
+      }
+
+      // Eliminar registro DB de la conexión Meta del tenant
+      if (targetConn?.id) {
+        await prisma.registeredWhatsAppNumber.deleteMany({
+          where: { id: targetConn.id, tenantId }
+        });
+      } else {
+        await prisma.registeredWhatsAppNumber.deleteMany({
+          where: { tenantId, provider: 'META' }
+        });
+      }
+
+      console.log(`🗑️ [DB] Conexión Meta eliminada para tenant: ${tenantId}`);
+      return res.json({
+        status:  'DISCONNECTED',
+        message: 'Conexión de Meta desvinculada exitosamente.',
+      });
+    }
+
+    // ── DESVINCULACIÓN EVOLUTION (Baileys/QR) ──
+    let instanceName = bodyInstanceName;
+    if (!instanceName) {
+      instanceName = targetConn?.instanceName || getEvoInstanceName(tenantId);
+    }
+
     if (instanceName) {
       // 1. Logout en Evolution API
       try {
