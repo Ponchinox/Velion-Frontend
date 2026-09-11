@@ -110,6 +110,16 @@ model Message {
   tenantId   String
   externalId String?
   status     String   @default("sent")
+
+  // Media Inbound / Outbound structured fields (CHAT-MEDIA-01)
+  mediaType   String?
+  mediaPath   String?
+  mimeType    String?
+  fileName    String?
+  caption     String?
+  mediaSize   Int?
+  mediaStatus String?
+
   chat       Chat     @relation(fields: [chatId], references: [id], onDelete: Cascade)
   tenant     Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   operationalItems OperationalItem[]

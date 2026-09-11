@@ -26,6 +26,7 @@ import {
   extractAuthoritativeIdentityPair,
   persistAuthoritativeIdentityMapping,
 } from '../services/whatsappIdentityService.js';
+import { saveInboundMedia, generateMediaAccessToken, MEDIA_SIZE_LIMITS } from '../services/mediaStorageService.js';
 
 // ── HUMAN HANDOFF: ventana de pausa manual (30 minutos) ──────────────────────
 export const HUMAN_HANDOFF_MINUTES = 30;
@@ -1388,18 +1389,36 @@ function normalizeMeta(body) {
     let audioId = null;
     let audioMime = null;
     let imageId = null;
+    let imageCaption = '';
+    let videoId = null;
+    let videoCaption = '';
+    let docId = null;
+    let docName = null;
+    let docMime = null;
+    let docCaption = '';
+    let aiInstruction = null;
 
     if (msg.type === 'text') {
       text = msg.text?.body || '';
     } else if (msg.type === 'image') {
-      text = msg.image?.caption || '';
+      imageCaption = msg.image?.caption || '';
+      text = imageCaption;
       imageId = msg.image?.id || null;
     } else if (msg.type === 'audio') {
       text = '[Nota de voz de WhatsApp] Escucha este audio y respóndeme o ejecuta mi solicitud.';
       audioId = msg.audio?.id || null;
       audioMime = msg.audio?.mime_type || 'audio/ogg';
     } else if (msg.type === 'video') {
-      text = '[Video de WhatsApp] El usuario envió un video. Dile amablemente que no puedes procesar videos, que por favor lo explique por texto o envíe una foto.';
+      videoCaption = msg.video?.caption || '';
+      videoId = msg.video?.id || null;
+      text = videoCaption || '';
+      aiInstruction = '[Sistema: El usuario envió un video. Dile amablemente que no puedes procesar videos, que por favor lo explique por texto o envíe una foto.]';
+    } else if (msg.type === 'document') {
+      docId = msg.document?.id || null;
+      docName = msg.document?.filename || 'documento.pdf';
+      docMime = msg.document?.mime_type || 'application/pdf';
+      docCaption = msg.document?.caption || '';
+      text = docCaption || `[Documento: ${docName}]`;
     } else {
       // Tipo no soportado (sticker, location, etc.)
       return null;
@@ -1410,12 +1429,20 @@ function normalizeMeta(body) {
     return { 
       sender, 
       text, 
+      aiInstruction,
       metaPhoneNumberId, 
       pushName, 
       msgId, 
       audioId, 
       audioMime, 
       imageId, 
+      imageCaption,
+      videoId,
+      videoCaption,
+      docId,
+      docName,
+      docMime,
+      docCaption,
       fromMe: false, 
       isStatusEvent: false,
       isCoexSyncEvent: false 
@@ -1459,7 +1486,9 @@ async function normalizeEvolution(body, requestApiKey) {
   const fromMe = Boolean(key.fromMe);
 
   let text = '';
+  let aiInstruction = null;
   let mediaItems = [];
+  let inboundMedia = null;
   const evoUrl = process.env.EVOLUTION_API_URL || 'http://localhost:8080';
 
   if (data.message?.conversation) {
@@ -1467,45 +1496,184 @@ async function normalizeEvolution(body, requestApiKey) {
   } else if (data.message?.extendedTextMessage?.text) {
     text = data.message.extendedTextMessage.text;
   } else if (data.message?.imageMessage) {
-    text = data.message.imageMessage.caption || '';
-    try {
-      const mediaRes = await axios.post(
-        `${evoUrl}/chat/getBase64FromMediaMessage/${instance}`,
-        { message: data },
-        { ...getEvoHeaders(requestApiKey), timeout: 15000 }
-      );
-      const imageBase64 = typeof mediaRes.data === 'string' ? mediaRes.data : (mediaRes.data?.base64 || null);
-      if (imageBase64) {
-        const mimeType = data.message.imageMessage.mimetype || 'image/jpeg';
-        mediaItems.push(`data:${mimeType};base64,${imageBase64}`);
+    const imgCaption = data.message.imageMessage.caption || '';
+    text = imgCaption;
+    const mimeType = data.message.imageMessage.mimetype || 'image/jpeg';
+    const declaredSize = Number(data.message.imageMessage.fileLength) || 0;
+    const maxLimit = MEDIA_SIZE_LIMITS['image'];
+
+    if (declaredSize > 0 && declaredSize > maxLimit) {
+      console.warn(`⚠️ [Evolution Precheck] Imagen entrante excede límite (${declaredSize} > ${maxLimit}). Omitiendo descarga.`);
+      inboundMedia = { type: 'image', status: 'error', errorReason: 'FILE_TOO_LARGE', caption: imgCaption, mimeType, mediaSize: declaredSize, originalName: 'imagen.jpg' };
+    } else {
+      try {
+        const mediaRes = await axios.post(
+          `${evoUrl}/chat/getBase64FromMediaMessage/${instance}`,
+          { message: data },
+          { ...getEvoHeaders(requestApiKey), timeout: 15000 }
+        );
+        const imageBase64 = typeof mediaRes.data === 'string' ? mediaRes.data : (mediaRes.data?.base64 || null);
+        if (imageBase64) {
+          mediaItems.push(`data:${mimeType};base64,${imageBase64}`);
+          inboundMedia = {
+            buffer: Buffer.from(imageBase64, 'base64'),
+            mimeType,
+            type: 'image',
+            caption: imgCaption,
+            originalName: 'imagen.jpg'
+          };
+        } else {
+          inboundMedia = { type: 'image', status: 'error', caption: imgCaption, mimeType };
+        }
+      } catch (e) {
+        console.error('❌ [Evolution] Error descargando imagen:', e.message);
+        inboundMedia = { type: 'image', status: 'error', caption: imgCaption, mimeType };
       }
-    } catch (e) {
-      console.error('❌ [Evolution] Error descargando imagen:', e.message);
     }
   } else if (data.message?.audioMessage) {
-    try {
-      const mediaRes = await axios.post(
-        `${evoUrl}/chat/getBase64FromMediaMessage/${instance}`,
-        { message: data },
-        { ...getEvoHeaders(requestApiKey), timeout: 15000 }
-      );
-      const audioBase64 = typeof mediaRes.data === 'string' ? mediaRes.data : (mediaRes.data?.base64 || null);
-      if (audioBase64) {
-        const mimeType = data.message.audioMessage.mimetype || 'audio/ogg';
-        mediaItems.push(`data:${mimeType};base64,${audioBase64}`);
-      }
-    } catch (e) {
-      console.error('❌ [Evolution] Error descargando audio:', e.message);
-    }
+    const mimeType = data.message.audioMessage.mimetype || 'audio/ogg';
     text = '[Nota de voz de WhatsApp] Escucha este audio y respóndeme o ejecuta mi solicitud.';
+    const declaredSize = Number(data.message.audioMessage.fileLength) || 0;
+    const maxLimit = MEDIA_SIZE_LIMITS['audio'];
+
+    if (declaredSize > 0 && declaredSize > maxLimit) {
+      console.warn(`⚠️ [Evolution Precheck] Audio entrante excede límite (${declaredSize} > ${maxLimit}). Omitiendo descarga.`);
+      inboundMedia = { type: 'audio', status: 'error', errorReason: 'FILE_TOO_LARGE', mimeType, mediaSize: declaredSize, originalName: 'audio.ogg' };
+    } else {
+      try {
+        const mediaRes = await axios.post(
+          `${evoUrl}/chat/getBase64FromMediaMessage/${instance}`,
+          { message: data },
+          { ...getEvoHeaders(requestApiKey), timeout: 15000 }
+        );
+        const audioBase64 = typeof mediaRes.data === 'string' ? mediaRes.data : (mediaRes.data?.base64 || null);
+        if (audioBase64) {
+          mediaItems.push(`data:${mimeType};base64,${audioBase64}`);
+          inboundMedia = {
+            buffer: Buffer.from(audioBase64, 'base64'),
+            mimeType,
+            type: 'audio',
+            caption: '',
+            originalName: 'audio.ogg'
+          };
+        } else {
+          inboundMedia = { type: 'audio', status: 'error', mimeType };
+        }
+      } catch (e) {
+        console.error('❌ [Evolution] Error descargando audio:', e.message);
+        inboundMedia = { type: 'audio', status: 'error', mimeType };
+      }
+    }
   } else if (data.message?.videoMessage) {
-    text = (data.message.videoMessage.caption || '[Video de WhatsApp]') +
-      '\n[Sistema: El usuario envió un video. Dile amablemente que no puedes procesar videos, que por favor lo explique por texto o envíe una foto.]';
+    const vidCaption = data.message.videoMessage.caption || '';
+    // Regla Crítica: Prompt de IA NO analiza video y mantiene instrucción interna separada
+    text = vidCaption || '';
+    aiInstruction = '[Sistema: El usuario envió un video. Dile amablemente que no puedes procesar videos, que por favor lo explique por texto o envíe una foto.]';
+    const mimeType = data.message.videoMessage.mimetype || 'video/mp4';
+    const declaredSize = Number(data.message.videoMessage.fileLength) || 0;
+    const maxLimit = MEDIA_SIZE_LIMITS['video'];
+
+    if (declaredSize > 0 && declaredSize > maxLimit) {
+      console.warn(`⚠️ [Evolution Precheck] Video entrante excede límite (${declaredSize} > ${maxLimit}). Omitiendo descarga.`);
+      inboundMedia = { type: 'video', status: 'error', errorReason: 'FILE_TOO_LARGE', caption: vidCaption, mimeType, mediaSize: declaredSize, originalName: 'video.mp4' };
+    } else {
+      try {
+        const mediaRes = await axios.post(
+          `${evoUrl}/chat/getBase64FromMediaMessage/${instance}`,
+          { message: data },
+          { ...getEvoHeaders(requestApiKey), timeout: 20000 }
+        );
+        const videoBase64 = typeof mediaRes.data === 'string' ? mediaRes.data : (mediaRes.data?.base64 || null);
+        if (videoBase64) {
+          // NUNCA agregar a mediaItems: IA no analiza video
+          inboundMedia = {
+            buffer: Buffer.from(videoBase64, 'base64'),
+            mimeType,
+            type: 'video',
+            caption: vidCaption,
+            originalName: 'video.mp4'
+          };
+        } else {
+          inboundMedia = { type: 'video', status: 'error', caption: vidCaption, mimeType };
+        }
+      } catch (e) {
+        console.error('❌ [Evolution] Error descargando video:', e.message);
+        inboundMedia = { type: 'video', status: 'error', caption: vidCaption, mimeType };
+      }
+    }
+  } else if (data.message?.documentMessage) {
+    const docCaption = data.message.documentMessage.caption || '';
+    const rawFileName = data.message.documentMessage.fileName || data.message.documentMessage.title || 'documento.pdf';
+    text = docCaption || `[Documento: ${rawFileName}]`;
+    const mimeType = data.message.documentMessage.mimetype || 'application/pdf';
+    const declaredSize = Number(data.message.documentMessage.fileLength) || 0;
+    const maxLimit = MEDIA_SIZE_LIMITS['document'];
+
+    if (declaredSize > 0 && declaredSize > maxLimit) {
+      console.warn(`⚠️ [Evolution Precheck] Documento entrante excede límite (${declaredSize} > ${maxLimit}). Omitiendo descarga.`);
+      inboundMedia = { type: 'document', status: 'error', errorReason: 'FILE_TOO_LARGE', caption: docCaption, originalName: rawFileName, mimeType, mediaSize: declaredSize };
+    } else {
+      try {
+        const mediaRes = await axios.post(
+          `${evoUrl}/chat/getBase64FromMediaMessage/${instance}`,
+          { message: data },
+          { ...getEvoHeaders(requestApiKey), timeout: 20000 }
+        );
+        const docBase64 = typeof mediaRes.data === 'string' ? mediaRes.data : (mediaRes.data?.base64 || null);
+        if (docBase64) {
+          inboundMedia = {
+            buffer: Buffer.from(docBase64, 'base64'),
+            mimeType,
+            type: 'document',
+            caption: docCaption,
+            originalName: rawFileName
+          };
+        } else {
+          inboundMedia = { type: 'document', status: 'error', caption: docCaption, originalName: rawFileName, mimeType };
+        }
+      } catch (e) {
+        console.error('❌ [Evolution] Error descargando documento:', e.message);
+        inboundMedia = { type: 'document', status: 'error', caption: docCaption, originalName: rawFileName, mimeType };
+      }
+    }
+  } else if (data.message?.stickerMessage) {
+    text = '[Sticker de WhatsApp]';
+    const mimeType = 'image/webp';
+    const declaredSize = Number(data.message.stickerMessage.fileLength) || 0;
+    const maxLimit = MEDIA_SIZE_LIMITS['sticker'];
+
+    if (declaredSize > 0 && declaredSize > maxLimit) {
+      console.warn(`⚠️ [Evolution Precheck] Sticker entrante excede límite (${declaredSize} > ${maxLimit}). Omitiendo descarga.`);
+      inboundMedia = { type: 'sticker', status: 'error', errorReason: 'FILE_TOO_LARGE', mimeType, mediaSize: declaredSize, originalName: 'sticker.webp' };
+    } else {
+      try {
+        const mediaRes = await axios.post(
+          `${evoUrl}/chat/getBase64FromMediaMessage/${instance}`,
+          { message: data },
+          { ...getEvoHeaders(requestApiKey), timeout: 15000 }
+        );
+        const stickerBase64 = typeof mediaRes.data === 'string' ? mediaRes.data : (mediaRes.data?.base64 || null);
+        if (stickerBase64) {
+          inboundMedia = {
+            buffer: Buffer.from(stickerBase64, 'base64'),
+            mimeType: 'image/webp',
+            type: 'sticker',
+            caption: '',
+            originalName: 'sticker.webp'
+          };
+        } else {
+          inboundMedia = { type: 'sticker', status: 'error', mimeType };
+        }
+      } catch (e) {
+        console.error('❌ [Evolution] Error descargando sticker:', e.message);
+        inboundMedia = { type: 'sticker', status: 'error', mimeType };
+      }
+    }
   }
 
   const pushName = !fromMe ? (data?.pushName || data?.key?.pushName || null) : null;
 
-  return { sender, text, instance, pushName, fromMe, key, rawData: data, mediaItems, remoteJid, msgId: key.id || null };
+  return { sender, text, instance, pushName, fromMe, key, rawData: data, mediaItems, remoteJid, msgId: key.id || null, inboundMedia, aiInstruction };
 }
 
 const ingestionQueues = new Map();
@@ -1822,10 +1990,11 @@ async function _processWebhookEvent(body, isMeta, provider, io, query, headers) 
     console.log(`[🏢 INSTANCIA: ${logTag}] 📥 EVENTO: ${req.body?.event || 'N/A'} | De: +${normalized.sender} | Proveedor: EVOLUTION`);
   }
 
-  const { sender: clientNumber, text: userMessageText, pushName } = normalized;
+  const { sender: clientNumber, text: userMessageText, pushName, aiInstruction } = normalized;
   const remoteJid = isMeta ? clientNumber : (normalized.remoteJid || clientNumber);
   const cleanJid = remoteJid.replace(/^\+/, '');
   let mediaItems = normalized.mediaItems || [];
+  let inboundMedia = normalized.inboundMedia || null;
   const fromMe = Boolean(normalized.fromMe);
 
   // Bloquear grupos (@g.us)
@@ -1838,7 +2007,7 @@ async function _processWebhookEvent(body, isMeta, provider, io, query, headers) 
   }
 
   // Ignorar mensajes sin texto y sin contenido multimedia
-  if (!userMessageText?.trim() && !normalized.imageId && !normalized.audioId && mediaItems.length === 0) return;
+  if (!userMessageText?.trim() && !normalized.imageId && !normalized.audioId && !normalized.videoId && !normalized.docId && !inboundMedia && mediaItems.length === 0) return;
 
   // ── 3.5 DEDUPLICACIÓN DE WEBHOOKS (REINTENTOS DE RED) ──
   if (normalized.msgId) {
@@ -1876,21 +2045,81 @@ async function _processWebhookEvent(body, isMeta, provider, io, query, headers) 
       tenant = metaNumberRecord.tenant;
       console.log(`✅ [Meta Gateway] Tenant resuelto: ${tenant.name} (${tenant.id})`);
 
-      // ── DESCARGA DE AUDIO / NOTA DE VOZ EN META CLOUD API ──
+      // ── DESCARGA DE MULTIMEDIA EN META CLOUD API ──
       const metaToken = metaNumberRecord.metaAccessToken || process.env.META_ACCESS_TOKEN;
       if (normalized.audioId && metaToken) {
         console.log(`🎙️ [Meta Audio] Descargando nota de voz (${normalized.audioId}) vía Graph API...`);
         const audioRes = await downloadMetaMedia(normalized.audioId, metaToken);
         if (audioRes?.dataUrl) {
           mediaItems.push(audioRes.dataUrl);
+          const base64Data = audioRes.dataUrl.split(',')[1];
+          if (base64Data) {
+            inboundMedia = {
+              buffer: Buffer.from(base64Data, 'base64'),
+              mimeType: audioRes.mimeType || 'audio/ogg',
+              type: 'audio',
+              originalName: 'audio.ogg'
+            };
+          }
           console.log(`✅ [Meta Audio] Nota de voz descargada y enviada a IA (${audioRes.mimeType})`);
+        } else {
+          inboundMedia = { type: 'audio', status: 'unavailable', mimeType: 'audio/ogg' };
         }
       } else if (normalized.imageId && metaToken) {
         console.log(`📸 [Meta Imagen] Descargando imagen (${normalized.imageId}) vía Graph API...`);
         const imgRes = await downloadMetaMedia(normalized.imageId, metaToken);
         if (imgRes?.dataUrl) {
           mediaItems.push(imgRes.dataUrl);
+          const base64Data = imgRes.dataUrl.split(',')[1];
+          if (base64Data) {
+            inboundMedia = {
+              buffer: Buffer.from(base64Data, 'base64'),
+              mimeType: imgRes.mimeType || 'image/jpeg',
+              type: 'image',
+              caption: normalized.imageCaption || '',
+              originalName: 'imagen.jpg'
+            };
+          }
           console.log(`✅ [Meta Imagen] Imagen descargada y enviada a IA`);
+        } else {
+          inboundMedia = { type: 'image', status: 'unavailable', caption: normalized.imageCaption || '', mimeType: 'image/jpeg' };
+        }
+      } else if (normalized.videoId && metaToken) {
+        console.log(`🎥 [Meta Video] Descargando video (${normalized.videoId}) vía Graph API...`);
+        const vidRes = await downloadMetaMedia(normalized.videoId, metaToken);
+        if (vidRes?.dataUrl) {
+          // CRÍTICO: NO agregar a mediaItems (IA no analiza video)
+          const base64Data = vidRes.dataUrl.split(',')[1];
+          if (base64Data) {
+            inboundMedia = {
+              buffer: Buffer.from(base64Data, 'base64'),
+              mimeType: vidRes.mimeType || 'video/mp4',
+              type: 'video',
+              caption: normalized.videoCaption || '',
+              originalName: 'video.mp4'
+            };
+          }
+          console.log(`✅ [Meta Video] Video descargado para CRM (excluido de IA)`);
+        } else {
+          inboundMedia = { type: 'video', status: 'unavailable', caption: normalized.videoCaption || '', mimeType: 'video/mp4' };
+        }
+      } else if (normalized.docId && metaToken) {
+        console.log(`📄 [Meta Documento] Descargando doc (${normalized.docId}) vía Graph API...`);
+        const docRes = await downloadMetaMedia(normalized.docId, metaToken);
+        if (docRes?.dataUrl) {
+          const base64Data = docRes.dataUrl.split(',')[1];
+          if (base64Data) {
+            inboundMedia = {
+              buffer: Buffer.from(base64Data, 'base64'),
+              mimeType: docRes.mimeType || normalized.docMime || 'application/pdf',
+              type: 'document',
+              caption: normalized.docCaption || '',
+              originalName: normalized.docName || 'documento.pdf'
+            };
+          }
+          console.log(`✅ [Meta Documento] Documento descargado para CRM`);
+        } else {
+          inboundMedia = { type: 'document', status: 'unavailable', caption: normalized.docCaption || '', originalName: normalized.docName || 'documento.pdf', mimeType: normalized.docMime || 'application/pdf' };
         }
       }
     } else {
@@ -2078,31 +2307,104 @@ async function _processWebhookEvent(body, isMeta, provider, io, query, headers) 
     }
 
     // ── 7. REGISTRO DEL MENSAJE ENTRANTE EN CRM ────────────────────────────────
+    let mediaTypeToSave = null;
+    let mediaPathToSave = null;
+    let mimeTypeToSave = null;
+    let fileNameToSave = null;
+    let captionToSave = null;
+    let mediaSizeToSave = null;
+    let mediaStatusToSave = null;
+
+    if (inboundMedia) {
+      mediaTypeToSave = inboundMedia.type || null;
+      captionToSave = inboundMedia.caption || null;
+      mimeTypeToSave = inboundMedia.mimeType || null;
+      fileNameToSave = inboundMedia.originalName || null;
+
+      if (inboundMedia.buffer) {
+        try {
+          const saved = await saveInboundMedia({
+            buffer: inboundMedia.buffer,
+            mimeType: inboundMedia.mimeType,
+            tenantId: tenant.id,
+            originalName: inboundMedia.originalName,
+            mediaCategory: inboundMedia.type
+          });
+          mediaPathToSave = saved.relativePath;
+          mimeTypeToSave = saved.mimeType;
+          fileNameToSave = saved.safeFileName;
+          mediaSizeToSave = saved.size;
+          mediaStatusToSave = 'ready';
+        } catch (saveErr) {
+          console.error('❌ [Media Storage] Error persistiendo multimedia inbound:', saveErr.message);
+          mediaStatusToSave = 'error';
+        }
+      } else {
+        mediaStatusToSave = 'error';
+      }
+    }
+
+    // Contenido legible para Message.content
+    let contentToSave = userMessageText;
+    if (inboundMedia) {
+      if (inboundMedia.caption) {
+        contentToSave = inboundMedia.caption;
+      } else if (inboundMedia.type === 'document' && inboundMedia.originalName) {
+        contentToSave = inboundMedia.originalName;
+      } else {
+        // Sin caption: content vacío para evitar duplicidad, la UI renderiza el multimedia
+        contentToSave = '';
+      }
+    }
+
     const incomingNow = new Date();
     const [incomingMsg] = await prisma.$transaction([
       prisma.message.create({
         data: {
-          content: userMessageText,
+          content: contentToSave,
           senderRole: 'contact',
           status: 'delivered',
           externalId: normalized.msgId || null,
           chatId: chat.id,
-          tenantId: tenant.id
+          tenantId: tenant.id,
+          mediaType: mediaTypeToSave,
+          mediaPath: mediaPathToSave,
+          mimeType: mimeTypeToSave,
+          fileName: fileNameToSave,
+          caption: captionToSave,
+          mediaSize: mediaSizeToSave,
+          mediaStatus: mediaStatusToSave
         }
       }),
       prisma.chat.update({ where: { id: chat.id }, data: { updatedAt: incomingNow } })
     ]);
+
+    let mediaToken = null;
+    let mediaUrl = null;
+    if (mediaPathToSave) {
+      mediaToken = generateMediaAccessToken({ messageId: incomingMsg.id, tenantId: tenant.id });
+      mediaUrl = `/api/chats/media/${incomingMsg.id}?mt=${mediaToken}`;
+    }
+
     const incomingIoRoom = tenant?.id ? `tenant:${tenant.id}` : null;
     if (req.io && incomingIoRoom) {
       req.io.to(incomingIoRoom).emit('new_whatsapp_message', {
         chatId: chat.id,
         remoteJid,
-        text: userMessageText,
+        text: contentToSave,
         type: 'incoming',
         from: 'client',
         senderRole: 'contact',
         externalId: normalized.msgId || null,
         status: 'delivered',
+        mediaType: mediaTypeToSave,
+        mediaUrl,
+        mediaToken,
+        mimeType: mimeTypeToSave,
+        fileName: fileNameToSave,
+        caption: captionToSave,
+        mediaSize: mediaSizeToSave,
+        mediaStatus: mediaStatusToSave,
         createdAt: incomingMsg.createdAt.toISOString(),
         lastMessageAt: incomingMsg.createdAt.toISOString(),
         timestamp: incomingMsg.createdAt
@@ -2196,7 +2498,13 @@ async function _processWebhookEvent(body, isMeta, provider, io, query, headers) 
     if (processingLocks.has(bufferKey)) {
       const existingQueue = pendingQueues.get(bufferKey);
       if (existingQueue) {
-        existingQueue.text += '\n' + userMessageText;
+        if (userMessageText) {
+          existingQueue.text = existingQueue.text ? existingQueue.text + '\n' + userMessageText : userMessageText;
+        }
+        if (aiInstruction) {
+          existingQueue.aiInstructions = existingQueue.aiInstructions || [];
+          existingQueue.aiInstructions.push(aiInstruction);
+        }
         if (incomingMsg?.id) {
           existingQueue.sourceMessageId = incomingMsg.id;
         }
@@ -2212,6 +2520,7 @@ async function _processWebhookEvent(body, isMeta, provider, io, query, headers) 
         pendingQueues.set(bufferKey, {
           bufferKey,
           remoteJid: cleanJid, clientNumber, text: userMessageText, mediaItems: mediaItems.slice(0, 3),
+          aiInstructions: aiInstruction ? [aiInstruction] : [],
           tenant, contact, chat, instance, requestApiKey, provider,
           metaPhoneNumberId: metaNumberRecord?.metaPhoneNumberId,
           metaAccessToken: metaNumberRecord?.metaAccessToken,
@@ -2242,7 +2551,13 @@ async function _processWebhookEvent(body, isMeta, provider, io, query, headers) 
     const existingBuffer = messageBuffers.get(bufferKey);
     if (existingBuffer) {
       clearTimeout(existingBuffer.timer);
-      existingBuffer.text += '\n' + userMessageText;
+      if (userMessageText) {
+        existingBuffer.text = existingBuffer.text ? existingBuffer.text + '\n' + userMessageText : userMessageText;
+      }
+      if (aiInstruction) {
+        existingBuffer.aiInstructions = existingBuffer.aiInstructions || [];
+        existingBuffer.aiInstructions.push(aiInstruction);
+      }
       if (incomingMsg?.id) {
         existingBuffer.sourceMessageId = incomingMsg.id;
       }
@@ -2269,6 +2584,7 @@ async function _processWebhookEvent(body, isMeta, provider, io, query, headers) 
         remoteJid: cleanJid,
         clientNumber,
         text: userMessageText,
+        aiInstructions: aiInstruction ? [aiInstruction] : [],
         mediaItems: mediaItems.slice(0, 3),
         tenant,
         contact,
@@ -2321,6 +2637,7 @@ async function processBufferedMessage(bufferKey) {
 
   let wasSuperseded = false;
   const userMessageText = buffer?.text || '';
+  const aiInstructions = buffer?.aiInstructions || [];
 
   try {
     const {
@@ -2819,6 +3136,10 @@ ${catalogIndexCsv}
 
     // Regla vital de intención más reciente (Latest User Intent Wins)
     finalPrompt += `\n\n[REGLA VITAL: PRIORIDAD DE LA INTENCIÓN MÁS RECIENTE (LATEST INTENT WINS)]:\nSi existen varios mensajes recientes del usuario en la conversación o ráfaga (por ejemplo un saludo o repregunta seguido de una consulta específica como "Hola??" seguido de "Quiero audífonos", o "¿Cómo te llamas?" seguido de "Audífonos" o "¿Tienes fotos?"), prioriza SIEMPRE la intención más reciente y específica. No te limites a responder al saludo o a la duda inicial. Atiende de inmediato el requerimiento más reciente.\n`;
+
+    if (aiInstructions && aiInstructions.length > 0) {
+      finalPrompt += `\n\n[INSTRUCCIONES INTERNAS DE MULTIMEDIA ENTRANTE]:\n${aiInstructions.join('\n')}\n`;
+    }
 
     const systemPrompt = finalPrompt;
 
@@ -4086,6 +4407,9 @@ Atributos/Tags: ${Array.isArray(product.tags) ? product.tags.join(', ') : ''}
           pending.text = `${trimmedPrev}\n${pending.text}`;
         }
       }
+      if (wasSuperseded && aiInstructions && aiInstructions.length > 0) {
+        pending.aiInstructions = [...(aiInstructions || []), ...(pending.aiInstructions || [])];
+      }
 
       // ─── AI CONFIG EPOCH CHECK en re-inyección de pendingQueue ───
       const reInjectEpoch = getTenantAiEpoch(pending.tenant?.id);
@@ -4141,6 +4465,10 @@ export function buildChatContext(rawMessages, MAX_USER_MESSAGE_CHARS = 2000) {
 
     const role = msg.senderRole === 'contact' ? 'user' : 'model';
     let content = msg.content || '';
+
+    if (role === 'user' && !content && msg.mediaType === 'video') {
+      content = '[Video enviado por el cliente]';
+    }
 
     // Sanitizar URLs de multimedia internas para evitar que Gemini las memorice o emita en texto
     // Transforma marcadores históricos [Imagen]: https://... y [Video]: https://... a descriptores semánticos limpios

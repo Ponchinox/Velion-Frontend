@@ -98,12 +98,30 @@ export async function getChats(req, res) {
         ? lastMessage.createdAt.toISOString()
         : c.updatedAt.toISOString();
 
+      let displayLastMsg = 'Sin mensajes';
+      if (lastMessage) {
+        if (lastMessage.mediaType) {
+          const mediaPrefixes = {
+            image: '📸 Imagen',
+            video: '🎥 Video',
+            audio: '🎙️ Audio',
+            document: `📄 ${lastMessage.fileName || 'Documento'}`,
+            sticker: '👾 Sticker'
+          };
+          const prefix = mediaPrefixes[lastMessage.mediaType] || '📎 Multimedia';
+          displayLastMsg = lastMessage.content ? `${prefix}: ${lastMessage.content}` : prefix;
+        } else {
+          displayLastMsg = lastMessage.content || 'Sin mensajes';
+        }
+      }
+
       return {
         id: c.id,
         contactId: c.contactId,
         name: c.contact?.name || 'Cliente',
         phone: c.contact?.phone || '',
-        lastMsg: lastMessage ? lastMessage.content : 'Sin mensajes',
+        lastMsg: displayLastMsg,
+        lastMsgType: lastMessage?.mediaType || 'text',
         time: lastMessage
           ? lastMessage.createdAt.toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' })
           : '',
@@ -131,8 +149,17 @@ export async function getChats(req, res) {
 }
 
 
+import fs from 'fs';
+import path from 'path';
+import {
+  resolveMediaPath,
+  PRIVATE_MEDIA_ROOT,
+  generateMediaAccessToken,
+  sanitizeDisplayFileName
+} from '../services/mediaStorageService.js';
+
 /**
- * Obtiene el historial de mensajes de un chat específico con status y externalId
+ * Obtiene el historial de mensajes de un chat específico con status, externalId y multimedia estructurada
  */
 export async function getMessages(req, res) {
   try {
@@ -151,19 +178,186 @@ export async function getMessages(req, res) {
       orderBy: { createdAt: 'asc' },
     });
 
-    const formatted = messages.map((m) => ({
-      id: m.id,
-      from: m.senderRole === 'contact' ? 'client' : 'business',
-      text: m.content,
-      status: m.status || 'sent',
-      externalId: m.externalId || null,
-      time: m.createdAt.toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' }),
-    }));
+    const formatted = messages.map((m) => {
+      let mediaToken = null;
+      let mediaUrl = null;
+      if (m.mediaPath) {
+        mediaToken = generateMediaAccessToken({ messageId: m.id, tenantId: m.tenantId });
+        mediaUrl = `/api/chats/media/${m.id}?mt=${mediaToken}`;
+      }
+
+      return {
+        id: m.id,
+        from: m.senderRole === 'contact' ? 'client' : 'business',
+        text: m.content,
+        status: m.status || 'sent',
+        externalId: m.externalId || null,
+        time: m.createdAt.toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' }),
+        mediaType: m.mediaType || null,
+        mediaUrl,
+        mediaToken,
+        mimeType: m.mimeType || null,
+        fileName: m.fileName || null,
+        caption: m.caption || null,
+        mediaSize: m.mediaSize || null,
+        mediaStatus: m.mediaStatus || null,
+      };
+    });
 
     return res.json(formatted);
   } catch (error) {
     console.error('Error en getMessages:', error);
     return res.status(500).json({ error: 'Error al obtener el historial de mensajes.' });
+  }
+}
+
+/**
+ * Genera o refresca un Media Access Token de corta duración para un mensaje específico.
+ * Requiere JWT de sesión en cabecera Authorization: Bearer.
+ */
+export async function getChatMediaToken(req, res) {
+  try {
+    const { messageId } = req.params;
+    const userTenantId = req.user.tenantId;
+    const isSuperAdmin = req.user.role === 'superadmin';
+
+    if (!messageId) {
+      return res.status(400).json({ error: 'ID de mensaje no proporcionado.' });
+    }
+
+    const message = await prisma.message.findUnique({
+      where: { id: messageId },
+      select: { id: true, tenantId: true, mediaPath: true }
+    });
+
+    if (!message) {
+      return res.status(404).json({ error: 'Mensaje no encontrado.' });
+    }
+
+    if (!isSuperAdmin && message.tenantId !== userTenantId) {
+      return res.status(403).json({ error: 'Acceso denegado a este recurso.' });
+    }
+
+    if (!message.mediaPath) {
+      return res.status(404).json({ error: 'El mensaje no tiene contenido multimedia asociado.' });
+    }
+
+    const mediaToken = generateMediaAccessToken({ messageId: message.id, tenantId: message.tenantId });
+    const mediaUrl = `/api/chats/media/${message.id}?mt=${mediaToken}`;
+
+    return res.json({ token: mediaToken, mediaUrl, messageId: message.id });
+  } catch (error) {
+    console.error('Error en getChatMediaToken:', error);
+    return res.status(500).json({ error: 'Error al generar token multimedia.' });
+  }
+}
+
+/**
+ * Sirve de forma segura y autenticada el archivo multimedia de un mensaje del CRM.
+ * Requiere Media Access Token scoped (?mt=...) o cabecera Authorization: Bearer.
+ * NUNCA acepta JWT principal de sesión en query string.
+ * Soporta HTTP Range para streaming fluido de video y audio.
+ */
+export async function getChatMedia(req, res) {
+  try {
+    const { messageId } = req.params;
+    const authTenantId = req.mediaAuth?.tenantId;
+    const isSuperAdmin = Boolean(req.mediaAuth?.isSuperAdmin);
+
+    if (!messageId) {
+      return res.status(400).json({ error: 'ID de mensaje no proporcionado.' });
+    }
+
+    const message = await prisma.message.findUnique({
+      where: { id: messageId },
+      select: {
+        id: true,
+        tenantId: true,
+        mediaPath: true,
+        mimeType: true,
+        fileName: true,
+        mediaStatus: true,
+        mediaType: true
+      }
+    });
+
+    if (!message) {
+      return res.status(404).json({ error: 'Mensaje no encontrado.' });
+    }
+
+    // Aislamiento Multi-Tenant Estricto
+    if (!isSuperAdmin && message.tenantId !== authTenantId) {
+      return res.status(403).json({ error: 'Acceso denegado a este recurso multimedia.' });
+    }
+
+    // Validación de Token Scoped (un token de mensaje A no abre mensaje B)
+    if (req.mediaAuth?.isScopedToken && req.mediaAuth?.messageId !== message.id) {
+      return res.status(403).json({ error: 'Token no autorizado para este mensaje.' });
+    }
+
+    if (!message.mediaPath || message.mediaStatus === 'unavailable' || message.mediaStatus === 'error') {
+      return res.status(404).json({ error: 'El archivo multimedia no está disponible.' });
+    }
+
+    // Resolver ruta en disco con prevención estricta de Path Traversal dentro de PRIVATE_MEDIA_ROOT
+    const resolvedPath = resolveMediaPath(message.mediaPath);
+    if (!resolvedPath || !resolvedPath.startsWith(PRIVATE_MEDIA_ROOT + path.sep)) {
+      return res.status(403).json({ error: 'Ruta de archivo no autorizada.' });
+    }
+
+    if (!fs.existsSync(resolvedPath)) {
+      return res.status(404).json({ error: 'Archivo no encontrado en el almacenamiento.' });
+    }
+
+    const stat = fs.statSync(resolvedPath);
+    const contentType = message.mimeType || 'application/octet-stream';
+    const safeDisplay = sanitizeDisplayFileName(message.fileName || path.basename(resolvedPath));
+
+    // Headers de seguridad y caché privada
+    res.setHeader('Content-Type', contentType);
+    res.setHeader('Content-Disposition', `inline; filename="${encodeURIComponent(safeDisplay)}"`);
+    res.setHeader('Cache-Control', 'private, max-age=86400');
+    res.setHeader('Accept-Ranges', 'bytes');
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+
+    // Manejo de Range Requests (HTTP 206) para video y audio
+    const range = req.headers.range;
+    if (range) {
+      const parts = range.replace(/bytes=/, "").split("-");
+      const start = parseInt(parts[0], 10);
+      const end = parts[1] ? parseInt(parts[1], 10) : stat.size - 1;
+
+      if (isNaN(start) || start >= stat.size || end >= stat.size || start > end) {
+        res.status(416).setHeader('Content-Range', `bytes */${stat.size}`);
+        return res.end();
+      }
+
+      const chunkSize = (end - start) + 1;
+      const fileStream = fs.createReadStream(resolvedPath, { start, end });
+
+      res.status(206);
+      res.setHeader('Content-Range', `bytes ${start}-${end}/${stat.size}`);
+      res.setHeader('Content-Length', chunkSize);
+
+      fileStream.on('error', (streamErr) => {
+        console.error('❌ Error en streaming de media:', streamErr.message);
+        if (!res.headersSent) res.status(500).end();
+      });
+
+      return fileStream.pipe(res);
+    }
+
+    // Petición estándar (HTTP 200)
+    res.setHeader('Content-Length', stat.size);
+    const fileStream = fs.createReadStream(resolvedPath);
+    fileStream.on('error', (streamErr) => {
+      console.error('❌ Error leyendo archivo de media:', streamErr.message);
+      if (!res.headersSent) res.status(500).end();
+    });
+    return fileStream.pipe(res);
+  } catch (err) {
+    console.error('❌ Error en getChatMedia:', err.message);
+    return res.status(500).json({ error: 'Error al servir el archivo multimedia.' });
   }
 }
 

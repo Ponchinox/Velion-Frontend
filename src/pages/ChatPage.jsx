@@ -12,6 +12,8 @@ import {
   Check,
   Checks,
   ClipboardText,
+  FileText,
+  DownloadSimple,
 } from '@phosphor-icons/react';
 import * as chatService from '../services/chatService';
 import * as contactService from '../services/contactService';
@@ -86,7 +88,25 @@ function StatusIcon({ status }) {
   return <Check size={12} className="text-white/60 inline-block" title="Enviado" />;
 }
 
-/* ─── Renderizador Multimedia Inteligente ─── */
+/* ─── Helpers de Multimedia Segura ─── */
+function formatFileSize(bytes) {
+  if (!bytes || isNaN(bytes)) return '';
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function resolveMediaUrl(relativeOrAbsoluteUrl) {
+  if (!relativeOrAbsoluteUrl) return '';
+  if (relativeOrAbsoluteUrl.startsWith('http://') || relativeOrAbsoluteUrl.startsWith('https://') || relativeOrAbsoluteUrl.startsWith('data:')) {
+    return relativeOrAbsoluteUrl;
+  }
+  const cleanBase = API_BASE_URL.replace(/\/+$/, '');
+  const cleanPath = relativeOrAbsoluteUrl.startsWith('/') ? relativeOrAbsoluteUrl : `/${relativeOrAbsoluteUrl}`;
+  return `${cleanBase}${cleanPath}`;
+}
+
+/* ─── Renderizador Multimedia Inteligente (Legacy text URLs) ─── */
 function renderMessageContent(text, onImageClick) {
   if (!text) return null;
 
@@ -124,9 +144,130 @@ function renderMessageContent(text, onImageClick) {
   return <p className="text-sm leading-relaxed break-words whitespace-pre-wrap">{text}</p>;
 }
 
+/* ─── Renderizador Multimedia Estructurado ─── */
+function BubbleMedia({ msg, onImageClick }) {
+  const [hasError, setHasError] = useState(false);
+  const [activeMediaUrl, setActiveMediaUrl] = useState(msg.mediaUrl || msg.image || null);
+  const mediaType = msg.mediaType || (msg.image ? 'image' : null);
+  const isUnavailable = msg.mediaStatus === 'error' || msg.mediaStatus === 'unavailable' || hasError;
+
+  const handleMediaError = async () => {
+    // Si el token de corta duración expiró o falló la primera carga, intentar refrescar vía endpoint autenticado
+    if (msg.id && !hasError) {
+      try {
+        const res = await api.get(`/api/chats/media-token/${msg.id}`);
+        if (res.data?.mediaUrl) {
+          setActiveMediaUrl(res.data.mediaUrl);
+          return;
+        }
+      } catch {
+        // Fallback a estado no disponible
+      }
+    }
+    setHasError(true);
+  };
+
+  if (isUnavailable) {
+    const typeLabel = {
+      image: 'Imagen',
+      video: 'Video',
+      audio: 'Nota de voz / Audio',
+      document: 'Documento',
+      sticker: 'Sticker'
+    }[mediaType] || 'Archivo';
+
+    return (
+      <div className="flex items-center gap-2 p-2.5 my-1 rounded-xl bg-black/10 dark:bg-white/10 text-xs text-muted border border-dashed border-line">
+        <WarningCircle size={18} className="text-amber-500 flex-shrink-0" />
+        <span>Multimedia no disponible ({typeLabel})</span>
+      </div>
+    );
+  }
+
+  const mediaSrc = resolveMediaUrl(activeMediaUrl);
+  if (!mediaSrc) return null;
+
+  if (mediaType === 'image' || mediaType === 'sticker') {
+    return (
+      <div className="my-1">
+        <img
+          src={mediaSrc}
+          alt={msg.fileName || 'Imagen adjunta'}
+          className="rounded-lg max-w-[280px] max-h-64 object-cover cursor-pointer hover:opacity-95 transition-opacity shadow-sm"
+          loading="lazy"
+          onError={handleMediaError}
+          onClick={() => onImageClick && onImageClick(mediaSrc)}
+        />
+      </div>
+    );
+  }
+
+  if (mediaType === 'video') {
+    return (
+      <div className="my-1 w-full max-w-[320px]">
+        <video
+          controls
+          preload="metadata"
+          playsInline
+          className="rounded-lg w-full max-h-64 bg-black object-contain shadow-sm"
+          src={mediaSrc}
+          onError={handleMediaError}
+        >
+          Tu navegador no soporta reproducción de video.
+        </video>
+      </div>
+    );
+  }
+
+  if (mediaType === 'audio') {
+    return (
+      <div className="my-1 w-full max-w-[280px]">
+        <audio
+          controls
+          className="w-full my-1"
+          src={mediaSrc}
+          onError={handleMediaError}
+        >
+          Tu navegador no soporta reproducción de audio.
+        </audio>
+      </div>
+    );
+  }
+
+  if (mediaType === 'document') {
+    const displayName = msg.fileName || 'Documento';
+    return (
+      <div className="flex items-center gap-2.5 p-2.5 my-1 rounded-xl bg-black/5 dark:bg-white/5 border border-line max-w-[280px]">
+        <FileText size={28} className="text-brand flex-shrink-0" />
+        <div className="flex-1 min-w-0">
+          <p className="text-xs font-semibold truncate text-hi" title={displayName}>{displayName}</p>
+          {msg.mediaSize && (
+            <p className="text-[10px] text-muted">{formatFileSize(msg.mediaSize)}</p>
+          )}
+        </div>
+        <a
+          href={mediaSrc}
+          download={displayName}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="p-1.5 hover:bg-brand/10 rounded text-brand transition-colors flex-shrink-0"
+          title="Descargar archivo"
+        >
+          <DownloadSimple size={18} weight="bold" />
+        </a>
+      </div>
+    );
+  }
+
+  return null;
+}
+
 /* ─── Burbuja de mensaje con estados ─── */
 function Bubble({ msg, onImageClick }) {
   const isClient = msg.from === 'client';
+  const hasStructuredMedia = Boolean(msg.mediaType || msg.mediaUrl || msg.image || msg.mediaStatus === 'unavailable' || msg.mediaStatus === 'error');
+  const displayText = msg.caption || msg.text || '';
+
   return (
     <div className={`flex ${isClient ? 'justify-start' : 'justify-end'}`}>
       <div
@@ -138,16 +279,23 @@ function Bubble({ msg, onImageClick }) {
           }
         `}
       >
-        {msg.image && (
-          <img
-            src={msg.image}
-            alt="Imagen adjunta"
-            className="rounded-lg mb-2 w-full object-cover max-h-40 cursor-pointer hover:opacity-90 transition-opacity"
-            loading="lazy"
-            onClick={() => onImageClick && onImageClick(msg.image)}
-          />
+        {/* Renderizado de multimedia estructurada */}
+        {hasStructuredMedia && (
+          <BubbleMedia msg={msg} onImageClick={onImageClick} />
         )}
-        {msg.text && renderMessageContent(msg.text, onImageClick)}
+
+        {/* Renderizado de texto o fallback legacy */}
+        {displayText && (
+          hasStructuredMedia
+            ? <p className="text-sm leading-relaxed mt-1 break-words whitespace-pre-wrap">{displayText}</p>
+            : renderMessageContent(displayText, onImageClick)
+        )}
+
+        {/* Fallback de seguridad absoluto: nunca burbuja vacía */}
+        {!displayText && !hasStructuredMedia && (
+          <p className="text-xs text-muted italic">Mensaje sin contenido visible</p>
+        )}
+
         <div className={`text-[10px] mt-1 flex items-center justify-end gap-1 ${isClient ? 'text-muted' : 'text-white/70'}`}>
           <span>{msg.time}</span>
           {!isClient && <StatusIcon status={msg.status} />}
@@ -714,8 +862,14 @@ export default function ChatPage() {
           externalId: msg.externalId || null,
           status: msg.status || (isIncoming ? 'delivered' : 'sent'),
           from: isIncoming ? 'client' : 'business',
-          text: msg.mediaType === 'image' ? '' : msg.text,
-          image: msg.mediaType === 'image' ? msg.text : undefined,
+          text: msg.text || '',
+          mediaType: msg.mediaType || null,
+          mediaUrl: msg.mediaUrl || null,
+          mimeType: msg.mimeType || null,
+          fileName: msg.fileName || null,
+          caption: msg.caption || null,
+          mediaSize: msg.mediaSize || null,
+          mediaStatus: msg.mediaStatus || (msg.mediaType ? 'ready' : null),
           time: new Date(msg.createdAt || msg.timestamp || Date.now()).toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' }),
         };
 
@@ -740,11 +894,24 @@ export default function ChatPage() {
         const newIso = msg.createdAt || msg.lastMessageAt || (msg.timestamp ? new Date(msg.timestamp).toISOString() : new Date().toISOString());
         const newTime = new Date(msg.timestamp || msg.createdAt || Date.now()).toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' });
 
+        let sidebarMsg = msg.text || '';
+        if (msg.mediaType) {
+          const prefixes = {
+            image: '📸 Imagen',
+            video: '🎥 Video',
+            audio: '🎙️ Audio',
+            document: `📄 ${msg.fileName || 'Documento'}`,
+            sticker: '👾 Sticker'
+          };
+          const p = prefixes[msg.mediaType] || '📎 Multimedia';
+          sidebarMsg = (msg.caption || msg.text) ? `${p}: ${msg.caption || msg.text}` : p;
+        }
+
         const updated = prev.map(c => {
           if (c.id === msg.chatId) {
             return {
               ...c,
-              lastMsg: msg.mediaType === 'image' ? '📸 Imagen' : (msg.text || ''),
+              lastMsg: sidebarMsg,
               time: newTime,
               lastMessageAt: newIso,
               _sortTs: Date.now(),
