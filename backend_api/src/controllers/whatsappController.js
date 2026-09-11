@@ -920,7 +920,7 @@ export function _resetProcessingStateForTesting() {
   messageBuffers.clear();
 }
 
-export { processingLocks, pendingQueues, messageBuffers };
+export { processingLocks, pendingQueues, messageBuffers, processBufferedMessage };
 
 // ── aiMessageTracker: delegamos al servicio de dos capas (RAM + PostgreSQL) ──
 // markMessageAsSentByAi es exportada para compatibilidad con importaciones externas
@@ -2320,11 +2320,11 @@ async function processBufferedMessage(bufferKey) {
     (getChatGenerationVersion(bufferKey) !== generationVersion) || pendingQueues.has(bufferKey);
 
   let wasSuperseded = false;
+  const userMessageText = buffer?.text || '';
 
   try {
     const {
       remoteJid: cleanJid,
-      text: userMessageText,
       mediaItems,
       tenant,
       contact,

@@ -15,15 +15,18 @@ import {
   processingLocks,
   pendingQueues,
   messageBuffers,
+  processBufferedMessage,
   handleOperationalTool
 } from './src/controllers/whatsappController.js';
+import prisma from './src/db.js';
+import { GoogleGenAI } from '@google/genai';
 import {
   generateAIResponse,
   globalCircuitBreaker
 } from './src/services/aiService.js';
 
 console.log('======================================================================');
-console.log('VELION TEST SUITE: STALE GENERATION RACE (N1 – N17)');
+console.log('VELION TEST SUITE: STALE GENERATION RACE (N1 – N19)');
 console.log('======================================================================\n');
 
 let passedCount = 0;
@@ -331,13 +334,125 @@ async function runSuite() {
     assert.ok(lockDeleteIndex !== -1, 'processingLocks.delete debe existir dentro de finally');
   });
 
+  // ── N18: STATIC SCOPE CHECK: userMessageText NO DEBE SER BLOCK-SCOPED EN TRY ─
+  await runTest('N18', 'userMessageText está en scope de función fuera de try para acceso seguro en finally', async () => {
+    const funcIndex = controllerCode.indexOf('async function processBufferedMessage(bufferKey) {');
+    assert.ok(funcIndex !== -1, 'processBufferedMessage debe existir');
+
+    const tryIndex = controllerCode.indexOf('try {', funcIndex);
+    assert.ok(tryIndex !== -1, 'Bloque try debe existir en processBufferedMessage');
+
+    const userMessageDeclIndex = controllerCode.indexOf("const userMessageText = buffer?.text || '';", funcIndex);
+    assert.ok(userMessageDeclIndex !== -1, 'const userMessageText debe declararse explícitamente en processBufferedMessage');
+    assert.ok(
+      userMessageDeclIndex < tryIndex,
+      'userMessageText DEBE declararse antes del bloque try para evitar ReferenceError en finally'
+    );
+
+    // Asegurar que no esté declarado dentro del destructuring de try
+    const tryBlockHeader = controllerCode.slice(tryIndex, tryIndex + 400);
+    assert.ok(
+      !tryBlockHeader.includes('text: userMessageText'),
+      'text: userMessageText NO debe estar en el destructuring dentro de try'
+    );
+  });
+
+  // ── N19: DRENAJE REAL DE pendingQueue EN FINALLY TRAS GENERATION_SUPERSEDED ────
+  await runTest('N19', 'processBufferedMessage superseded drena pendingQueue en finally sin ReferenceError', async () => {
+    _resetProcessingStateForTesting();
+    const bufferKey = 'tenant-test-n19:51999998877';
+
+    // Mock seguro de BD para el entorno de prueba aislado
+    prisma.message.findFirst = async () => null;
+    prisma.message.findMany = async () => [];
+    prisma.message.count = async () => 0;
+    prisma.order = { count: async () => 0, findMany: async () => [] };
+    prisma.customer.findUnique = async () => ({ id: 'c-n19', name: 'Tester', isBanned: false, isBotPaused: false });
+    prisma.customer.findFirst = async () => null;
+    prisma.customer.update = async () => ({});
+    prisma.contact.findFirst = async () => null;
+    prisma.flow = { findFirst: async () => null };
+    prisma.product = { findMany: async () => [] };
+    prisma.tenantApiKey = { findFirst: async () => null };
+    prisma.chat.findFirst = async () => null;
+    prisma.tenant.findUnique = async () => ({ aiEnabled: true, businessDescription: 'Test store', currency: 'PEN' });
+
+    GoogleGenAI.prototype.models = {
+      generateContent: async () => ({
+        candidates: [{
+          content: {
+            role: 'model',
+            parts: [{ text: 'Respuesta inicial mock' }]
+          }
+        }],
+        usageMetadata: { promptTokenCount: 10, candidatesTokenCount: 10 }
+      })
+    };
+
+    // Mensaje A entra al buffer con versión inicial
+    incrementChatGenerationVersion(bufferKey); // v1
+    messageBuffers.set(bufferKey, {
+      bufferKey,
+      remoteJid: '51999998877@s.whatsapp.net',
+      clientNumber: '51999998877',
+      text: '¿Qué opciones de audífonos tienes?',
+      tenant: { id: 'tenant-test-n19', name: 'Test Tenant' },
+      contact: { id: 'contact-n19' },
+      chat: { id: 'chat-n19' },
+      instance: 'instance-n19',
+      requestApiKey: 'test-key-n19',
+      provider: 'EVOLUTION',
+      epochAtCreation: 0
+    });
+
+    // Mensaje B llega durante la generación de A (incrementa versión y entra a pendingQueue)
+    incrementChatGenerationVersion(bufferKey); // v2
+    pendingQueues.set(bufferKey, {
+      bufferKey,
+      remoteJid: '51999998877@s.whatsapp.net',
+      clientNumber: '51999998877',
+      text: 'Olvídalo, mejor dime si tienes cargadores',
+      tenant: { id: 'tenant-test-n19', name: 'Test Tenant' },
+      contact: { id: 'contact-n19' },
+      chat: { id: 'chat-n19' },
+      instance: 'instance-n19',
+      requestApiKey: 'test-key-n19',
+      provider: 'EVOLUTION',
+      epochAtCreation: 0
+    });
+
+    // Ejecutar processBufferedMessage de forma real
+    let processErr = null;
+    try {
+      await processBufferedMessage(bufferKey);
+    } catch (err) {
+      processErr = err;
+    }
+
+    assert.strictEqual(processErr, null, `processBufferedMessage no debe lanzar errores no capturados: ${processErr?.message}`);
+    assert.strictEqual(processingLocks.has(bufferKey), false, 'Lock debe haberse liberado en finally');
+    assert.strictEqual(pendingQueues.has(bufferKey), false, 'pendingQueue debe haberse vaciado');
+    assert.strictEqual(messageBuffers.has(bufferKey), true, 'Mensaje B debe haber sido re-inyectado en messageBuffers');
+
+    const reInjected = messageBuffers.get(bufferKey);
+    assert.ok(reInjected.text.includes('Olvídalo, mejor dime si tienes cargadores'), 'Buffer re-inyectado debe contener mensaje B');
+    assert.ok(reInjected.text.includes('¿Qué opciones de audífonos tienes?'), 'Buffer re-inyectado debe preservar contexto no respondido');
+
+    // Limpiar timer de re-inyección para salida limpia del proceso
+    if (reInjected.timer) {
+      clearTimeout(reInjected.timer);
+    }
+  });
+
   console.log('\n======================================================================');
-  console.log(`RESULTADOS N1–N17: ${passedCount} pasaron, ${failedCount} fallaron.`);
+  console.log(`RESULTADOS N1–N19: ${passedCount} pasaron, ${failedCount} fallaron.`);
   console.log('======================================================================\n');
 
+  _resetProcessingStateForTesting();
   if (failedCount > 0) {
     process.exit(1);
   }
+  process.exit(0);
 }
 
 runSuite();
