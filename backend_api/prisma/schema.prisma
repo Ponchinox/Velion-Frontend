@@ -120,9 +120,15 @@ model Message {
   mediaSize   Int?
   mediaStatus String?
 
+  // Multi-Image Batch / Album support
+  mediaGroupId    String?
+  mediaGroupIndex Int?
+
   chat       Chat     @relation(fields: [chatId], references: [id], onDelete: Cascade)
   tenant     Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   operationalItems OperationalItem[]
+
+  @@index([chatId, mediaGroupId])
 }
 
 model AutomationFlow {

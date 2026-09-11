@@ -201,6 +201,9 @@ export async function getMessages(req, res) {
         caption: m.caption || null,
         mediaSize: m.mediaSize || null,
         mediaStatus: m.mediaStatus || null,
+        mediaGroupId: m.mediaGroupId || null,
+        mediaGroupIndex: m.mediaGroupIndex !== null && m.mediaGroupIndex !== undefined ? m.mediaGroupIndex : null,
+        createdAt: m.createdAt.toISOString()
       };
     });
 

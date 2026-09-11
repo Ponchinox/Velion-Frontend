@@ -28,6 +28,7 @@ import { runAuthorityScenario } from './scenarios/authority.scenario.js';
 import { runHandoffScenario } from './scenarios/handoff.scenario.js';
 import { runGroqFallbackScenario } from './scenarios/groqFallback.scenario.js';
 import { runChatMediaInboundSuite } from './chat_media_inbound.test.js';
+import { runMediaAlbumDedupeSuite } from './media_album_dedupe.test.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -46,6 +47,12 @@ const QA_CATEGORIES = [
     name: 'Inbound Media CRM',
     type: 'internal_fn',
     fn: runChatMediaInboundSuite
+  },
+  {
+    id: 'media_album_dedupe',
+    name: 'Media Album & Dedupe',
+    type: 'internal_fn',
+    fn: runMediaAlbumDedupeSuite
   },
   {
     id: 'multimedia',

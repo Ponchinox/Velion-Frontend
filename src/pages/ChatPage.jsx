@@ -4,6 +4,8 @@ import {
   PaperPlaneRight,
   Paperclip,
   ArrowLeft,
+  CaretLeft,
+  CaretRight,
   Phone,
   X,
   Circle,
@@ -204,7 +206,7 @@ function BubbleMedia({ msg, onImageClick }) {
           className="rounded-lg max-w-[280px] max-h-64 object-cover cursor-pointer hover:opacity-95 transition-opacity shadow-sm"
           loading="lazy"
           onError={handleMediaError}
-          onClick={() => onImageClick && onImageClick(mediaSrc)}
+          onClick={() => onImageClick && onImageClick(mediaSrc, msg.caption || msg.text || null)}
         />
       </div>
     );
@@ -268,6 +270,320 @@ function BubbleMedia({ msg, onImageClick }) {
   }
 
   return null;
+}
+
+/* ─── Miniatura individual de álbum con auto-refresh de token ─── */
+function AlbumThumbnail({ msg, onClick, className = '', overlayContent = null }) {
+  const [hasError, setHasError] = useState(false);
+  const [refreshed, setRefreshed] = useState(false);
+  const [activeMediaUrl, setActiveMediaUrl] = useState(msg.mediaUrl || msg.image || null);
+
+  useEffect(() => {
+    setActiveMediaUrl(msg.mediaUrl || msg.image || null);
+    setHasError(false);
+    setRefreshed(false);
+  }, [msg.mediaUrl, msg.image, msg.id]);
+
+  const handleMediaError = async () => {
+    if (msg.id && !refreshed && !hasError) {
+      setRefreshed(true);
+      try {
+        const res = await chatService.getChatMediaToken(msg.id);
+        if (res?.mediaUrl) {
+          setActiveMediaUrl(res.mediaUrl);
+          return;
+        }
+      } catch {
+        // Fallback a error
+      }
+    }
+    setHasError(true);
+  };
+
+  const mediaSrc = resolveMediaUrl(activeMediaUrl);
+
+  if (hasError || !mediaSrc) {
+    return (
+      <div
+        onClick={onClick}
+        className={`w-full h-full min-h-[90px] bg-black/10 dark:bg-white/10 flex flex-col items-center justify-center p-2 text-center cursor-pointer ${className}`}
+      >
+        <WarningCircle size={20} className="text-amber-500 mb-1" />
+        <span className="text-[10px] text-muted line-clamp-1">Imagen</span>
+      </div>
+    );
+  }
+
+  return (
+    <div
+      onClick={onClick}
+      className={`relative w-full h-full overflow-hidden cursor-pointer group select-none ${className}`}
+    >
+      <img
+        src={mediaSrc}
+        alt={msg.fileName || 'Imagen de álbum'}
+        className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-200"
+        loading="lazy"
+        onError={handleMediaError}
+      />
+      {overlayContent}
+    </div>
+  );
+}
+
+/* ─── Burbuja de Álbum Multimedia (WhatsApp-style) ─── */
+function MediaAlbumBubble({ albumGroup, onOpenLightbox }) {
+  const isClient = albumGroup.from === 'client';
+  // Ordenar formalmente por mediaGroupIndex ASC, fallback createdAt
+  const sortedMessages = useMemo(() => {
+    const list = albumGroup?.messages || [];
+    return [...list].sort((a, b) => {
+      const aIdx = (a.mediaGroupIndex !== null && a.mediaGroupIndex !== undefined) ? a.mediaGroupIndex : null;
+      const bIdx = (b.mediaGroupIndex !== null && b.mediaGroupIndex !== undefined) ? b.mediaGroupIndex : null;
+      if (aIdx !== null && bIdx !== null) return aIdx - bIdx;
+      if (aIdx !== null) return -1;
+      if (bIdx !== null) return 1;
+      return new Date(a.createdAt || a.timestamp || 0) - new Date(b.createdAt || b.timestamp || 0);
+    });
+  }, [albumGroup?.messages]);
+
+  const count = sortedMessages.length;
+
+  const lightboxItems = useMemo(() => {
+    return sortedMessages.map((m, idx) => ({
+      id: m.id,
+      src: resolveMediaUrl(m.mediaUrl || m.image),
+      caption: (m.caption || m.text || '').trim(),
+      fileName: m.fileName || `Imagen ${idx + 1}`,
+      raw: m
+    }));
+  }, [sortedMessages]);
+
+  const handleThumbClick = (index) => {
+    if (onOpenLightbox) {
+      onOpenLightbox(lightboxItems, index);
+    }
+  };
+
+  // Caption unificado: si hay exactamente 1 caption no vacío o todos son idénticos
+  const distinctCaptions = useMemo(() => {
+    const caps = sortedMessages.map(m => (m.caption || m.text || '').trim()).filter(Boolean);
+    return [...new Set(caps)];
+  }, [sortedMessages]);
+
+  const primaryCaption = distinctCaptions.length > 0 ? distinctCaptions[0] : null;
+
+  // Hora y estado del mensaje más reciente del álbum
+  const latestMessage = sortedMessages[sortedMessages.length - 1] || {};
+  const displayTime = latestMessage.time || '';
+  const displayStatus = latestMessage.status || 'sent';
+
+  return (
+    <div className={`flex ${isClient ? 'justify-start' : 'justify-end'}`}>
+      <div
+        className={`
+          max-w-[320px] sm:max-w-[360px] rounded-2xl p-1.5 shadow-card break-words
+          ${isClient
+            ? 'bg-white dark:bg-white/10 text-hi rounded-tl-sm'
+            : 'bg-brand text-white rounded-tr-sm'
+          }
+        `}
+      >
+        {/* Grilla / Mosaico según cantidad */}
+        {count === 2 && (
+          <div className="grid grid-cols-2 gap-1 rounded-xl overflow-hidden aspect-[16/10]">
+            <AlbumThumbnail msg={sortedMessages[0]} onClick={() => handleThumbClick(0)} />
+            <AlbumThumbnail msg={sortedMessages[1]} onClick={() => handleThumbClick(1)} />
+          </div>
+        )}
+
+        {count === 3 && (
+          <div className="grid grid-cols-2 gap-1 rounded-xl overflow-hidden aspect-[4/3]">
+            <div className="row-span-2 h-full">
+              <AlbumThumbnail msg={sortedMessages[0]} onClick={() => handleThumbClick(0)} className="h-full" />
+            </div>
+            <div className="h-full">
+              <AlbumThumbnail msg={sortedMessages[1]} onClick={() => handleThumbClick(1)} className="h-full" />
+            </div>
+            <div className="h-full">
+              <AlbumThumbnail msg={sortedMessages[2]} onClick={() => handleThumbClick(2)} className="h-full" />
+            </div>
+          </div>
+        )}
+
+        {count === 4 && (
+          <div className="grid grid-cols-2 gap-1 rounded-xl overflow-hidden aspect-square">
+            <AlbumThumbnail msg={sortedMessages[0]} onClick={() => handleThumbClick(0)} />
+            <AlbumThumbnail msg={sortedMessages[1]} onClick={() => handleThumbClick(1)} />
+            <AlbumThumbnail msg={sortedMessages[2]} onClick={() => handleThumbClick(2)} />
+            <AlbumThumbnail msg={sortedMessages[3]} onClick={() => handleThumbClick(3)} />
+          </div>
+        )}
+
+        {count >= 5 && (
+          <div className="grid grid-cols-2 gap-1 rounded-xl overflow-hidden aspect-square">
+            <AlbumThumbnail msg={sortedMessages[0]} onClick={() => handleThumbClick(0)} />
+            <AlbumThumbnail msg={sortedMessages[1]} onClick={() => handleThumbClick(1)} />
+            <AlbumThumbnail msg={sortedMessages[2]} onClick={() => handleThumbClick(2)} />
+            <AlbumThumbnail
+              msg={sortedMessages[3]}
+              onClick={() => handleThumbClick(3)}
+              overlayContent={
+                <div className="absolute inset-0 bg-black/60 backdrop-blur-[2px] flex items-center justify-center text-white font-bold text-2xl tracking-wide select-none">
+                  +{count - 4}
+                </div>
+              }
+            />
+          </div>
+        )}
+
+        {/* Caption unificado */}
+        {primaryCaption && (
+          <p className="text-sm leading-relaxed mt-1.5 px-1.5 py-0.5 break-words whitespace-pre-wrap">
+            {primaryCaption}
+          </p>
+        )}
+
+        {/* Footer con hora y estado */}
+        <div className={`text-[10px] mt-1 px-1.5 pb-0.5 flex items-center justify-end gap-1 ${isClient ? 'text-muted' : 'text-white/70'}`}>
+          <span>{displayTime}</span>
+          {!isClient && <StatusIcon status={displayStatus} />}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ─── Agrupador Estable de Mensajes en Álbumes (Anchored Multi-Image Batch) ─── */
+function groupMessagesWithAlbums(rawMessages) {
+  if (!rawMessages || rawMessages.length === 0) return [];
+  const result = [];
+  const albumMap = new Map(); // key: `${mediaGroupId}:${from}` -> albumGroup reference
+
+  for (let i = 0; i < rawMessages.length; i++) {
+    const msg = rawMessages[i];
+    const isAlbumMember = msg.mediaType === 'image' && Boolean(msg.mediaGroupId);
+
+    if (isAlbumMember) {
+      const groupKey = `${msg.mediaGroupId}:${msg.from || 'client'}`;
+      if (albumMap.has(groupKey)) {
+        // Ya existe un anclaje para este álbum: incorporar miembro sin duplicar slot en timeline
+        const existingGroup = albumMap.get(groupKey);
+        // Evitar duplicar el mismo mensaje dentro del álbum si llega por socket repetido
+        const alreadyInGroup = existingGroup.messages.some(m =>
+          (m.id && msg.id && m.id === msg.id) ||
+          (m.externalId && msg.externalId && m.externalId === msg.externalId)
+        );
+        if (!alreadyInGroup) {
+          existingGroup.messages.push(msg);
+        }
+      } else {
+        // Primer miembro encontrado: define el ancla visual en el timeline
+        const newGroup = {
+          type: 'album',
+          id: `album-${msg.mediaGroupId}-${msg.from || 'client'}-${msg.id}`,
+          mediaGroupId: msg.mediaGroupId,
+          from: msg.from,
+          messages: [msg]
+        };
+        albumMap.set(groupKey, newGroup);
+        result.push(newGroup);
+      }
+    } else {
+      result.push({
+        type: 'single',
+        id: msg.id || `msg-${i}`,
+        msg
+      });
+    }
+  }
+
+  return result;
+}
+
+/* ─── Modal Lightbox Navegable para Álbumes e Imágenes ─── */
+function LightboxModal({ items = [], activeIndex = 0, onClose, onChangeIndex }) {
+  const currentItem = items[activeIndex] || items[0] || {};
+  const hasMultiple = items.length > 1;
+
+  useEffect(() => {
+    const handleKeyDown = (e) => {
+      if (e.key === 'Escape') {
+        onClose();
+      } else if (e.key === 'ArrowLeft' && hasMultiple) {
+        onChangeIndex((activeIndex - 1 + items.length) % items.length);
+      } else if (e.key === 'ArrowRight' && hasMultiple) {
+        onChangeIndex((activeIndex + 1) % items.length);
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [activeIndex, items.length, hasMultiple, onClose, onChangeIndex]);
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex flex-col items-center justify-center bg-black/90 backdrop-blur-md cursor-pointer select-none"
+      onClick={onClose}
+    >
+      {/* Barra superior */}
+      <div className="absolute top-4 inset-x-4 flex items-center justify-between z-10" onClick={e => e.stopPropagation()}>
+        {hasMultiple ? (
+          <span className="px-3 py-1 rounded-full bg-white/10 backdrop-blur-sm text-white text-xs font-semibold tracking-wide">
+            {activeIndex + 1} de {items.length}
+          </span>
+        ) : <div />}
+
+        <button
+          className="w-10 h-10 flex items-center justify-center rounded-full bg-white/10 hover:bg-white/20 text-white transition-colors cursor-pointer"
+          onClick={onClose}
+          aria-label="Cerrar imagen"
+        >
+          <X size={20} weight="bold" />
+        </button>
+      </div>
+
+      {/* Flechas de navegación */}
+      {hasMultiple && (
+        <>
+          <button
+            className="absolute left-4 top-1/2 -translate-y-1/2 w-11 h-11 flex items-center justify-center rounded-full bg-white/10 hover:bg-white/25 text-white backdrop-blur-sm transition-all cursor-pointer z-10"
+            onClick={(e) => {
+              e.stopPropagation();
+              onChangeIndex((activeIndex - 1 + items.length) % items.length);
+            }}
+            aria-label="Imagen anterior"
+          >
+            <CaretLeft size={24} weight="bold" />
+          </button>
+          <button
+            className="absolute right-4 top-1/2 -translate-y-1/2 w-11 h-11 flex items-center justify-center rounded-full bg-white/10 hover:bg-white/25 text-white backdrop-blur-sm transition-all cursor-pointer z-10"
+            onClick={(e) => {
+              e.stopPropagation();
+              onChangeIndex((activeIndex + 1) % items.length);
+            }}
+            aria-label="Siguiente imagen"
+          >
+            <CaretRight size={24} weight="bold" />
+          </button>
+        </>
+      )}
+
+      {/* Imagen principal */}
+      <div className="relative max-w-[90vw] max-h-[82vh] flex flex-col items-center justify-center" onClick={e => e.stopPropagation()}>
+        <img
+          key={currentItem.src || activeIndex}
+          src={currentItem.src}
+          className="max-w-[90vw] max-h-[78vh] object-contain shadow-2xl rounded-lg animate-in zoom-in-95 duration-150 select-none cursor-default"
+          alt={currentItem.fileName || 'Imagen ampliada'}
+        />
+        {currentItem.caption && (
+          <div className="mt-3 px-4 py-2 rounded-xl bg-black/60 text-white text-sm max-w-[85vw] text-center backdrop-blur-sm border border-white/10">
+            {currentItem.caption}
+          </div>
+        )}
+      </div>
+    </div>
+  );
 }
 
 /* ─── Burbuja de mensaje con estados ─── */
@@ -378,7 +694,7 @@ function ConversationPanel({
   onSendMessage,
   onBack,
   isMobile,
-  onImageClick,
+  onOpenLightbox,
   onResumeBot,
   onToggleOperationalDrawer,
   isOperationalDrawerOpen,
@@ -577,7 +893,25 @@ function ConversationPanel({
             <p className="text-xs text-lo">No hay mensajes en esta conversación aún.</p>
           </div>
         ) : (
-          messages.map(msg => <Bubble key={msg.id} msg={msg} onImageClick={onImageClick} />)
+          groupMessagesWithAlbums(messages).map(item => {
+            if (item.type === 'album' && item.messages.length > 1) {
+              return (
+                <MediaAlbumBubble
+                  key={item.id}
+                  albumGroup={item}
+                  onOpenLightbox={onOpenLightbox}
+                />
+              );
+            }
+            const singleMsg = item.type === 'album' ? item.messages[0] : item.msg;
+            return (
+              <Bubble
+                key={singleMsg.id}
+                msg={singleMsg}
+                onImageClick={(src, caption) => onOpenLightbox && onOpenLightbox([{ src, caption: caption || singleMsg.caption || singleMsg.text || null, fileName: singleMsg.fileName }], 0)}
+              />
+            );
+          })
         )}
       </div>
 
@@ -725,7 +1059,23 @@ export default function ChatPage() {
 
   const [search, setSearch] = useState('');
   const [showConversation, setShowConversation] = useState(false);
-  const [fullscreenImage, setFullscreenImage] = useState(null);
+  const [lightbox, setLightbox] = useState({ isOpen: false, items: [], activeIndex: 0 });
+
+  const handleOpenLightbox = useCallback((itemsOrSrc, initialIndex = 0) => {
+    if (typeof itemsOrSrc === 'string') {
+      setLightbox({
+        isOpen: true,
+        items: [{ src: itemsOrSrc, caption: null, fileName: 'Imagen' }],
+        activeIndex: 0
+      });
+    } else if (Array.isArray(itemsOrSrc)) {
+      setLightbox({
+        isOpen: true,
+        items: itemsOrSrc,
+        activeIndex: initialIndex
+      });
+    }
+  }, []);
 
   /* ─── Estado de Items Operacionales (Notas y Tareas) ─── */
   const [operationalItems, setOperationalItems] = useState([]);
@@ -878,6 +1228,9 @@ export default function ChatPage() {
           caption: msg.caption || null,
           mediaSize: msg.mediaSize || null,
           mediaStatus: msg.mediaStatus || (msg.mediaType ? 'ready' : null),
+          mediaGroupId: msg.mediaGroupId || null,
+          mediaGroupIndex: msg.mediaGroupIndex !== undefined ? msg.mediaGroupIndex : null,
+          createdAt: msg.createdAt || msg.timestamp || new Date().toISOString(),
           time: new Date(msg.createdAt || msg.timestamp || Date.now()).toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' }),
         };
 
@@ -1235,7 +1588,7 @@ export default function ChatPage() {
               onSendMessage={handleSendMessage}
               onBack={() => setShowConversation(false)}
               isMobile={showConversation}
-              onImageClick={setFullscreenImage}
+              onOpenLightbox={handleOpenLightbox}
               onResumeBot={handleResumeBot}
               onToggleOperationalDrawer={() => setIsOperationalDrawerOpen(prev => !prev)}
               isOperationalDrawerOpen={isOperationalDrawerOpen}
@@ -1263,27 +1616,14 @@ export default function ChatPage() {
         )}
       </div>
 
-      {/* ── Lightbox Modal — Zoom de Imagen ── */}
-      {fullscreenImage && (
-        <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/85 backdrop-blur-sm cursor-pointer"
-          onClick={() => setFullscreenImage(null)}
-        >
-          <img
-            src={fullscreenImage}
-            className="max-w-[90vw] max-h-[90vh] object-contain shadow-2xl rounded-md animate-in zoom-in-95 duration-200"
-            alt="Imagen ampliada"
-            onClick={e => e.stopPropagation()}
-          />
-          {/* Botón de cierre funcional */}
-          <button
-            className="absolute top-4 right-4 w-9 h-9 flex items-center justify-center rounded-full bg-white/10 hover:bg-white/20 text-white transition-colors cursor-pointer"
-            onClick={() => setFullscreenImage(null)}
-            aria-label="Cerrar imagen"
-          >
-            <X size={18} weight="bold" />
-          </button>
-        </div>
+      {/* ── Lightbox Modal Navegable ── */}
+      {lightbox.isOpen && lightbox.items.length > 0 && (
+        <LightboxModal
+          items={lightbox.items}
+          activeIndex={lightbox.activeIndex}
+          onClose={() => setLightbox(prev => ({ ...prev, isOpen: false }))}
+          onChangeIndex={(newIdx) => setLightbox(prev => ({ ...prev, activeIndex: newIdx }))}
+        />
       )}
     </div>
   );

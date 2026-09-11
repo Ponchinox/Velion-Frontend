@@ -1445,7 +1445,9 @@ function normalizeMeta(body) {
       docCaption,
       fromMe: false, 
       isStatusEvent: false,
-      isCoexSyncEvent: false 
+      isCoexSyncEvent: false,
+      mediaGroupId: null,
+      mediaGroupIndex: null
     };
   } catch (e) {
     console.error('❌ [Meta Gateway] Error normalizando payload de Meta:', e.message);
@@ -1671,9 +1673,54 @@ async function normalizeEvolution(body, requestApiKey) {
     }
   }
 
+  // Extracción formal de Media Album / Batch (WhatsApp / Baileys)
+  // WhatsApp asocia álbumes mediante messageContextInfo.messageAssociation (associationType === 1 / MEDIA_ALBUM)
+  let mediaGroupId = null;
+  let mediaGroupIndex = null;
+  const rawMsg = data?.message || {};
+  const contextInfo = rawMsg.messageContextInfo || rawMsg.imageMessage?.contextInfo || data?.messageContextInfo || {};
+  const messageAssociation = contextInfo.messageAssociation;
+
+  if (messageAssociation && (messageAssociation.associationType === 1 || messageAssociation.associationType === 'MEDIA_ALBUM')) {
+    // 1. Normalizar messageIndex: aceptar estrictamente enteros >= 0 (nunca NaN)
+    let parsedIndex = null;
+    if (messageAssociation.messageIndex !== undefined && messageAssociation.messageIndex !== null) {
+      const num = Number(messageAssociation.messageIndex);
+      if (Number.isInteger(num) && num >= 0) {
+        parsedIndex = num;
+      }
+    }
+    mediaGroupIndex = parsedIndex;
+
+    // 2. Fallback seguro de mediaGroupId (nunca inventar grupo falso para secundarios)
+    const parentId = messageAssociation.parentMessageKey?.id;
+    if (parentId && typeof parentId === 'string' && parentId.trim()) {
+      mediaGroupId = parentId.trim();
+    } else if (mediaGroupIndex === 0 && key?.id) {
+      mediaGroupId = key.id; // Self como parent
+    } else {
+      mediaGroupId = null; // Miembro secundario sin parentId no inventa grupo falso
+    }
+  }
+
   const pushName = !fromMe ? (data?.pushName || data?.key?.pushName || null) : null;
 
-  return { sender, text, instance, pushName, fromMe, key, rawData: data, mediaItems, remoteJid, msgId: key.id || null, inboundMedia, aiInstruction };
+  return {
+    sender,
+    text,
+    instance,
+    pushName,
+    fromMe,
+    key,
+    rawData: data,
+    mediaItems,
+    remoteJid,
+    msgId: key.id || null,
+    inboundMedia,
+    aiInstruction,
+    mediaGroupId,
+    mediaGroupIndex
+  };
 }
 
 const ingestionQueues = new Map();
@@ -1822,18 +1869,26 @@ export async function receiveWebhook(req, res) {
 
   // 2. ENCOLAR CADA EVENTO EN SU RESPECTIVO CHAT (Arrival Order)
   for (const eventBody of events) {
-    // Deduplicación temprana por evento
+    // Deduplicación temprana por evento con scoping estricto (provider:instance:direction:msgId)
     let msgId = null;
+    let eventInstance = null;
+    let eventDirection = 'in';
+
     if (isMeta) {
       const value = eventBody?.entry?.[0]?.changes?.[0]?.value;
       const echoMsg = value?.message_echoes?.[0] || (value?.messages?.[0]?.is_echo ? value?.messages?.[0] : null);
       msgId = echoMsg ? echoMsg.id : (value?.messages?.[0]?.id || null);
+      eventInstance = value?.metadata?.phone_number_id || 'meta';
+      eventDirection = echoMsg ? 'out' : 'in';
     } else {
       msgId = eventBody?.data?.key?.id || null;
+      eventInstance = eventBody?.instance || 'evolution';
+      eventDirection = eventBody?.data?.key?.fromMe ? 'out' : 'in';
     }
     
-    if (msgId && processedWebhooksCache.has(msgId)) {
-      console.log(`♻️ [Deduplication] Webhook duplicado ignorado de forma temprana (msgId: ${msgId})`);
+    const earlyDedupeKey = msgId ? `${provider}:${eventInstance}:${eventDirection}:${msgId}` : null;
+    if (earlyDedupeKey && processedWebhooksCache.has(earlyDedupeKey)) {
+      console.log(`♻️ [Deduplication] Webhook duplicado ignorado de forma temprana (${earlyDedupeKey})`);
       continue; // Siguiente evento
     }
 
@@ -2011,17 +2066,19 @@ async function _processWebhookEvent(body, isMeta, provider, io, query, headers) 
 
   // ── 3.5 DEDUPLICACIÓN DE WEBHOOKS (REINTENTOS DE RED) ──
   if (normalized.msgId) {
-    if (processedWebhooksCache.has(normalized.msgId)) {
-      console.log(`♻️ [Deduplication] Webhook duplicado ignorado (msgId: ${normalized.msgId}) de +${cleanJid}`);
+    const direction = fromMe ? 'out' : 'in';
+    const dedupeKey = `${provider}:${instance || 'default'}:${direction}:${normalized.msgId}`;
+    if (processedWebhooksCache.has(dedupeKey)) {
+      console.log(`♻️ [Deduplication] Webhook duplicado ignorado (${dedupeKey}) de +${cleanJid}`);
       return;
     }
-    processedWebhooksCache.set(normalized.msgId, Date.now());
+    processedWebhooksCache.set(dedupeKey, Date.now());
     
     // Auto-limpieza perezosa para evitar fugas de memoria
-    if (processedWebhooksCache.size > 1000) {
+    if (processedWebhooksCache.size > 2000) {
       const now = Date.now();
       for (const [k, v] of processedWebhooksCache.entries()) {
-        if (now - v > 5 * 60 * 1000) processedWebhooksCache.delete(k);
+        if (now - v > 10 * 60 * 1000) processedWebhooksCache.delete(k);
       }
     }
   }
@@ -2374,7 +2431,9 @@ async function _processWebhookEvent(body, isMeta, provider, io, query, headers) 
           fileName: fileNameToSave,
           caption: captionToSave,
           mediaSize: mediaSizeToSave,
-          mediaStatus: mediaStatusToSave
+          mediaStatus: mediaStatusToSave,
+          mediaGroupId: normalized.mediaGroupId || null,
+          mediaGroupIndex: normalized.mediaGroupIndex !== undefined && normalized.mediaGroupIndex !== null ? normalized.mediaGroupIndex : null
         }
       }),
       prisma.chat.update({ where: { id: chat.id }, data: { updatedAt: incomingNow } })
@@ -2407,6 +2466,8 @@ async function _processWebhookEvent(body, isMeta, provider, io, query, headers) 
         caption: captionToSave,
         mediaSize: mediaSizeToSave,
         mediaStatus: mediaStatusToSave,
+        mediaGroupId: normalized.mediaGroupId || null,
+        mediaGroupIndex: normalized.mediaGroupIndex !== undefined && normalized.mediaGroupIndex !== null ? normalized.mediaGroupIndex : null,
         createdAt: incomingMsg.createdAt.toISOString(),
         lastMessageAt: incomingMsg.createdAt.toISOString(),
         timestamp: incomingMsg.createdAt
