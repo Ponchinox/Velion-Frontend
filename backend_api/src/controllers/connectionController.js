@@ -257,11 +257,16 @@ export async function getStatus(req, res) {
     return res.status(400).json({ error: 'El usuario no está asociado a ningún Tenant.' });
   }
 
-  // Verificar primero si el tenant posee una conexión META
-  const metaConn = await prisma.registeredWhatsAppNumber.findFirst({
-    where: { tenantId, provider: 'META' },
-    orderBy: { createdAt: 'desc' }
-  });
+  // Verificar primero si el tenant posee una conexión META (resiliente ante fallos transitorios de DB)
+  let metaConn = null;
+  try {
+    metaConn = await prisma.registeredWhatsAppNumber.findFirst({
+      where: { tenantId, provider: 'META' },
+      orderBy: { createdAt: 'desc' }
+    });
+  } catch (metaDbErr) {
+    console.warn('⚠️ [Connections Controller] Error buscando conexión Meta en BD para getStatus:', metaDbErr.message);
+  }
 
   if (metaConn) {
     const shouldVerifyRemote = req.query.verify === 'true';

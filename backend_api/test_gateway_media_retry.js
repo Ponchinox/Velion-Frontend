@@ -302,7 +302,8 @@ function createMockAxios(responses) {
         assert.strictEqual(mock.getCallCount(), 1, 'Meta debe realizar 1 llamada directa');
 
         const call = mock.getCalls()[0];
-        assert.strictEqual(call.url, 'https://graph.facebook.com/v20.0/10987654321/messages');
+        const expectedGraphVersion = process.env.META_GRAPH_API_VERSION || 'v21.0';
+        assert.strictEqual(call.url, `https://graph.facebook.com/${expectedGraphVersion}/10987654321/messages`);
         assert.strictEqual(call.payload.messaging_product, 'whatsapp');
         assert.strictEqual(call.payload.to, '51999999999');
         assert.strictEqual(call.payload.type, 'image');
