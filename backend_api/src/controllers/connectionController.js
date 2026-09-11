@@ -131,10 +131,7 @@ export async function createMetaInstance(req, res) {
     const baseUrl = process.env.APP_URL || 'https://185.163.116.210';
     const rawWebhookUrl = process.env.WEBHOOK_URL || `${baseUrl.replace(/\/$/, '')}/api/whatsapp/webhook`;
     const cleanApiKey = (process.env.EVOLUTION_API_KEY || '').trim();
-    const apiKeyParam = cleanApiKey ? `?apikey=${cleanApiKey}` : '';
-    const webhookUrl = rawWebhookUrl.includes('?')
-      ? `${rawWebhookUrl}&apikey=${cleanApiKey}`
-      : `${rawWebhookUrl}${apiKeyParam}`;
+    const webhookUrl = rawWebhookUrl;
 
     // ── 0. Verificar si ya existe registro Meta para este tenant ─────────────────
     const existing = await prisma.registeredWhatsAppNumber.findFirst({
@@ -368,8 +365,7 @@ export async function getQrCode(req, res) {
     const baseUrl = process.env.APP_URL || 'https://185.163.116.210';
     const rawWebhookUrl = process.env.WEBHOOK_URL || `${baseUrl.replace(/\/$/, '')}/api/whatsapp/webhook`;
     const cleanApiKey = (process.env.EVOLUTION_API_KEY || '').trim();
-    const apiKeyParam = cleanApiKey ? `?apikey=${cleanApiKey}` : '';
-    const webhookUrl = rawWebhookUrl.includes('?') ? `${rawWebhookUrl}&apikey=${cleanApiKey}` : `${rawWebhookUrl}${apiKeyParam}`;
+    const webhookUrl = rawWebhookUrl;
 
     // 1. Asegurar la creación previa de la instancia Baileys
     try {

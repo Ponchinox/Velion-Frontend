@@ -1057,8 +1057,7 @@ export async function connectDevice(req, res) {
   const baseUrl = process.env.APP_URL || 'https://185.163.116.210';
   const rawWebhookUrl = process.env.WEBHOOK_URL || `${baseUrl.replace(/\/$/, '')}/api/whatsapp/webhook`;
   const cleanApiKey = (process.env.EVOLUTION_API_KEY || '').trim();
-  const apiKeyParam = cleanApiKey ? `?apikey=${cleanApiKey}` : '';
-  const webhookUrl = rawWebhookUrl.includes('?') ? `${rawWebhookUrl}&apikey=${cleanApiKey}` : `${rawWebhookUrl}${apiKeyParam}`;
+  const webhookUrl = rawWebhookUrl;
 
   // 1. Asegurar la creación previa de la instancia
   try {
@@ -1851,12 +1850,12 @@ export async function receiveWebhook(req, res) {
   const isMeta = req.body?.object === 'whatsapp_business_account';
   const provider = isMeta ? 'META' : 'EVOLUTION';
 
-  // ── 2. VALIDACIÓN DE SEGURIDAD (Solo Evolution requiere API Key) ────────────
+  // ── 2. VALIDACIÓN DE SEGURIDAD (Solo Evolution requiere API Key por Header) ──
   if (!isMeta) {
-    const requestApiKey = (req.query?.apikey || req.headers?.apikey || req.body?.apikey || req.headers?.['x-api-key'] || '').trim();
+    const requestApiKey = (req.headers?.apikey || req.headers?.['x-api-key'] || '').trim();
     const systemApiKey = (process.env.EVOLUTION_API_KEY || '').trim();
-    if (systemApiKey && requestApiKey && requestApiKey !== systemApiKey) {
-      console.error('🚨 [Seguridad Webhook] Petición bloqueada por ApiKey explícitamente inválida.');
+    if (!systemApiKey || !requestApiKey || requestApiKey !== systemApiKey) {
+      console.error('🚨 [Seguridad Webhook] Petición bloqueada por ApiKey ausente o inválida en encabezados.');
       return res.status(401).json({ error: 'Unauthorized' });
     }
   }
@@ -2011,8 +2010,7 @@ async function _processWebhookEvent(body, isMeta, provider, io, query, headers) 
       const baseUrl = process.env.APP_URL || 'https://185.163.116.210';
       const rawWebhookUrl = process.env.WEBHOOK_URL || `${baseUrl.replace(/\/$/, '')}/api/whatsapp/webhook`;
       const cleanApiKey = (requestApiKey || process.env.EVOLUTION_API_KEY || '').trim();
-      const apiKeyParam = cleanApiKey ? `?apikey=${cleanApiKey}` : '';
-      const webhookUrl = rawWebhookUrl.includes('?') ? `${rawWebhookUrl}&apikey=${cleanApiKey}` : `${rawWebhookUrl}${apiKeyParam}`;
+      const webhookUrl = rawWebhookUrl;
 
       const webhookVerifier = (inst) => verifyAndReapplyEvolutionWebhook({
         instance: inst,
