@@ -52,7 +52,7 @@ export default async function mediaAuthMiddleware(req, res, next) {
         throw new Error('JWT_SECRET no configurada en el servidor.');
       }
       const decoded = jwt.verify(sessionToken, process.env.JWT_SECRET);
-      
+
       const impersonatedTenantId = req.headers['x-tenant-id'];
       const effectiveTenantId = (decoded.role === 'superadmin' && impersonatedTenantId)
         ? impersonatedTenantId

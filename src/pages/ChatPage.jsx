@@ -147,17 +147,25 @@ function renderMessageContent(text, onImageClick) {
 /* ─── Renderizador Multimedia Estructurado ─── */
 function BubbleMedia({ msg, onImageClick }) {
   const [hasError, setHasError] = useState(false);
+  const [refreshed, setRefreshed] = useState(false);
   const [activeMediaUrl, setActiveMediaUrl] = useState(msg.mediaUrl || msg.image || null);
   const mediaType = msg.mediaType || (msg.image ? 'image' : null);
   const isUnavailable = msg.mediaStatus === 'error' || msg.mediaStatus === 'unavailable' || hasError;
 
+  useEffect(() => {
+    setActiveMediaUrl(msg.mediaUrl || msg.image || null);
+    setHasError(false);
+    setRefreshed(false);
+  }, [msg.mediaUrl, msg.image, msg.id]);
+
   const handleMediaError = async () => {
-    // Si el token de corta duración expiró o falló la primera carga, intentar refrescar vía endpoint autenticado
-    if (msg.id && !hasError) {
+    // Si el token de corta duración expiró o falló la primera carga, intentar refrescar vía endpoint autenticado UNA sola vez
+    if (msg.id && !refreshed && !hasError) {
+      setRefreshed(true);
       try {
-        const res = await api.get(`/api/chats/media-token/${msg.id}`);
-        if (res.data?.mediaUrl) {
-          setActiveMediaUrl(res.data.mediaUrl);
+        const res = await chatService.getChatMediaToken(msg.id);
+        if (res?.mediaUrl) {
+          setActiveMediaUrl(res.mediaUrl);
           return;
         }
       } catch {
@@ -858,7 +866,7 @@ export default function ChatPage() {
 
       if (msg.chatId === activeChatIdRef.current) {
         const formattedMsg = {
-          id: msg.messageId || msg.id || `socket-${Date.now()}`,
+          id: msg.id || msg.messageId || (msg.externalId ? `ext-${msg.externalId}` : `socket-${Date.now()}`),
           externalId: msg.externalId || null,
           status: msg.status || (isIncoming ? 'delivered' : 'sent'),
           from: isIncoming ? 'client' : 'business',
@@ -875,8 +883,8 @@ export default function ChatPage() {
 
         setActiveChatMessages(prev => {
           const exists = prev.some(m =>
-            (m.externalId && formattedMsg.externalId && m.externalId === formattedMsg.externalId) ||
-            (m.text === formattedMsg.text && m.from === formattedMsg.from)
+            (m.id && formattedMsg.id && m.id === formattedMsg.id) ||
+            (m.externalId && formattedMsg.externalId && m.externalId === formattedMsg.externalId)
           );
           if (exists) return prev;
           return [...prev, formattedMsg];

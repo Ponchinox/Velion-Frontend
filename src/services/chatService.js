@@ -46,3 +46,12 @@ export async function resumeBot(customerId) {
     method: 'POST',
   });
 }
+
+/**
+ * Obtiene un nuevo token de acceso multimedia de corta duración (media token refresh)
+ */
+export async function getChatMediaToken(messageId) {
+  return apiClient(`/chats/media-token/${messageId}`, {
+    method: 'GET',
+  });
+}

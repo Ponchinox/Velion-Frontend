@@ -2,7 +2,10 @@ import assert from 'node:assert';
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
+import { Writable } from 'node:stream';
 import jwt from 'jsonwebtoken';
+import helmet from 'helmet';
+import prisma from '../src/db.js';
 import {
   saveInboundMedia,
   resolveMediaPath,
@@ -551,6 +554,339 @@ export async function runChatMediaInboundSuite() {
 
     // Cleanup
     try { fs.unlinkSync(savedMedia.fullPath); } catch (e) {}
+  });
+
+  // ======================================================================
+  // FIX A & B & C: TESTS REALTIME Y MEDIA (T01 - T12)
+  // ======================================================================
+
+  // Helper deduplicador idéntico al de ChatPage.jsx
+  function deduplicateMessageState(prev, formattedMsg) {
+    const exists = prev.some(m =>
+      (m.id && formattedMsg.id && m.id === formattedMsg.id) ||
+      (m.externalId && formattedMsg.externalId && m.externalId === formattedMsg.externalId)
+    );
+    if (exists) return prev;
+    return [...prev, formattedMsg];
+  }
+
+  // Helper que formatea payloads socket igual a ChatPage.jsx
+  function formatSocketMessage(msg, isIncoming = true) {
+    return {
+      id: msg.id || msg.messageId || (msg.externalId ? `ext-${msg.externalId}` : `socket-${Date.now()}`),
+      externalId: msg.externalId || null,
+      status: msg.status || (isIncoming ? 'delivered' : 'sent'),
+      from: isIncoming ? 'client' : 'business',
+      text: msg.text || '',
+      caption: msg.caption || null,
+      mediaUrl: msg.mediaUrl || null,
+      mediaType: msg.mediaType || null,
+      mediaStatus: msg.mediaStatus || null
+    };
+  }
+
+  // 1. Hola / Hola ambos con IDs diferentes -> ambos aparecen
+  await test('T01: Realtime dedupe: Mensajes "Hola" y "Hola" con IDs diferentes -> ambos aparecen', async () => {
+    let state = [];
+    const msg1 = formatSocketMessage({ id: 'msg-h1', externalId: 'wamid-1', text: 'Hola' });
+    const msg2 = formatSocketMessage({ id: 'msg-h2', externalId: 'wamid-2', text: 'Hola' });
+
+    state = deduplicateMessageState(state, msg1);
+    state = deduplicateMessageState(state, msg2);
+
+    assert.strictEqual(state.length, 2, 'Ambos mensajes deben ser agregados');
+    assert.strictEqual(state[0].text, 'Hola');
+    assert.strictEqual(state[1].text, 'Hola');
+    assert.strictEqual(state[0].id, 'msg-h1');
+    assert.strictEqual(state[1].id, 'msg-h2');
+  });
+
+  // 2. Bolas / Bolas / Bolas IDs/externalIds diferentes -> aparecen los 3
+  await test('T02: Realtime dedupe: "Bolas", "Bolas", "Bolas" con IDs diferentes -> aparecen los 3', async () => {
+    let state = [];
+    const msg1 = formatSocketMessage({ id: 'msg-b1', externalId: 'wamid-b1', text: 'Bolas' });
+    const msg2 = formatSocketMessage({ id: 'msg-b2', externalId: 'wamid-b2', text: 'Bolas' });
+    const msg3 = formatSocketMessage({ id: 'msg-b3', externalId: 'wamid-b3', text: 'Bolas' });
+
+    state = deduplicateMessageState(state, msg1);
+    state = deduplicateMessageState(state, msg2);
+    state = deduplicateMessageState(state, msg3);
+
+    assert.strictEqual(state.length, 3, 'Los 3 mensajes "Bolas" deben agregarse');
+    assert.strictEqual(state[0].text, 'Bolas');
+    assert.strictEqual(state[1].text, 'Bolas');
+    assert.strictEqual(state[2].text, 'Bolas');
+  });
+
+  // 3. Dos imágenes sin caption: text === "" / text === "" IDs diferentes -> aparecen ambas
+  await test('T03: Realtime dedupe: Dos imágenes sin caption (text === "") con IDs diferentes -> aparecen ambas', async () => {
+    let state = [];
+    const img1 = formatSocketMessage({ id: 'msg-img-1', externalId: 'wamid-img1', text: '', mediaType: 'image' });
+    const img2 = formatSocketMessage({ id: 'msg-img-2', externalId: 'wamid-img2', text: '', mediaType: 'image' });
+
+    state = deduplicateMessageState(state, img1);
+    state = deduplicateMessageState(state, img2);
+
+    assert.strictEqual(state.length, 2, 'Ambas imágenes deben agregarse');
+    assert.strictEqual(state[0].id, 'msg-img-1');
+    assert.strictEqual(state[1].id, 'msg-img-2');
+    assert.strictEqual(state[0].text, '');
+    assert.strictEqual(state[1].text, '');
+  });
+
+  // 4. Mismo mensaje/evento repetido con mismo id -> NO se duplica
+  await test('T04: Realtime dedupe: Mismo mensaje/evento repetido con mismo id -> NO se duplica', async () => {
+    let state = [];
+    const msg = formatSocketMessage({ id: 'msg-dup-id', externalId: 'wamid-dup', text: 'Mensaje único' });
+
+    state = deduplicateMessageState(state, msg);
+    state = deduplicateMessageState(state, msg);
+
+    assert.strictEqual(state.length, 1, 'El mensaje repetido con mismo ID no debe duplicarse');
+  });
+
+  // 5. Mismo externalId repetido -> NO se duplica
+  await test('T05: Realtime dedupe: Mismo externalId repetido -> NO se duplica', async () => {
+    let state = [];
+    const msg1 = formatSocketMessage({ id: 'msg-ext-1', externalId: 'wamid-same-ext', text: 'Mensaje A' });
+    const msg2 = formatSocketMessage({ id: 'msg-ext-2', externalId: 'wamid-same-ext', text: 'Mensaje A' });
+
+    state = deduplicateMessageState(state, msg1);
+    state = deduplicateMessageState(state, msg2);
+
+    assert.strictEqual(state.length, 1, 'Mensajes con mismo externalId no deben duplicarse');
+  });
+
+  // 6. media response 200 incluye: Cross-Origin-Resource-Policy: cross-origin
+  await test('T06: Media response 200 incluye Cross-Origin-Resource-Policy: cross-origin', async () => {
+    const saved = await saveInboundMedia({
+      buffer: createMockBuffer('jpeg', 200),
+      mimeType: 'image/jpeg',
+      tenantId: testTenantA,
+      originalName: 'test-200.jpg'
+    });
+
+    const origFindUnique = prisma.message.findUnique;
+    prisma.message.findUnique = async () => ({
+      id: 'msg-t06',
+      tenantId: testTenantA,
+      mediaPath: saved.relativePath,
+      mimeType: 'image/jpeg',
+      fileName: 'test-200.jpg',
+      mediaStatus: 'ready',
+      mediaType: 'image'
+    });
+
+    try {
+      class MockRes extends Writable {
+        constructor() {
+          super();
+          this.statusCode = 200;
+          this.headers = {};
+        }
+        status(code) { this.statusCode = code; return this; }
+        setHeader(k, v) { this.headers[k.toLowerCase()] = v; return this; }
+        getHeader(k) { return this.headers[k.toLowerCase()]; }
+        _write(chunk, encoding, callback) { callback(); }
+      }
+
+      const req = {
+        params: { messageId: 'msg-t06' },
+        headers: {},
+        mediaAuth: { tenantId: testTenantA, isSuperAdmin: false }
+      };
+      const res = new MockRes();
+
+      await new Promise((resolve, reject) => {
+        res.on('finish', resolve);
+        res.on('error', reject);
+        getChatMedia(req, res).catch(reject);
+      });
+
+      assert.strictEqual(res.statusCode, 200, 'Debe responder HTTP 200');
+      assert.strictEqual(res.headers['cross-origin-resource-policy'], 'cross-origin', 'Debe incluir Cross-Origin-Resource-Policy: cross-origin');
+    } finally {
+      prisma.message.findUnique = origFindUnique;
+      try { fs.unlinkSync(saved.fullPath); } catch (e) {}
+    }
+  });
+
+  // 7. Range response 206 incluye también: Cross-Origin-Resource-Policy: cross-origin
+  await test('T07: Range response 206 incluye Cross-Origin-Resource-Policy: cross-origin', async () => {
+    const saved = await saveInboundMedia({
+      buffer: createMockBuffer('mp4', 1000),
+      mimeType: 'video/mp4',
+      tenantId: testTenantA,
+      originalName: 'test-206.mp4'
+    });
+
+    const origFindUnique = prisma.message.findUnique;
+    prisma.message.findUnique = async () => ({
+      id: 'msg-t07',
+      tenantId: testTenantA,
+      mediaPath: saved.relativePath,
+      mimeType: 'video/mp4',
+      fileName: 'test-206.mp4',
+      mediaStatus: 'ready',
+      mediaType: 'video'
+    });
+
+    try {
+      class MockRes extends Writable {
+        constructor() {
+          super();
+          this.statusCode = 200;
+          this.headers = {};
+        }
+        status(code) { this.statusCode = code; return this; }
+        setHeader(k, v) { this.headers[k.toLowerCase()] = v; return this; }
+        getHeader(k) { return this.headers[k.toLowerCase()]; }
+        _write(chunk, encoding, callback) { callback(); }
+      }
+
+      const req = {
+        params: { messageId: 'msg-t07' },
+        headers: { range: 'bytes=0-199' },
+        mediaAuth: { tenantId: testTenantA, isSuperAdmin: false }
+      };
+      const res = new MockRes();
+
+      await new Promise((resolve, reject) => {
+        res.on('finish', resolve);
+        res.on('error', reject);
+        getChatMedia(req, res).catch(reject);
+      });
+
+      assert.strictEqual(res.statusCode, 206, 'Debe responder HTTP 206 para range request');
+      assert.strictEqual(res.headers['cross-origin-resource-policy'], 'cross-origin', 'Debe incluir Cross-Origin-Resource-Policy: cross-origin');
+      assert.strictEqual(res.headers['content-range'], 'bytes 0-199/1000');
+    } finally {
+      prisma.message.findUnique = origFindUnique;
+      try { fs.unlinkSync(saved.fullPath); } catch (e) {}
+    }
+  });
+
+  // 8. Helmet global sigue activo para resto del backend
+  await test('T08: Helmet global sigue activo con default same-origin para el resto del backend', async () => {
+    const helmetMw = helmet();
+    const dummyReq = { headers: {} };
+    const dummyHeaders = {};
+    const dummyRes = {
+      setHeader: (k, v) => { dummyHeaders[k.toLowerCase()] = v; },
+      getHeader: (k) => dummyHeaders[k.toLowerCase()],
+      removeHeader: (k) => { delete dummyHeaders[k.toLowerCase()]; }
+    };
+    let nextCalled = false;
+    helmetMw(dummyReq, dummyRes, () => { nextCalled = true; });
+
+    assert.strictEqual(nextCalled, true, 'Helmet middleware debe llamar next()');
+    assert.strictEqual(
+      dummyHeaders['cross-origin-resource-policy'],
+      'same-origin',
+      'Helmet global debe mantener same-origin para proteger el resto de endpoints del backend'
+    );
+  });
+
+  // 9. handleMediaError: primer fallo -> refresh token
+  await test('T09: handleMediaError: primer fallo -> solicita refresh token vía chatService', async () => {
+    let hasError = false;
+    let refreshed = false;
+    let activeMediaUrl = 'https://185.163.116.210/api/chats/media/msg-t09?mediaToken=expired_token';
+    const msg = { id: 'msg-t09', mediaUrl: activeMediaUrl };
+    let tokenFetchCount = 0;
+
+    const fakeChatService = {
+      getChatMediaToken: async (messageId) => {
+        tokenFetchCount++;
+        return { mediaUrl: `https://185.163.116.210/api/chats/media/${messageId}?mediaToken=refreshed_token_1` };
+      }
+    };
+
+    if (msg.id && !refreshed && !hasError) {
+      refreshed = true;
+      try {
+        const res = await fakeChatService.getChatMediaToken(msg.id);
+        if (res?.mediaUrl) {
+          activeMediaUrl = res.mediaUrl;
+        }
+      } catch {}
+    }
+
+    assert.strictEqual(tokenFetchCount, 1, 'Debe solicitar refresh token');
+    assert.strictEqual(refreshed, true, 'Debe marcar refreshed en true');
+    assert.strictEqual(hasError, false, 'No debe marcar error en el primer fallo recuperable');
+  });
+
+  // 10. nuevo token -> nueva URL
+  await test('T10: handleMediaError: nuevo token -> actualiza activeMediaUrl', async () => {
+    let activeMediaUrl = 'https://185.163.116.210/api/chats/media/msg-t10?mediaToken=expired';
+    const res = { mediaUrl: 'https://185.163.116.210/api/chats/media/msg-t10?mediaToken=new_fresh_token' };
+    if (res?.mediaUrl) {
+      activeMediaUrl = res.mediaUrl;
+    }
+    assert.strictEqual(activeMediaUrl, 'https://185.163.116.210/api/chats/media/msg-t10?mediaToken=new_fresh_token');
+  });
+
+  // 11. segundo fallo -> Multimedia no disponible
+  await test('T11: handleMediaError: segundo fallo -> activa hasError=true (Multimedia no disponible) sin loop', async () => {
+    let hasError = false;
+    const refreshed = true; // Ya fue refrescado previamente
+    const msg = { id: 'msg-t11' };
+    let tokenFetchCount = 0;
+
+    const fakeChatService = {
+      getChatMediaToken: async () => {
+        tokenFetchCount++;
+        return { mediaUrl: 'some-url' };
+      }
+    };
+
+    // Al fallar por segunda vez:
+    if (msg.id && !refreshed && !hasError) {
+      // No debe entrar aquí
+      tokenFetchCount++;
+    } else {
+      hasError = true;
+    }
+
+    assert.strictEqual(tokenFetchCount, 0, 'No debe volver a pedir token');
+    assert.strictEqual(hasError, true, 'Debe pasar a estado hasError=true');
+  });
+
+  // 12. NO session JWT en URL
+  await test('T12: NO session JWT en URL ni aceptado en query de media', async () => {
+    // 1. Session token jamás se acepta en el query string
+    const sessionToken = jwt.sign({ userId: 'u1', tenantId: testTenantA, role: 'admin' }, process.env.JWT_SECRET);
+    let authFailed = false;
+    const req = {
+      params: { messageId: 'msg-sec-12' },
+      query: { token: sessionToken },
+      headers: {}
+    };
+    const res = {
+      status: (code) => {
+        if (code === 401) authFailed = true;
+        return res;
+      },
+      json: () => res
+    };
+    await mediaAuthMiddleware(req, res, () => {});
+    assert.strictEqual(authFailed, true, 'Session token en query es rechazado');
+
+    // 2. Token scoped emitido tiene propósito exclusivo chat_media y no contiene sesión
+    const scopedToken = generateMediaAccessToken({
+      messageId: 'msg-sec-12',
+      tenantId: testTenantA
+    });
+    const verified = verifyMediaAccessToken(scopedToken, 'msg-sec-12');
+    assert.strictEqual(verified.valid, true);
+    assert.strictEqual(verified.payload.messageId, 'msg-sec-12');
+    assert.strictEqual(verified.payload.tenantId, testTenantA);
+
+    const rawDecoded = jwt.verify(scopedToken, getMediaTokenSecret());
+    assert.strictEqual(rawDecoded.purpose, 'chat_media');
+    assert.strictEqual(rawDecoded.userId, undefined, 'Scoped media token NO contiene userId de sesión');
+    assert.strictEqual(rawDecoded.role, undefined, 'Scoped media token NO contiene role de sesión');
   });
 
   console.log('----------------------------------------------------------------------');

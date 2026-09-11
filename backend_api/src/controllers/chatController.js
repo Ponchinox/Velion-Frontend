@@ -319,6 +319,7 @@ export async function getChatMedia(req, res) {
     res.setHeader('Cache-Control', 'private, max-age=86400');
     res.setHeader('Accept-Ranges', 'bytes');
     res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
 
     // Manejo de Range Requests (HTTP 206) para video y audio
     const range = req.headers.range;

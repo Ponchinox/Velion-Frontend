@@ -2279,6 +2279,7 @@ async function _processWebhookEvent(body, isMeta, provider, io, query, headers) 
           const ioRoom = tenant?.id ? `tenant:${tenant.id}` : null;
           if (req.io && ioRoom) {
             req.io.to(ioRoom).emit('new_whatsapp_message', {
+              id: savedOutMsg.id,
               chatId: chat.id,
               remoteJid,
               text: userMessageText,
@@ -2389,6 +2390,7 @@ async function _processWebhookEvent(body, isMeta, provider, io, query, headers) 
     const incomingIoRoom = tenant?.id ? `tenant:${tenant.id}` : null;
     if (req.io && incomingIoRoom) {
       req.io.to(incomingIoRoom).emit('new_whatsapp_message', {
+        id: incomingMsg.id,
         chatId: chat.id,
         remoteJid,
         text: contentToSave,
@@ -3898,6 +3900,7 @@ Atributos/Tags: ${Array.isArray(product.tags) ? product.tags.join(', ') : ''}
         const fbRoom = tenant?.id ? `tenant:${tenant.id}` : null;
         if (reqIo && fbRoom) {
           reqIo.to(fbRoom).emit('new_whatsapp_message', {
+            id: savedFbMsg.id,
             chatId: chat.id,
             remoteJid: cleanJid,
             text: timeoutFallbackText,
@@ -4232,6 +4235,7 @@ Atributos/Tags: ${Array.isArray(product.tags) ? product.tags.join(', ') : ''}
             const aiTextRoom = tenant?.id ? `tenant:${tenant.id}` : null;
             if (reqIo && aiTextRoom) {
               reqIo.to(aiTextRoom).emit('new_whatsapp_message', {
+                id: savedMsg.id,
                 chatId: chat.id,
                 remoteJid: cleanJid,
                 text: outgoingText,
@@ -4328,6 +4332,7 @@ Atributos/Tags: ${Array.isArray(product.tags) ? product.tags.join(', ') : ''}
             const aiMediaRoom = tenant?.id ? `tenant:${tenant.id}` : null;
             if (reqIo && aiMediaRoom) {
               reqIo.to(aiMediaRoom).emit('new_whatsapp_message', {
+                id: savedMediaMsg.id,
                 chatId: chat.id,
                 remoteJid: cleanJid,
                 text: item.caption ? `${item.url}\n${item.caption}` : item.url,
