@@ -2826,6 +2826,7 @@ async function processBufferedMessage(bufferKey) {
     (getChatGenerationVersion(bufferKey) !== generationVersion) || pendingQueues.has(bufferKey);
 
   let wasSuperseded = false;
+  let outboundFailed = false; // Tracks whether ANY text outbound was rejected by the gateway
   const userMessageText = buffer?.text || '';
   const aiInstructions = buffer?.aiInstructions || [];
 
@@ -4344,7 +4345,6 @@ Atributos/Tags: ${Array.isArray(product.tags) ? product.tags.join(', ') : ''}
       // ─── ESTADO LOCAL DE ENTREGA MULTIMEDIA (GATEWAY FAILURE AUTHORITY) ───
       let mediaDeliveryConfirmed = false;
       let mediaDeliveryFailed = false;
-      let outboundFailed = false; // Tracks whether ANY text outbound was rejected by the gateway
 
       // ─── DESPACHO SECUENCIAL ───
       for (let i = 0; i < dispatchSequence.length; i++) {
