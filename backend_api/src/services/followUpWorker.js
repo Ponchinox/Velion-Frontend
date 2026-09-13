@@ -8,6 +8,7 @@ import {
   calculateAttemptTimestamp
 } from './followUpService.js';
 import { generateFollowUpMessage } from './followUpAiService.js';
+import { evaluateFollowUpDecision } from './followUpDecisionService.js';
 
 export const FOLLOW_UP_TICK_MS = 30000; // 30 segundos
 export const STALE_PROCESSING_MS = 5 * 60 * 1000; // 5 minutos
@@ -356,6 +357,122 @@ export async function processFollowUpSequence(sequenceRecord, prismaClient = def
       }
     }
 
+    // ─── SEMANTIC DECISION ENGINE — GATE B (OBLIGATORIO ANTES DEL DISPATCH) ───
+    const decisionMode = seq.tenant?.followUpDecisionMode || 'OFF';
+    let semanticDecision = null;
+
+    if (decisionMode !== 'OFF') {
+      const liveCustomer = await db.customer.findUnique({
+        where: { id: seq.customerId },
+        select: { commercialState: true, followUpSuppressed: true }
+      });
+
+      const liveCommercialState = (liveCustomer?.commercialState && typeof liveCustomer.commercialState === 'object')
+        ? liveCustomer.commercialState
+        : (seq.contextSnapshot || {});
+
+      semanticDecision = await evaluateFollowUpDecision({
+        tenant: seq.tenant,
+        tenantId: seq.tenantId,
+        customer: seq.customer,
+        customerId: seq.customerId,
+        chat: seq.chat,
+        chatId: seq.chatId,
+        commercialState: liveCommercialState,
+        activeOrder: seq.order,
+        orderId: seq.orderId,
+        productId: seq.productId,
+        gate: 'GATE_B',
+        prismaClient: db
+      });
+
+      if (semanticDecision?.evaluated) {
+        const updatedSnapshot = {
+          ...(typeof seq.contextSnapshot === 'object' && seq.contextSnapshot !== null ? seq.contextSnapshot : {}),
+          decisionEngine: {
+            ...((seq.contextSnapshot && seq.contextSnapshot.decisionEngine) || {}),
+            gateB: {
+              decision: semanticDecision.decision,
+              confidence: semanticDecision.confidence,
+              pendingActor: semanticDecision.pendingActor,
+              pendingTopic: semanticDecision.pendingTopic,
+              followUpGoal: semanticDecision.followUpGoal,
+              suggestedMessageFocus: semanticDecision.suggestedMessageFocus,
+              reason: semanticDecision.reason,
+              evaluatedAt: semanticDecision.evaluatedAt,
+              model: semanticDecision.model,
+              thinkingLevel: semanticDecision.thinkingLevel
+            }
+          }
+        };
+
+        // En modo SHADOW: persistir auditoría en contextSnapshot sin alterar ejecución
+        if (decisionMode === 'SHADOW') {
+          await db.followUpSequence.update({
+            where: { id: seqId },
+            data: { contextSnapshot: updatedSnapshot }
+          });
+        }
+
+        if (decisionMode === 'ENFORCE') {
+          // DO_NOT_FOLLOW_UP: Cancelar secuencia de forma segura sin crear ni consumir attempt
+          if (semanticDecision.decision === 'DO_NOT_FOLLOW_UP') {
+            console.log(`🛑 [Decision Gate B - Blocked] Secuencia cancelada semánticamente (${semanticDecision.reason}).`);
+            await db.followUpSequence.update({
+              where: { id: seqId },
+              data: {
+                status: 'CANCELLED',
+                cancelReason: 'SEMANTIC_NOT_ELIGIBLE',
+                contextSnapshot: updatedSnapshot,
+                claimedAt: null
+              }
+            });
+            return { success: false, status: 'CANCELLED', reason: 'SEMANTIC_NOT_ELIGIBLE', decision: semanticDecision };
+          }
+
+          // DEFER_UNTIL: Reprogramar sin consumir attempt
+          if (semanticDecision.decision === 'DEFER_UNTIL') {
+            const nextRun = semanticDecision.explicitNextContactAt
+              ? new Date(semanticDecision.explicitNextContactAt)
+              : calculateAttemptTimestamp({ anchorAt: now, attemptNumber: seq.currentAttempt + 1, timeZone: seq.tenant.timezone });
+
+            console.log(`⏳ [Decision Gate B - Defer] Secuencia postergada a ${nextRun?.toISOString()} (${semanticDecision.reason}).`);
+            await db.followUpSequence.update({
+              where: { id: seqId },
+              data: {
+                status: seq.currentAttempt === 0 ? 'SCHEDULED' : 'WAITING_NEXT',
+                nextRunAt: nextRun,
+                contextSnapshot: updatedSnapshot,
+                claimedAt: null
+              }
+            });
+            return { success: false, status: 'SCHEDULED', reason: 'SEMANTIC_DEFERRED', nextRunAt: nextRun, decision: semanticDecision };
+          }
+
+          // REQUIRES_HUMAN_REVIEW: Bloquear envío automático
+          if (semanticDecision.decision === 'REQUIRES_HUMAN_REVIEW') {
+            console.warn(`👤 [Decision Gate B - Human Review] Requiere revisión humana (${semanticDecision.reason}). Bloqueando.`);
+            await db.followUpSequence.update({
+              where: { id: seqId },
+              data: {
+                status: 'CANCELLED',
+                cancelReason: 'SEMANTIC_HUMAN_REVIEW_REQUIRED',
+                contextSnapshot: updatedSnapshot,
+                claimedAt: null
+              }
+            });
+            return { success: false, status: 'CANCELLED', reason: 'SEMANTIC_HUMAN_REVIEW_REQUIRED', decision: semanticDecision };
+          }
+
+          // SEND_FOLLOW_UP: Persistir snapshot actualizado y continuar al dispatch
+          await db.followUpSequence.update({
+            where: { id: seqId },
+            data: { contextSnapshot: updatedSnapshot }
+          });
+        }
+      }
+    }
+
     // ─── DETERMINACIÓN DE INTENTO Y PREPARACIÓN DE ROW ───
     const targetAttemptNumber = seq.currentAttempt + 1;
     if (targetAttemptNumber > seq.maxAttempts) {
@@ -395,6 +512,7 @@ export async function processFollowUpSequence(sequenceRecord, prismaClient = def
       customer: seq.customer,
       tenant: seq.tenant,
       attemptNumber: targetAttemptNumber,
+      semanticMetadata: semanticDecision?.decision === 'SEND_FOLLOW_UP' ? semanticDecision : null,
       prismaClient: db
     });
 

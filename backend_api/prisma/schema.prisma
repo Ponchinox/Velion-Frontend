@@ -54,6 +54,7 @@ model Tenant {
   aiUsages             TenantAIUsage[]
   operationalItems     OperationalItem[]
   followUpEnabled      Boolean                    @default(false)
+  followUpDecisionMode String?                    @default("OFF")
   timezone             String?
   followUpSequences    FollowUpSequence[]
 }

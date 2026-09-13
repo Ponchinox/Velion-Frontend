@@ -1,5 +1,6 @@
 import defaultPrisma from '../db.js';
 import { isHandoffActive } from './humanHandoffGate.js';
+import { evaluateFollowUpDecision, shouldRunGateA } from './followUpDecisionService.js';
 
 /**
  * followUpService.js — Núcleo de Lógica Comercial y Schedulig para Follow-ups V1
@@ -317,7 +318,7 @@ export function shouldCreateOrRefreshFollowUp({
   tenant,
   customer,
   currentCommercialState = {},
-  chat,
+  chat: _chat,
   activeOrder = null,
   lastInboundMessage = null
 }) {
@@ -477,6 +478,93 @@ export async function evaluateAndScheduleFollowUp({
     lastDoubt: lastInboundMessage.content ? String(lastInboundMessage.content).slice(0, 300) : null,
     explicitTimeNote: explicitCustomerTiming || null
   };
+
+  // ─── GATE A — EARLY SEMANTIC GUARD (COST-AWARE) ───
+  let gateADecision = null;
+  const decisionMode = tenant.followUpDecisionMode || 'OFF';
+
+  if (decisionMode !== 'OFF' && shouldRunGateA({ commercialState: normalizedCommercialState, activeOrder, lastInboundMessage })) {
+    gateADecision = await evaluateFollowUpDecision({
+      tenant,
+      tenantId: tenant.id,
+      customer,
+      customerId: customer.id,
+      chat,
+      chatId: chat?.id,
+      commercialState: normalizedCommercialState,
+      activeOrder,
+      orderId: resolvedOrderId,
+      productId: resolvedProductId,
+      lastInboundMessage,
+      explicitCustomerTiming: resolvedTimingIso || explicitCustomerTiming,
+      gate: 'GATE_A',
+      prismaClient: db
+    });
+
+    if (gateADecision?.evaluated) {
+      finalContextSnapshot.decisionEngine = {
+        ...(finalContextSnapshot.decisionEngine || {}),
+        gateA: {
+          decision: gateADecision.decision,
+          confidence: gateADecision.confidence,
+          pendingActor: gateADecision.pendingActor,
+          pendingTopic: gateADecision.pendingTopic,
+          followUpGoal: gateADecision.followUpGoal,
+          reason: gateADecision.reason,
+          evaluatedAt: gateADecision.evaluatedAt,
+          model: gateADecision.model,
+          thinkingLevel: gateADecision.thinkingLevel
+        }
+      };
+
+      if (decisionMode === 'ENFORCE') {
+        if (gateADecision.decision === 'DO_NOT_FOLLOW_UP' || gateADecision.decision === 'REQUIRES_HUMAN_REVIEW') {
+          const cancelReason = gateADecision.decision === 'REQUIRES_HUMAN_REVIEW'
+            ? 'SEMANTIC_HUMAN_REVIEW_REQUIRED'
+            : 'SEMANTIC_NOT_ELIGIBLE';
+
+          // Si ya existe secuencia activa, cancelarla de forma segura conservando evidencia
+          const activeSeq = await db.followUpSequence.findFirst({
+            where: {
+              tenantId: tenant.id,
+              customerId: customer.id,
+              status: { in: ['SCHEDULED', 'PROCESSING', 'NEUTRALIZED_INBOUND', 'WAITING_NEXT'] }
+            }
+          });
+
+          if (activeSeq) {
+            await db.followUpSequence.update({
+              where: { id: activeSeq.id },
+              data: {
+                status: 'CANCELLED',
+                cancelReason,
+                contextSnapshot: {
+                  ...(typeof activeSeq.contextSnapshot === 'object' && activeSeq.contextSnapshot !== null ? activeSeq.contextSnapshot : {}),
+                  decisionEngine: {
+                    ...((activeSeq.contextSnapshot && activeSeq.contextSnapshot.decisionEngine) || {}),
+                    gateA: finalContextSnapshot.decisionEngine.gateA
+                  }
+                },
+                claimedAt: null
+              }
+            });
+          }
+
+          return {
+            scheduled: false,
+            reason: cancelReason,
+            decision: gateADecision.decision,
+            gateADecision
+          };
+        }
+
+        if (gateADecision.decision === 'DEFER_UNTIL' && gateADecision.explicitNextContactAt) {
+          scheduledNextRunAt = new Date(gateADecision.explicitNextContactAt);
+          resolvedTimingIso = gateADecision.explicitNextContactAt;
+        }
+      }
+    }
+  }
 
   // 4. Buscar secuencia activa existente para este cliente en el tenant
   const existingSequence = await db.followUpSequence.findFirst({

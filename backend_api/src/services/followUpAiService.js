@@ -50,10 +50,31 @@ export async function getTenantVerifiedProduct(arg1, arg2, arg3) {
 
 /**
  * Genera la plantilla determinista neutral si la IA no puede o no debe ejecutarse.
+ * Si se dispone de pendingTopic o followUpGoal, personaliza el fallback determinista.
  */
-export function getDeterministicFallbackMessage({ customerName, productName, attemptNumber }) {
+export function getDeterministicFallbackMessage({ customerName, productName, attemptNumber, pendingTopic = null, followUpGoal = null }) {
   const cleanName = (customerName && String(customerName).trim()) ? String(customerName).trim() : 'amigo';
   const prod = (productName && String(productName).trim()) ? String(productName).trim() : 'tu pedido';
+
+  if (pendingTopic && typeof pendingTopic === 'string') {
+    const topicLower = pendingTopic.toLowerCase();
+    if (topicLower.includes('talla') || topicLower.includes('medida') || topicLower.includes('size')) {
+      return `Hola ${cleanName} 👋, ¿pudiste confirmar la talla que necesitas para ${prod}? ¡Avísanos para separártelo!`;
+    }
+    if (topicLower.includes('color') || topicLower.includes('modelo') || topicLower.includes('variante')) {
+      return `Hola ${cleanName} 👋, quedamos atentos para confirmar el color o modelo de ${prod}. ¿Cuál prefieres?`;
+    }
+    if (topicLower.includes('direccion') || topicLower.includes('dirección') || topicLower.includes('envio') || topicLower.includes('envío') || topicLower.includes('ciudad')) {
+      return `Hola ${cleanName} 👋, ¿pudiste confirmar la dirección para coordinar el envío de ${prod}?`;
+    }
+    if (topicLower.includes('decision') || topicLower.includes('decisión') || topicLower.includes('compra')) {
+      return `Hola ${cleanName} 👋, ¿pudiste decidir si deseas llevar ${prod}? ¡Quedamos atentos a cualquier consulta!`;
+    }
+  }
+
+  if (followUpGoal && typeof followUpGoal === 'string' && followUpGoal.trim().length > 5) {
+    return `Hola ${cleanName} 👋, te escribimos para consultar si deseas coordinar lo de ${prod}. ¡Avísanos si tienes alguna duda!`;
+  }
 
   if (attemptNumber === 1) {
     return `Hola ${cleanName} 👋, quedamos atentos por si tienes alguna duda con ${prod}. ¡Avísanos si deseas coordinar los detalles!`;
@@ -72,6 +93,7 @@ export async function generateFollowUpMessage({
   customer,
   tenant,
   attemptNumber = 1,
+  semanticMetadata = null,
   prismaClient = defaultPrisma
 }) {
   const db = prismaClient;
@@ -99,12 +121,20 @@ export async function generateFollowUpMessage({
     return { success: false, reason: 'NO_VALID_PRODUCT_FOR_FOLLOW_UP' };
   }
 
+  // Extraer metadata semántica del Decision Engine (inyectada o en contextSnapshot)
+  const semantic = semanticMetadata || sequence?.contextSnapshot?.decisionEngine?.gateB || null;
+  const pendingTopic = semantic?.pendingTopic || null;
+  const followUpGoal = semantic?.followUpGoal || null;
+  const suggestedMessageFocus = semantic?.suggestedMessageFocus || null;
+
   // En entorno de pruebas o modo seguro, usar fallback determinista directo
   if (process.env.NODE_ENV === 'test' || process.env.CAMPAIGN_TEST_MODE === '1') {
     const fallbackText = getDeterministicFallbackMessage({
       customerName,
       productName: effectiveProductName,
-      attemptNumber
+      attemptNumber,
+      pendingTopic,
+      followUpGoal
     });
     return { success: true, text: fallbackText, origin: 'fallback' };
   }
@@ -121,13 +151,23 @@ export async function generateFollowUpMessage({
   const lastDoubt = sequence.contextSnapshot?.lastDoubt ? `Última consulta o duda del cliente: "${sequence.contextSnapshot.lastDoubt}"` : '';
 
   let intentGoal = '';
-  if (attemptNumber === 1) {
+  if (followUpGoal) {
+    intentGoal = `Objetivo comercial específico: "${followUpGoal}".`;
+  } else if (attemptNumber === 1) {
     intentGoal = 'Objetivo: Retomar con amabilidad la conversación sobre el producto, ofreciendo resolver cualquier duda pendiente o coordinar la compra.';
   } else if (attemptNumber === 2) {
     intentGoal = 'Objetivo: Preguntar con cortesía si aún requiere ayuda con el producto o prefiere consultar otra alternativa.';
   } else {
     intentGoal = 'Objetivo: Despedida cortés y no invasiva, dejando la puerta abierta para cuando decida retomar, sin presionar.';
   }
+
+  const topicDirective = pendingTopic
+    ? `\n- TEMA PENDIENTE EXACTO DEL CLIENTE: "${pendingTopic}". Redacta preguntando DIRECTAMENTE por este punto específico.`
+    : '';
+
+  const focusDirective = suggestedMessageFocus
+    ? `\n- ENFOQUE SUGERIDO: "${suggestedMessageFocus}".`
+    : '';
 
   const promptSystem = `Eres el asistente de ventas de "${tenant.companyName || tenant.name}".
 Debes redactar un mensaje de seguimiento (follow-up) de WhatsApp para un cliente que estuvo consultando por un producto y no completó su compra.
@@ -136,7 +176,7 @@ DATOS DEL CLIENTE Y PRODUCTO:
 - Nombre del cliente: ${customerName}
 - Producto de interés: ${effectiveProductName}
 ${priceNote}
-${lastDoubt}
+${lastDoubt}${topicDirective}${focusDirective}
 
 DIRECTIVAS CRÍTICAS:
 1. ${intentGoal}
@@ -164,7 +204,9 @@ DIRECTIVAS CRÍTICAS:
   const fallbackText = getDeterministicFallbackMessage({
     customerName,
     productName: effectiveProductName,
-    attemptNumber
+    attemptNumber,
+    pendingTopic,
+    followUpGoal
   });
   return { success: true, text: fallbackText, origin: 'fallback' };
 }

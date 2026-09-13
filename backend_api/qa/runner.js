@@ -223,7 +223,8 @@ const QA_CATEGORIES = [
     name: 'Follow-ups V1',
     type: 'standalone_files',
     files: [
-      'test_follow_up_v1_suite.js'
+      'test_follow_up_v1_suite.js',
+      'test_follow_up_decision_engine.js'
     ]
   }
 ];
