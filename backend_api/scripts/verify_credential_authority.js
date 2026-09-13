@@ -37,13 +37,13 @@ async function main() {
   try {
     const envContent = readFileSync(envPath, 'utf8');
     const match = envContent.match(/^EVOLUTION_API_KEY=(.+)$/m);
-    envFileKey = match?.[1]?.trim() || null;
+    envFileKey = match?.[1]?.trim()?.replace(/^["']|["']$/g, '') || null;
   } catch (e) {
     console.error('  ❌ Cannot read .env file:', e.message);
   }
 
   // 2. Effective process.env
-  const processEnvKey = process.env.EVOLUTION_API_KEY?.trim() || null;
+  const processEnvKey = (process.env.EVOLUTION_API_KEY || '').trim().replace(/^["']|["']$/g, '') || null;
 
   // 3. Evolution API auth (test a simple endpoint)
   const evoUrl = process.env.EVOLUTION_API_URL || 'http://127.0.0.1:8080';
@@ -65,7 +65,7 @@ async function main() {
     });
     const instances = res.data || [];
     if (instances.length > 0) {
-      const firstInstance = instances[0]?.instance?.instanceName || instances[0]?.instanceName;
+      const firstInstance = instances[0]?.name || instances[0]?.instance?.instanceName || instances[0]?.instanceName;
       if (firstInstance) {
         const whRes = await axios.get(`${evoUrl}/webhook/find/${firstInstance}`, {
           headers: { apikey: processEnvKey }

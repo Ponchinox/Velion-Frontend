@@ -27,7 +27,7 @@ function safeHash(value) {
 }
 
 async function main() {
-  const apiKey = process.env.EVOLUTION_API_KEY?.trim();
+  const apiKey = (process.env.EVOLUTION_API_KEY || '').trim().replace(/^["']|["']$/g, '');
   const evoUrl = process.env.EVOLUTION_API_URL || 'http://127.0.0.1:8080';
   const isDryRun = process.env.DRY_RUN === '1';
 
@@ -59,7 +59,7 @@ async function main() {
   let errors = 0;
 
   for (const inst of instances) {
-    const name = inst?.instance?.instanceName || inst?.instanceName;
+    const name = inst?.name || inst?.instance?.instanceName || inst?.instanceName;
     if (!name) continue;
 
     try {
