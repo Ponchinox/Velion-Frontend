@@ -28,6 +28,12 @@ import {
 } from '../services/whatsappIdentityService.js';
 import { saveInboundMedia, generateMediaAccessToken, MEDIA_SIZE_LIMITS } from '../services/mediaStorageService.js';
 import { decryptText } from '../utils/cryptoUtils.js';
+import {
+  isFollowUpOptOutRequested,
+  handleFollowUpOptOut,
+  cancelActiveFollowUpOnInboundMessage,
+  evaluateAndScheduleFollowUp
+} from '../services/followUpService.js';
 
 // ── HUMAN HANDOFF: ventana de pausa manual (30 minutos) ──────────────────────
 export const HUMAN_HANDOFF_MINUTES = 30;
@@ -2479,6 +2485,25 @@ async function _processWebhookEvent(body, isMeta, provider, io, query, headers) 
       where: { tenantId_phone: { tenantId: tenant.id, phone: remoteJid } }
     });
 
+    // ── FOLLOW-UP INBOUND EARLY NEUTRALIZATION & OPT-OUT ──
+    try {
+      if (existingCustomerForCheck?.id) {
+        if (isFollowUpOptOutRequested(contentToSave)) {
+          await handleFollowUpOptOut({
+            tenantId: tenant.id,
+            customerId: existingCustomerForCheck.id,
+            reason: 'USER_REQUEST'
+          });
+        }
+        await cancelActiveFollowUpOnInboundMessage({
+          tenantId: tenant.id,
+          customerId: existingCustomerForCheck.id
+        });
+      }
+    } catch (fuInboundErr) {
+      console.warn('⚠️ [FollowUp Inbound Hook] Error neutralizing follow-up:', fuInboundErr.message);
+    }
+
     let isPaused = Boolean(contact?.botPaused || existingCustomerForCheck?.isBotPaused);
 
     if (isPaused) {
@@ -2794,6 +2819,24 @@ async function processBufferedMessage(bufferKey) {
         }
       });
       console.log(`👤 [CRM] Nuevo cliente registrado en base de datos: +${clientNumber}`);
+    }
+
+    if (customer?.id) {
+      try {
+        if (isFollowUpOptOutRequested(userMessageText)) {
+          await handleFollowUpOptOut({
+            tenantId: tenant.id,
+            customerId: customer.id,
+            reason: 'USER_REQUEST'
+          });
+        }
+        await cancelActiveFollowUpOnInboundMessage({
+          tenantId: tenant.id,
+          customerId: customer.id
+        });
+      } catch (fuErr) {
+        console.warn('⚠️ [FollowUp Buffer Hook] Error neutralizing follow-up:', fuErr.message);
+      }
     }
 
     // ─── DESACTIVACIÓN DE BANEO PERMANENTE -> CONVERSIÓN A HUMAN HANDOFF (PAUSA) ───
@@ -3264,6 +3307,10 @@ ${catalogIndexCsv}
               customerConfirmed: {
                 type: 'BOOLEAN',
                 description: 'true ÚNICAMENTE si el cliente ha confirmado de forma explícita que desea comprar el producto o contratar el servicio (ej. "quiero uno", "lo compro", "dame dos", "confirmo la matrícula", "deseo contratarlo"). false si solo está consultando precio, stock, horarios o características.'
+              },
+              explicitCustomerTiming: {
+                type: 'STRING',
+                description: 'Texto temporal explícito donde el cliente indica cuándo responderá, revisará o pagará (ej: "mañana te confirmo", "el lunes te pago", "en dos días te aviso"). SOLO incluir si el cliente lo expresó explícitamente en el mensaje; de lo contrario null o no incluir.'
               },
               missingFields: {
                 type: 'ARRAY',
@@ -4447,7 +4494,49 @@ Atributos/Tags: ${Array.isArray(product.tags) ? product.tags.join(', ') : ''}
 
 
       }
-    }  } catch (error) {
+    }
+
+    // ── FOLLOW-UP EVALUATION POST-DISPATCH ──
+    if (!wasSuperseded && customer?.id && tenant?.id) {
+      try {
+        const refreshedCustomer = await prisma.customer.findUnique({
+          where: { id: customer.id }
+        });
+        const cState = (typeof refreshedCustomer?.commercialState === 'object' && refreshedCustomer?.commercialState !== null)
+          ? refreshedCustomer.commercialState
+          : currentCommercialState;
+        const stage = cState?.currentStage;
+        if (stage && ['PRODUCT_SELECTED', 'DETAILS_PROVIDED', 'SHIPPING_COORDINATED', 'PAYMENT_PENDING'].includes(stage)) {
+          const lastInbound = await prisma.message.findFirst({
+            where: { chatId: chat.id, senderRole: { in: ['contact', 'user'] } },
+            orderBy: { createdAt: 'desc' }
+          });
+          if (lastInbound) {
+            await evaluateAndScheduleFollowUp({
+              tenantId: tenant.id,
+              customerId: customer.id,
+              chatId: chat.id,
+              currentStage: stage,
+              orderId: cState.orderId || null,
+              productId: cState.productId || null,
+              productName: cState.productName || null,
+              lastInboundMessage: lastInbound,
+              explicitCustomerTiming: cState.explicitCustomerTiming || null,
+              contextSnapshot: {
+                customerName: customer.name,
+                currentStage: stage,
+                productId: cState.productId,
+                productName: cState.productName,
+                orderId: cState.orderId
+              }
+            });
+          }
+        }
+      } catch (fuErr) {
+        console.warn('⚠️ [FollowUp Post-Dispatch Hook] Error evaluating follow-up:', fuErr.message);
+      }
+    }
+  } catch (error) {
     if (error?.isSuperseded || error?.message === 'GENERATION_SUPERSEDED') {
       wasSuperseded = true;
       pendingMediaToSend = null;

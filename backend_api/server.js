@@ -23,8 +23,10 @@ import userRoutes from './src/routes/userRoutes.js';
 import tenantDashboardRoutes from './src/routes/tenantDashboardRoutes.js';
 import planRoutes from './src/routes/planRoutes.js';
 import operationalItemRoutes from './src/routes/operationalItemRoutes.js';
+import followUpRoutes from './src/routes/followUpRoutes.js';
 import { initBackupScheduler } from './src/services/backupScheduler.js';
 import { initCampaignWorkerV2 } from './src/services/campaignWorkerV2.js';
+import { initFollowUpWorker } from './src/services/followUpWorker.js';
 import { 
   resolvePort, 
   resolveHost, 
@@ -145,6 +147,7 @@ app.use('/api/users', userRoutes);
 app.use('/api/tenant/dashboard', tenantDashboardRoutes);
 app.use('/api/plans', planRoutes);
 app.use('/api/operational-items', operationalItemRoutes);
+app.use('/api/follow-ups', followUpRoutes);
 
 // Ruta de comprobación de estado (Healthcheck + DB Test)
 app.get('/api/health', async (req, res) => {
@@ -242,7 +245,8 @@ if (isMainModule && process.env.NODE_ENV !== 'test') {
     startBackgroundJobsIfEnabled({
       backgroundJobsEnabled: areBackgroundJobsEnabled(),
       initBackupScheduler,
-      initCampaignWorkerV2
+      initCampaignWorkerV2,
+      initFollowUpWorker
     });
   });
 }

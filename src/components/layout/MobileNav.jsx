@@ -13,6 +13,7 @@ import {
   Package,
   Bell,
   Database,
+  ClockCounterClockwise,
 } from '@phosphor-icons/react';
 import { useAuth } from '../../context/AuthContext';
 
@@ -82,6 +83,13 @@ const CLIENT_ITEMS = [
     Icon:    ChatTeardrop,
     iconCls: 'text-sky-600',
     desc:    'Live Chat',
+  },
+  {
+    label:   'Seguimientos',
+    to:      '/seguimientos',
+    Icon:    ClockCounterClockwise,
+    iconCls: 'text-violet-600',
+    desc:    'Ventas y recuperación',
   },
   {
     label:   'Campañas',

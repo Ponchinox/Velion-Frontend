@@ -216,6 +216,14 @@ const QA_CATEGORIES = [
     files: [
       'test_emoticon_sanitization.js'
     ]
+  },
+  {
+    id: 'follow_up',
+    name: 'Follow-ups V1',
+    type: 'standalone_files',
+    files: [
+      'test_follow_up_v1_suite.js'
+    ]
   }
 ];
 

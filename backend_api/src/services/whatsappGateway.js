@@ -27,8 +27,9 @@ function assertNotInTestMode(operation, target) {
 /**
  * Resuelve el contexto del Gateway (proveedor + credenciales) desde la BD.
  */
-export async function resolveGatewayCtx(tenantId) {
-  const connection = await prisma.registeredWhatsAppNumber.findFirst({
+export async function resolveGatewayCtx(tenantId, prismaClient = prisma) {
+  const db = prismaClient || prisma;
+  const connection = await db.registeredWhatsAppNumber.findFirst({
     where: { tenantId },
     orderBy: { createdAt: 'desc' },
   });

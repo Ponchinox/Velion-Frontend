@@ -66,6 +66,7 @@ export function areBackgroundJobsEnabled(val = process.env.BACKGROUND_JOBS_ENABL
  * @param {boolean} [options.backgroundJobsEnabled]
  * @param {Function} [options.initBackupScheduler]
  * @param {Function} [options.initCampaignWorkerV2]
+ * @param {Function} [options.initFollowUpWorker]
  * @param {Object} [options.logger]
  * @returns {{ started: boolean, reason?: string }}
  */
@@ -73,6 +74,7 @@ export function startBackgroundJobsIfEnabled({
   backgroundJobsEnabled = areBackgroundJobsEnabled(),
   initBackupScheduler,
   initCampaignWorkerV2,
+  initFollowUpWorker,
   logger = console
 } = {}) {
   if (!backgroundJobsEnabled) {
@@ -94,6 +96,16 @@ export function startBackgroundJobsIfEnabled({
           logger.error('❌ [Campaign Worker V2] Error al inicializar el motor de campañas:', err);
         }
       });
+    }
+  }
+
+  if (typeof initFollowUpWorker === 'function') {
+    try {
+      initFollowUpWorker();
+    } catch (err) {
+      if (logger && typeof logger.error === 'function') {
+        logger.error('❌ [FollowUp Worker] Error al inicializar el worker de seguimientos:', err);
+      }
     }
   }
 

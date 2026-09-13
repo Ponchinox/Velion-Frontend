@@ -53,6 +53,9 @@ model Tenant {
   orders               Order[]
   aiUsages             TenantAIUsage[]
   operationalItems     OperationalItem[]
+  followUpEnabled      Boolean                    @default(false)
+  timezone             String?
+  followUpSequences    FollowUpSequence[]
 }
 
 model User {
@@ -99,6 +102,7 @@ model Chat {
   tenant    Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   messages  Message[]
   operationalItems OperationalItem[]
+  followUpSequences FollowUpSequence[]
 }
 
 model Message {
@@ -224,6 +228,10 @@ model Customer {
   tenant            Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   orders            Order[]
   operationalItems  OperationalItem[]
+  followUpSuppressed        Boolean   @default(false)
+  followUpOptOutAt          DateTime?
+  followUpSuppressionReason String?
+  followUpSequences         FollowUpSequence[]
 
   @@unique([tenantId, phone])
 }
@@ -321,6 +329,7 @@ model Order {
   customer        Customer    @relation(fields: [customerId], references: [id], onDelete: Cascade)
   items           OrderItem[]
   operationalItems OperationalItem[]
+  followUpSequences FollowUpSequence[]
 }
 
 model OrderItem {
@@ -404,5 +413,77 @@ model OperationalItem {
   @@index([tenantId, customerId])
   @@index([tenantId, dueDateLocal])
   @@index([tenantId, dueAt])
+}
+
+model FollowUpSequence {
+  id                String             @id @default(uuid())
+  tenantId          String
+  customerId        String
+  chatId            String?
+  orderId           String?
+
+  productId         String?
+  productName       String?
+  stageAtCreation   String
+
+  status            String             @default("SCHEDULED")
+  // 'SCHEDULED' | 'PROCESSING' | 'NEUTRALIZED_INBOUND' | 'WAITING_NEXT' | 'RECOVERED' | 'EXHAUSTED' | 'CANCELLED'
+
+  currentAttempt    Int                @default(0)
+  maxAttempts       Int                @default(3)
+
+  anchorAt          DateTime
+  nextRunAt         DateTime?
+  lastRunAt         DateTime?
+  claimedAt         DateTime?
+
+  cancelReason      String?
+  recoveredAt       DateTime?
+  recoveredOrderId  String?
+
+  contextSnapshot   Json?
+  explicitTimingIso DateTime?
+
+  createdAt         DateTime           @default(now())
+  updatedAt         DateTime           @updatedAt
+
+  tenant            Tenant             @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  customer          Customer           @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  chat              Chat?              @relation(fields: [chatId], references: [id], onDelete: SetNull)
+  order             Order?             @relation(fields: [orderId], references: [id], onDelete: SetNull)
+  attempts          FollowUpAttempt[]
+
+  @@index([status, nextRunAt])
+  @@index([tenantId, customerId])
+  @@index([tenantId, status])
+  @@index([tenantId, nextRunAt])
+}
+
+model FollowUpAttempt {
+  id                String           @id @default(uuid())
+  sequenceId        String
+  attemptNumber     Int
+
+  status            String           @default("PENDING")
+  // 'PENDING' | 'PROCESSING' | 'SENT' | 'FAILED_SAFE' | 'UNKNOWN_DELIVERY' | 'SKIPPED_POLICY'
+
+  scheduledAt       DateTime
+  sentAt            DateTime?
+  claimedAt         DateTime?
+  dispatchStartedAt DateTime?
+
+  sentMessage       String?
+  provider          String
+  providerMessageId String?
+  errorMessage      String?
+
+  createdAt         DateTime         @default(now())
+  updatedAt         DateTime         @updatedAt
+
+  sequence          FollowUpSequence @relation(fields: [sequenceId], references: [id], onDelete: Cascade)
+
+  @@unique([sequenceId, attemptNumber])
+  @@index([sequenceId])
+  @@index([status])
 }
 

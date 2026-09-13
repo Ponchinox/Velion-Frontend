@@ -1,4 +1,5 @@
 import prisma from '../db.js';
+import { cancelFollowUpOnHandoff } from './followUpService.js';
 
 /**
  * humanHandoffService.js — Gestión Centralizada de Human Handoff (Intervención Humana)
@@ -124,6 +125,13 @@ export async function activateHumanHandoff({
 
     if (ops.length > 0) {
       await prisma.$transaction(ops);
+    }
+
+    // Cancelar inmediatamente cualquier seguimiento automático activo del cliente
+    try {
+      await cancelFollowUpOnHandoff({ tenantId, contactId, chatId, phone: cleanPhone || phone });
+    } catch (fuErr) {
+      console.warn(`⚠️ [Human Handoff] Error al cancelar seguimientos activos:`, fuErr.message);
     }
 
     console.log(`👤 [Human Handoff] Intervención humana activada (30 min) para tenant ${tenantId.slice(0, 8)} | Tel: +${cleanPhone || 'N/A'} (Motivo: ${reason})`);

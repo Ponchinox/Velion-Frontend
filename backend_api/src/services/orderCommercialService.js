@@ -1,4 +1,5 @@
 import prisma from '../db.js';
+import { cancelFollowUpOnOrderEvent } from './followUpService.js';
 
 /**
  * Calcula el precio canónico vigente de un producto (respetando promociones por fecha).
@@ -494,6 +495,12 @@ export async function syncCommercialOrder({
             productName: finalProductName
           });
         }
+
+        try {
+          await cancelFollowUpOnOrderEvent({ tenantId: tenant.id, customerId: customer.id, order: { id: existingOrder.id, paymentStatus: 'VERIFYING' }, prismaClient: db });
+        } catch (fuErr) {
+          console.warn('⚠️ [Order Security] Error cancelando seguimiento en PAYMENT_VERIFIED:', fuErr.message);
+        }
       }
 
       if (updatedState.currentStage === 'COMPLETED') {
@@ -530,6 +537,12 @@ export async function syncCommercialOrder({
               tenantId: tenant.id
             }
           });
+
+          try {
+            await cancelFollowUpOnOrderEvent({ tenantId: tenant.id, customerId: customer.id, order: { id: orderToCancel.id, status: 'CANCELED', paymentStatus: orderToCancel.paymentStatus }, prismaClient: db });
+          } catch (fuErr) {
+            console.warn('⚠️ [Order Security] Error cancelando seguimiento en CANCELED:', fuErr.message);
+          }
         } else {
           // CASO B (VERIFYING): NO cancelar, NO modificar Order, NO alerta
           // CASO C (PAID): PROHIBIDO cancelar automáticamente, NO modificar Order, NO alerta
@@ -545,6 +558,12 @@ export async function syncCommercialOrder({
     // PARTE 6: Al volver a EXPLORING, limpiar siempre los campos del draft para evitar contaminar una nueva compra
     updatedState = cleanCommercialDraft(updatedState);
     updatedState.currentStage = 'EXPLORING';
+
+    try {
+      await cancelFollowUpOnOrderEvent({ tenantId: tenant.id, customerId: customer.id, order: { status: 'CANCELED' }, prismaClient: db });
+    } catch (fuErr) {
+      console.warn('⚠️ [Order Security] Error cancelando seguimiento en EXPLORING:', fuErr.message);
+    }
   }
 
   // Persistir estado en el Customer

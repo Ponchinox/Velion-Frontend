@@ -21,6 +21,7 @@ import AdminAlertsPage from './pages/AdminAlertsPage';
 import AdminBackupsPage from './pages/AdminBackupsPage';
 import { useAuth } from './context/AuthContext';
 import Products from './pages/Products';
+import SeguimientosPage from './pages/SeguimientosPage';
 import TenantDashboardPage from './pages/TenantDashboardPage';
 import PlanSelectionPage from './pages/PlanSelectionPage';
 import { UnsavedChangesProvider } from './context/UnsavedChangesContext';
@@ -118,6 +119,7 @@ const router = createBrowserRouter(
         <Route path="conexiones"      element={<ConexionesPage />} />
         <Route path="contactos"       element={<ContactosPage />} />
         <Route path="mensajes"        element={<ChatPage />} />
+        <Route path="seguimientos"    element={<SeguimientosPage />} />
         <Route path="automatizacion" element={
           <ProtectedRoute requiredPlanFeature="hasAutomations">
             <FlowBuilderPage />

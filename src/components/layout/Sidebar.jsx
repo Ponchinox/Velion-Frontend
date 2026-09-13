@@ -16,6 +16,7 @@ import {
   User as UserIcon,
   Lock,
   ArrowCircleUp,
+  ClockCounterClockwise,
   X,
 } from '@phosphor-icons/react';
 import { useAuth } from '../../context/AuthContext';
@@ -156,6 +157,7 @@ export default function Sidebar() {
         category: 'IA & COMUNICACIÓN',
         items: [
           { label: 'Mensajes',         to: '/mensajes',       Icon: ChatTeardrop },
+          { label: 'Seguimientos',     to: '/seguimientos',   Icon: ClockCounterClockwise },
           {
             label: 'Campañas',
             to: '/campanas',
