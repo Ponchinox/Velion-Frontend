@@ -1,7 +1,12 @@
 import { PrismaClient } from '@prisma/client';
 
-const oldDbUrl = "postgresql://neondb_owner:npg_A9fUF3PSjtyJ@ep-winter-mud-axg6ktxh.c-4.us-east-2.aws.neon.tech/neondb?sslmode=require";
-const newDbUrl = "postgresql://neondb_owner:npg_Flqncwf47Cbv@ep-morning-rain-ay9va843-pooler.c-5.us-east-2.aws.neon.tech/neondb?sslmode=require&channel_binding=require";
+const oldDbUrl = process.env.SOURCE_DATABASE_URL || process.env.OLD_DATABASE_URL;
+const newDbUrl = process.env.TARGET_DATABASE_URL || process.env.NEW_DATABASE_URL || process.env.DATABASE_URL;
+
+if (!oldDbUrl || !newDbUrl) {
+  console.error('Error: SOURCE_DATABASE_URL and TARGET_DATABASE_URL environment variables must be provided.');
+  process.exit(1);
+}
 
 const tables = [
   'Plan',
