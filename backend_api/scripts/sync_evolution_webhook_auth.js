@@ -68,15 +68,18 @@ async function main() {
       const wh = whRes.data;
 
       const storedKeyHash = safeHash(wh?.headers?.apikey);
-      const isMatch = storedKeyHash === keyHash;
+      const isKeyMatch = storedKeyHash === keyHash;
+      const hasAllEvents = ['MESSAGES_UPSERT', 'CONNECTION_UPDATE', 'MESSAGES_UPDATE'].every(ev => wh?.events?.includes(ev));
 
-      if (isMatch) {
-        console.log(`  ✅ ${name}: webhook key MATCH — no update needed`);
+      if (isKeyMatch && hasAllEvents) {
+        console.log(`  ✅ ${name}: key & events MATCH — no update needed`);
         alreadyOk++;
         continue;
       }
 
-      console.log(`  🔧 ${name}: webhook key MISMATCH — ${isDryRun ? 'would update' : 'updating'}...`);
+      console.log(`  🔧 ${name}: key/events need sync — ${isDryRun ? 'would update' : 'updating'}...`);
+
+      const mergedEvents = Array.from(new Set([...(wh.events || []), 'MESSAGES_UPSERT', 'CONNECTION_UPDATE', 'MESSAGES_UPDATE']));
 
       if (!isDryRun) {
         // 3. Update webhook preserving URL, events, enabled state
@@ -84,18 +87,20 @@ async function main() {
           webhook: {
             url: wh.url,
             enabled: wh.enabled !== false,
-            headers: { apikey: apiKey },
+            headers: { ...wh.headers, apikey: apiKey },
             byEvents: wh.byEvents || false,
             webhookByEvents: wh.webhookByEvents || false,
-            events: wh.events || ['MESSAGES_UPSERT', 'CONNECTION_UPDATE', 'MESSAGES_UPDATE']
+            events: mergedEvents
           }
         }, headers);
 
         // 4. Verify
         const verifyRes = await axios.get(`${evoUrl}/webhook/find/${name}`, headers);
         const verifiedHash = safeHash(verifyRes.data?.headers?.apikey);
-        if (verifiedHash === keyHash) {
-          console.log(`     ✅ Verified: key now MATCH`);
+        const verifiedEvents = verifyRes.data?.events || [];
+        const verifiedHasEvents = ['MESSAGES_UPSERT', 'CONNECTION_UPDATE', 'MESSAGES_UPDATE'].every(ev => verifiedEvents.includes(ev));
+        if (verifiedHash === keyHash && verifiedHasEvents) {
+          console.log(`     ✅ Verified: key and events now MATCH`);
           synced++;
         } else {
           console.log(`     ❌ Verification failed: still MISMATCH`);
