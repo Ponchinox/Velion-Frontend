@@ -6,7 +6,9 @@ import { apiClient } from './api';
 
 export async function getFollowUps(params = {}) {
   const query = new URLSearchParams();
+  if (params.view) query.set('view', params.view);
   if (params.tab) query.set('tab', params.tab);
+  if (params.status) query.set('status', params.status);
   if (params.page) query.set('page', String(params.page));
   if (params.limit) query.set('limit', String(params.limit));
   const queryString = query.toString() ? `?${query.toString()}` : '';

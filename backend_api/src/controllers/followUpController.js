@@ -11,7 +11,7 @@ import { isValidIanaTimezone } from '../services/followUpService.js';
 
 /**
  * GET /api/follow-ups
- * Lista secuencias de seguimiento del tenant con filtros y paginación.
+ * Lista secuencias de seguimiento del tenant con filtros autoritativos y paginación.
  */
 export async function getFollowUps(req, res) {
   try {
@@ -20,30 +20,39 @@ export async function getFollowUps(req, res) {
       return res.status(401).json({ error: 'Unauthorized: missing tenantId' });
     }
 
-    const { status, page = 1, limit = 20 } = req.query;
+    const { page = 1, limit = 20 } = req.query;
+    const rawFilter = (req.query.view || req.query.tab || req.query.status || 'all').toString().trim().toLowerCase();
+
     const pageNum = Math.max(1, parseInt(page, 10) || 1);
     const limitNum = Math.min(100, Math.max(1, parseInt(limit, 10) || 20));
     const skip = (pageNum - 1) * limitNum;
 
     const where = { tenantId };
+    let orderBy = { updatedAt: 'desc' };
 
-    if (status === 'active') {
-      where.status = { in: ['SCHEDULED', 'PROCESSING', 'NEUTRALIZED_INBOUND', 'WAITING_NEXT'] };
-    } else if (status === 'recovered') {
+    if (rawFilter === 'active' || rawFilter === 'activos') {
+      where.status = { in: ['SCHEDULED', 'PROCESSING', 'WAITING_NEXT'] };
+      orderBy = [{ nextRunAt: 'asc' }, { updatedAt: 'desc' }];
+    } else if (rawFilter === 'recovered' || rawFilter === 'recuperados') {
       where.status = 'RECOVERED';
-    } else if (status === 'history') {
-      where.status = { in: ['EXHAUSTED', 'CANCELLED'] };
-    } else if (status && typeof status === 'string' && status !== 'all') {
-      where.status = status.toUpperCase();
+      where.attempts = { some: { status: 'SENT' } };
+      orderBy = [{ recoveredAt: 'desc' }, { updatedAt: 'desc' }];
+    } else if (rawFilter === 'history' || rawFilter === 'historial') {
+      where.status = { in: ['RECOVERED', 'EXHAUSTED', 'CANCELLED', 'NEUTRALIZED_INBOUND'] };
+      orderBy = { updatedAt: 'desc' };
+    } else if (rawFilter !== 'all' && rawFilter !== '') {
+      where.status = rawFilter.toUpperCase();
     }
 
+    const prisma = req.prismaClient || req.prisma || defaultPrisma;
+
     const [total, sequences] = await Promise.all([
-      defaultPrisma.followUpSequence.count({ where }),
-      defaultPrisma.followUpSequence.findMany({
+      prisma.followUpSequence.count({ where }),
+      prisma.followUpSequence.findMany({
         where,
         skip,
         take: limitNum,
-        orderBy: { updatedAt: 'desc' },
+        orderBy,
         include: {
           customer: {
             select: { id: true, name: true, phone: true, followUpSuppressed: true }
@@ -57,8 +66,12 @@ export async function getFollowUps(req, res) {
               id: true,
               attemptNumber: true,
               status: true,
+              deliveryStatus: true,
+              deliveredAt: true,
+              readAt: true,
               scheduledAt: true,
               sentAt: true,
+              sentMessage: true,
               provider: true,
               providerMessageId: true,
               errorMessage: true
@@ -68,9 +81,19 @@ export async function getFollowUps(req, res) {
       })
     ]);
 
+    // TC-DASH-08: Para secuencias terminales, el próximo envío debe ser null
+    const TERMINAL_STATUSES = ['RECOVERED', 'EXHAUSTED', 'CANCELLED', 'NEUTRALIZED_INBOUND'];
+    const sanitizedSequences = sequences.map(seq => {
+      const isTerminal = TERMINAL_STATUSES.includes(seq.status);
+      return {
+        ...seq,
+        nextRunAt: isTerminal ? null : seq.nextRunAt
+      };
+    });
+
     return res.json({
       success: true,
-      data: sequences,
+      data: sanitizedSequences,
       pagination: {
         total,
         page: pageNum,
@@ -104,13 +127,20 @@ export async function getFollowUpSummary(req, res) {
       exhaustedSequences,
       cancelledSequences,
       attributableSequences,
+      sequencesWithSentAttempts,
       tenantRecord
     ] = await Promise.all([
+      // Activos operacionales reales (excluye NEUTRALIZED_INBOUND y terminales)
       prisma.followUpSequence.count({
-        where: { tenantId, status: { in: ['SCHEDULED', 'PROCESSING', 'NEUTRALIZED_INBOUND', 'WAITING_NEXT'] } }
+        where: { tenantId, status: { in: ['SCHEDULED', 'PROCESSING', 'WAITING_NEXT'] } }
       }),
+      // Recuperaciones comerciales reales (status RECOVERED con al menos un follow-up SENT)
       prisma.followUpSequence.count({
-        where: { tenantId, status: 'RECOVERED' }
+        where: {
+          tenantId,
+          status: 'RECOVERED',
+          attempts: { some: { status: 'SENT' } }
+        }
       }),
       prisma.followUpAttempt.count({
         where: {
@@ -138,6 +168,13 @@ export async function getFollowUpSummary(req, res) {
             orderBy: { sentAt: 'desc' },
             select: { sentAt: true }
           }
+        }
+      }),
+      // Denominador comercial: secuencias que efectivamente enviaron al menos un follow-up
+      prisma.followUpSequence.count({
+        where: {
+          tenantId,
+          attempts: { some: { status: 'SENT' } }
         }
       }),
       prisma.tenant.findUnique({
@@ -176,25 +213,32 @@ export async function getFollowUpSummary(req, res) {
       attributedSalesTotal = paidOrders.reduce((sum, o) => sum + (o.totalAmount || 0), 0);
     }
 
-    const totalResolved = recoveredCount + exhaustedSequences;
-    const recoveryRate = totalResolved > 0
-      ? Number(((recoveredCount / totalResolved) * 100).toFixed(1))
+    // Tasa de recuperación: ratio de recuperados sobre secuencias que efectivamente enviaron follow-up (0 => 0%)
+    const recoveryRate = sequencesWithSentAttempts > 0
+      ? Number(((recoveredCount / sequencesWithSentAttempts) * 100).toFixed(1))
       : 0;
+
+    const payload = {
+      activeSequences,
+      recoveredConversations: recoveredCount,
+      totalSentAttempts,
+      exhaustedSequences,
+      cancelledSequences,
+      attributedSalesCount,
+      attributedSalesTotal,
+      recoveryRate,
+      followUpEnabled: tenantRecord?.followUpEnabled || false,
+      timezone: tenantRecord?.timezone || null,
+      // Alias directos para consumo en frontend
+      activeCount: activeSequences,
+      recoveredCount,
+      recoveryRatePercent: recoveryRate
+    };
 
     return res.json({
       success: true,
-      metrics: {
-        activeSequences,
-        recoveredConversations: recoveredCount,
-        totalSentAttempts,
-        exhaustedSequences,
-        cancelledSequences,
-        attributedSalesCount,
-        attributedSalesTotal,
-        recoveryRate,
-        followUpEnabled: tenantRecord?.followUpEnabled || false,
-        timezone: tenantRecord?.timezone || null
-      }
+      metrics: payload,
+      data: payload
     });
   } catch (err) {
     console.error('❌ [FollowUp API] Error calculando resumen:', err.message);
@@ -215,7 +259,9 @@ export async function cancelFollowUp(req, res) {
       return res.status(401).json({ error: 'Unauthorized: missing tenantId' });
     }
 
-    const sequence = await defaultPrisma.followUpSequence.findFirst({
+    const prisma = req.prismaClient || req.prisma || defaultPrisma;
+
+    const sequence = await prisma.followUpSequence.findFirst({
       where: { id, tenantId }
     });
 
@@ -223,16 +269,22 @@ export async function cancelFollowUp(req, res) {
       return res.status(404).json({ error: 'Secuencia de seguimiento no encontrada o no pertenece a este tenant.' });
     }
 
-    const terminalStatuses = ['RECOVERED', 'EXHAUSTED', 'CANCELLED'];
+    const terminalStatuses = ['RECOVERED', 'EXHAUSTED', 'CANCELLED', 'NEUTRALIZED_INBOUND'];
     if (terminalStatuses.includes(sequence.status)) {
       return res.status(400).json({ error: `La secuencia ya se encuentra en estado terminal (${sequence.status}).` });
     }
 
-    await defaultPrisma.followUpSequence.update({
+    const validReasons = ['MANUAL_CANCEL', 'MERCHANT_MANUAL', 'CUSTOMER_NOT_INTERESTED', 'OUT_OF_STOCK', 'OTHER'];
+    const requestedReason = req.body?.reason;
+    const resolvedReason = (requestedReason && validReasons.includes(requestedReason))
+      ? (requestedReason === 'MERCHANT_MANUAL' ? 'MANUAL_CANCEL' : requestedReason)
+      : 'MANUAL_CANCEL';
+
+    await prisma.followUpSequence.update({
       where: { id: sequence.id },
       data: {
         status: 'CANCELLED',
-        cancelReason: 'MANUAL_CANCEL',
+        cancelReason: resolvedReason,
         updatedAt: new Date()
       }
     });
@@ -256,8 +308,9 @@ export async function updateSettings(req, res) {
     }
 
     const { followUpEnabled, timezone } = req.body;
+    const prisma = req.prismaClient || req.prisma || defaultPrisma;
 
-    const currentTenant = await defaultPrisma.tenant.findUnique({
+    const currentTenant = await prisma.tenant.findUnique({
       where: { id: tenantId },
       select: { timezone: true, followUpEnabled: true }
     });
@@ -290,7 +343,7 @@ export async function updateSettings(req, res) {
       updateData.followUpEnabled = boolEnabled;
     }
 
-    const updated = await defaultPrisma.tenant.update({
+    const updated = await prisma.tenant.update({
       where: { id: tenantId },
       data: updateData,
       select: { id: true, followUpEnabled: true, timezone: true }
