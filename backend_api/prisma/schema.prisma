@@ -465,7 +465,14 @@ model FollowUpAttempt {
   attemptNumber     Int
 
   status            String           @default("PENDING")
+  // Operational status (never changes after SENT):
   // 'PENDING' | 'PROCESSING' | 'SENT' | 'FAILED_SAFE' | 'UNKNOWN_DELIVERY' | 'SKIPPED_POLICY'
+
+  // Delivery lifecycle (separate from operational status):
+  // null | 'SERVER_ACK' | 'DELIVERY_ACK' | 'READ' | 'PLAYED' | 'ERROR'
+  deliveryStatus    String?
+  deliveredAt       DateTime?
+  readAt            DateTime?
 
   scheduledAt       DateTime
   sentAt            DateTime?
@@ -485,5 +492,6 @@ model FollowUpAttempt {
   @@unique([sequenceId, attemptNumber])
   @@index([sequenceId])
   @@index([status])
+  @@index([providerMessageId])
 }
 

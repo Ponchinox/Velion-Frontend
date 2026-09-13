@@ -412,11 +412,11 @@ export async function evaluateAndScheduleFollowUp({
   const resolvedOrderId = orderId || currentCommercialState?.orderId || activeOrder?.id;
 
   const normalizedCommercialState = {
+    ...currentCommercialState,
     currentStage: resolvedStage,
     productId: resolvedProductId,
     productName: resolvedProductName,
-    orderId: resolvedOrderId,
-    ...currentCommercialState
+    orderId: resolvedOrderId
   };
 
   // 1. Evaluación determinista de precondiciones
@@ -554,7 +554,7 @@ export async function evaluateAndScheduleFollowUp({
         data: {
           status: 'RECOVERED',
           recoveredAt: new Date(),
-          recoveredOrderId: activeOrder?.id || currentCommercialState.activeOrderId || null
+          recoveredOrderId: activeOrder?.id || normalizedCommercialState.orderId || null
         }
       });
       // 2. Creamos una NUEVA secuencia limpia para continuar monitoreando el nuevo carrito en progreso.
@@ -563,17 +563,17 @@ export async function evaluateAndScheduleFollowUp({
           tenantId: tenant.id,
           customerId: customer.id,
           chatId: chat?.id || null,
-          orderId: activeOrder?.id || currentCommercialState.activeOrderId || null,
-          productId: currentCommercialState.productId || null,
-          productName: currentCommercialState.productName || null,
-          stageAtCreation: currentCommercialState.currentStage,
+          orderId: activeOrder?.id || normalizedCommercialState.orderId || null,
+          productId: normalizedCommercialState.productId || null,
+          productName: normalizedCommercialState.productName || null,
+          stageAtCreation: normalizedCommercialState.currentStage,
           status: 'SCHEDULED',
           currentAttempt: 0,
           maxAttempts: 3,
           anchorAt,
           nextRunAt: scheduledNextRunAt,
-          contextSnapshot,
-          explicitTimingIso
+          contextSnapshot: finalContextSnapshot,
+          explicitTimingIso: resolvedTimingIso
         }
       });
       return { scheduled: true, action: 'RECOVERED_AND_NEW_CREATED', sequenceId: newSeq.id, nextRunAt: scheduledNextRunAt };

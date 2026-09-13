@@ -161,7 +161,7 @@ export async function createMetaInstance(req, res) {
         url:             webhookUrl,
         byEvents:        false,
         webhookByEvents: false,
-        events:          ['MESSAGES_UPSERT', 'CONNECTION_UPDATE'],
+        events:          ['MESSAGES_UPSERT', 'CONNECTION_UPDATE', 'MESSAGES_UPDATE'],
       },
     };
 
@@ -463,7 +463,7 @@ export async function getQrCode(req, res) {
             url:             webhookUrl,
             byEvents:        false,
             webhookByEvents: false,
-            events:          ['MESSAGES_UPSERT', 'CONNECTION_UPDATE'],
+            events:          ['MESSAGES_UPSERT', 'CONNECTION_UPDATE', 'MESSAGES_UPDATE'],
           }
         },
         getEvoHeaders()
@@ -495,7 +495,8 @@ export async function getQrCode(req, res) {
             webhookByEvents: false,
             events: [
               "MESSAGES_UPSERT",
-              "CONNECTION_UPDATE"
+              "CONNECTION_UPDATE",
+              "MESSAGES_UPDATE"
             ]
           }
         },

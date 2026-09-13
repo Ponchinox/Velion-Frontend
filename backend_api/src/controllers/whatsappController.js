@@ -1081,7 +1081,8 @@ export async function connectDevice(req, res) {
           webhookByEvents: false,
           events: [
             "MESSAGES_UPSERT",
-            "CONNECTION_UPDATE"
+            "CONNECTION_UPDATE",
+            "MESSAGES_UPDATE"
           ]
         }
       },
@@ -1116,7 +1117,8 @@ export async function connectDevice(req, res) {
           webhookByEvents: false,
           events: [
             "MESSAGES_UPSERT",
-            "CONNECTION_UPDATE"
+            "CONNECTION_UPDATE",
+            "MESSAGES_UPDATE"
           ]
         }
       },
@@ -1518,7 +1520,7 @@ async function normalizeEvolution(body, requestApiKey) {
         const mediaRes = await axios.post(
           `${evoUrl}/chat/getBase64FromMediaMessage/${instance}`,
           { message: data },
-          { ...getEvoHeaders(requestApiKey), timeout: 15000 }
+          { ...getEvoHeaders(), timeout: 15000 }
         );
         const imageBase64 = typeof mediaRes.data === 'string' ? mediaRes.data : (mediaRes.data?.base64 || null);
         if (imageBase64) {
@@ -1552,7 +1554,7 @@ async function normalizeEvolution(body, requestApiKey) {
         const mediaRes = await axios.post(
           `${evoUrl}/chat/getBase64FromMediaMessage/${instance}`,
           { message: data },
-          { ...getEvoHeaders(requestApiKey), timeout: 15000 }
+          { ...getEvoHeaders(), timeout: 15000 }
         );
         const audioBase64 = typeof mediaRes.data === 'string' ? mediaRes.data : (mediaRes.data?.base64 || null);
         if (audioBase64) {
@@ -1589,7 +1591,7 @@ async function normalizeEvolution(body, requestApiKey) {
         const mediaRes = await axios.post(
           `${evoUrl}/chat/getBase64FromMediaMessage/${instance}`,
           { message: data },
-          { ...getEvoHeaders(requestApiKey), timeout: 20000 }
+          { ...getEvoHeaders(), timeout: 20000 }
         );
         const videoBase64 = typeof mediaRes.data === 'string' ? mediaRes.data : (mediaRes.data?.base64 || null);
         if (videoBase64) {
@@ -1625,7 +1627,7 @@ async function normalizeEvolution(body, requestApiKey) {
         const mediaRes = await axios.post(
           `${evoUrl}/chat/getBase64FromMediaMessage/${instance}`,
           { message: data },
-          { ...getEvoHeaders(requestApiKey), timeout: 20000 }
+          { ...getEvoHeaders(), timeout: 20000 }
         );
         const docBase64 = typeof mediaRes.data === 'string' ? mediaRes.data : (mediaRes.data?.base64 || null);
         if (docBase64) {
@@ -1658,7 +1660,7 @@ async function normalizeEvolution(body, requestApiKey) {
         const mediaRes = await axios.post(
           `${evoUrl}/chat/getBase64FromMediaMessage/${instance}`,
           { message: data },
-          { ...getEvoHeaders(requestApiKey), timeout: 15000 }
+          { ...getEvoHeaders(), timeout: 15000 }
         );
         const stickerBase64 = typeof mediaRes.data === 'string' ? mediaRes.data : (mediaRes.data?.base64 || null);
         if (stickerBase64) {
@@ -1997,7 +1999,7 @@ async function _processWebhookEvent(body, isMeta, provider, io, query, headers) 
         const evoUrl = process.env.EVOLUTION_API_URL || 'http://localhost:8080';
         for (let pAttempt = 0; pAttempt < 3 && !phone; pAttempt++) {
           try {
-            const stateRes = await axios.get(`${evoUrl}/instance/connectionState/${instance}`, getEvoHeaders(requestApiKey));
+            const stateRes = await axios.get(`${evoUrl}/instance/connectionState/${instance}`, getEvoHeaders());
             phone = stateRes.data?.instance?.phone || stateRes.data?.instance?.ownerJid || null;
             if (phone && typeof phone === 'string') phone = phone.split('@')[0];
             if (phone) break;
@@ -2016,7 +2018,7 @@ async function _processWebhookEvent(body, isMeta, provider, io, query, headers) 
       const evoUrl = process.env.EVOLUTION_API_URL || 'http://localhost:8080';
       const baseUrl = process.env.APP_URL || 'https://185.163.116.210';
       const rawWebhookUrl = process.env.WEBHOOK_URL || `${baseUrl.replace(/\/$/, '')}/api/whatsapp/webhook`;
-      const cleanApiKey = (requestApiKey || process.env.EVOLUTION_API_KEY || '').trim();
+      const cleanApiKey = (process.env.EVOLUTION_API_KEY || '').trim();
       const webhookUrl = rawWebhookUrl;
 
       const webhookVerifier = (inst) => verifyAndReapplyEvolutionWebhook({
@@ -2038,6 +2040,106 @@ async function _processWebhookEvent(body, isMeta, provider, io, query, headers) 
       });
 
       return; // Fin del procesamiento para este evento
+    }
+
+    // ── MESSAGES_UPDATE — Delivery Receipt Reconciliation ──
+    // Handles: SERVER_ACK, DELIVERY_ACK, READ, PLAYED, ERROR
+    // from Evolution API MESSAGES_UPDATE webhook event.
+    // Updates are idempotent, monotonic, and tenant-scoped.
+    if (req.body?.event === 'messages.update') {
+      const updateData = req.body?.data;
+      if (!updateData) return;
+
+      const providerMsgId = updateData.keyId;
+      const deliveryStatus = updateData.status; // "SERVER_ACK"|"DELIVERY_ACK"|"READ"|"PLAYED"|"ERROR"
+      const remoteJid = updateData.remoteJid;
+      const fromMe = updateData.fromMe;
+
+      if (!providerMsgId || !deliveryStatus) return;
+
+      // Monotonic status ordering: higher = further along delivery lifecycle
+      const DELIVERY_ORDER = { 'ERROR': 0, 'PENDING': 1, 'SERVER_ACK': 2, 'DELIVERY_ACK': 3, 'READ': 4, 'PLAYED': 5 };
+      const incomingOrder = DELIVERY_ORDER[deliveryStatus] ?? -1;
+      if (incomingOrder < 0) {
+        console.log(`ℹ️ [Delivery Receipt] Unknown status "${deliveryStatus}" for msgId ${providerMsgId.slice(0, 8)}... — ignored.`);
+        return;
+      }
+
+      const now = new Date();
+
+      // ── 1. Update Message.status (monotonic: sent → delivered → read) ──
+      // Only update outbound messages (fromMe or agent-sent)
+      try {
+        const existingMsg = await prisma.message.findFirst({
+          where: { externalId: providerMsgId },
+          select: { id: true, status: true, tenantId: true }
+        });
+
+        if (existingMsg) {
+          // Map Evolution status to Message.status values
+          const MESSAGE_STATUS_MAP = {
+            'SERVER_ACK': 'sent',
+            'DELIVERY_ACK': 'delivered',
+            'READ': 'read',
+            'PLAYED': 'read',
+            'ERROR': 'failed'
+          };
+          const newMsgStatus = MESSAGE_STATUS_MAP[deliveryStatus];
+
+          if (newMsgStatus) {
+            // Monotonic: never regress. sent(1) → delivered(2) → read(3). failed(0) only if current is 'sent'.
+            const MSG_ORDER = { 'failed': 0, 'sent': 1, 'delivered': 2, 'read': 3 };
+            const currentOrder = MSG_ORDER[existingMsg.status] ?? 1;
+            const targetOrder = MSG_ORDER[newMsgStatus] ?? 1;
+
+            if (targetOrder > currentOrder || (newMsgStatus === 'failed' && existingMsg.status === 'sent')) {
+              await prisma.message.update({
+                where: { id: existingMsg.id },
+                data: { status: newMsgStatus }
+              });
+            }
+          }
+        }
+      } catch (msgErr) {
+        console.error(`⚠️ [Delivery Receipt] Message update error for ${providerMsgId.slice(0, 8)}...:`, msgErr.message);
+      }
+
+      // ── 2. Update FollowUpAttempt.deliveryStatus (separate from operational status) ──
+      try {
+        const existingAttempt = await prisma.followUpAttempt.findFirst({
+          where: { providerMessageId: providerMsgId },
+          select: { id: true, deliveryStatus: true, sequenceId: true, sequence: { select: { tenantId: true } } }
+        });
+
+        if (existingAttempt) {
+          const currentDeliveryOrder = DELIVERY_ORDER[existingAttempt.deliveryStatus] ?? -1;
+
+          // Monotonic: only advance, never regress
+          if (incomingOrder > currentDeliveryOrder) {
+            const updatePayload = { deliveryStatus };
+
+            if (deliveryStatus === 'DELIVERY_ACK' && !existingAttempt.deliveredAt) {
+              updatePayload.deliveredAt = now;
+            }
+            if ((deliveryStatus === 'READ' || deliveryStatus === 'PLAYED') && !existingAttempt.readAt) {
+              updatePayload.readAt = now;
+              // If we get READ without having seen DELIVERY_ACK, also set deliveredAt
+              if (!existingAttempt.deliveredAt) {
+                updatePayload.deliveredAt = now;
+              }
+            }
+
+            await prisma.followUpAttempt.update({
+              where: { id: existingAttempt.id },
+              data: updatePayload
+            });
+          }
+        }
+      } catch (attErr) {
+        console.error(`⚠️ [Delivery Receipt] Attempt update error for ${providerMsgId.slice(0, 8)}...:`, attErr.message);
+      }
+
+      return; // Delivery receipts don't need further processing
     }
 
     const evoNorm = await normalizeEvolution(req.body, requestApiKey);
@@ -2792,7 +2894,11 @@ async function processBufferedMessage(bufferKey) {
   }
 
   // Contexto de Gateway para enviar respuestas por el proveedor correcto
-  const gatewayCtx = { provider, instance, apiKey: requestApiKey, metaPhoneNumberId, metaAccessToken };
+  // TRUST BOUNDARY: outbound credential must come from authoritative server config,
+  // never from the inbound webhook header (requestApiKey). The webhook header is only
+  // valid for authenticating the inbound request itself.
+  const authoritativeApiKey = (process.env.EVOLUTION_API_KEY || '').trim();
+  const gatewayCtx = { provider, instance, apiKey: authoritativeApiKey, metaPhoneNumberId, metaAccessToken };
 
   console.log(`🤖 [Message Buffer] Procesando ráfaga acumulada para +${clientNumber} (${userMessageText.length} caracteres): "${userMessageText.replace(/\n/g, ' ')}"`);
   const finalCleanNumber = String(clientNumber || '').includes('@lid') ? String(clientNumber || '').trim() : String(clientNumber || '').replace(/[^0-9]/g, '');
@@ -4238,6 +4344,7 @@ Atributos/Tags: ${Array.isArray(product.tags) ? product.tags.join(', ') : ''}
       // ─── ESTADO LOCAL DE ENTREGA MULTIMEDIA (GATEWAY FAILURE AUTHORITY) ───
       let mediaDeliveryConfirmed = false;
       let mediaDeliveryFailed = false;
+      let outboundFailed = false; // Tracks whether ANY text outbound was rejected by the gateway
 
       // ─── DESPACHO SECUENCIAL ───
       for (let i = 0; i < dispatchSequence.length; i++) {
@@ -4266,7 +4373,7 @@ Atributos/Tags: ${Array.isArray(product.tags) ? product.tags.join(', ') : ''}
             axios.post(
               `${evoUrl}/chat/sendPresence/${instance}`,
               { number: cleanJid, presence: 'composing', delay: typingDelay },
-              getEvoHeaders(requestApiKey)
+              getEvoHeaders() // Uses process.env.EVOLUTION_API_KEY (authoritative)
             ).catch(() => {});
           } catch {}
         }
@@ -4329,7 +4436,31 @@ Atributos/Tags: ${Array.isArray(product.tags) ? product.tags.join(', ') : ''}
             // Pre-registro por texto ANTES de enviar para evitar race condition con Evolution webhook
             markMessageAsSentByAi(outgoingText);
             const msgId = await sendWhatsAppReply({ ...gatewayCtx, to: finalCleanNumber, text: outgoingText });
-            if (msgId) markMessageAsSentByAi(msgId);
+
+            // ─── OUTBOUND TRUTH GATE ───
+            // Only persist and log as "sent" if the gateway confirmed delivery with a provider message ID.
+            // A null msgId means the gateway rejected (401, timeout, etc.) — the message was NOT delivered.
+            if (!msgId) {
+              console.warn(`⚠️ [${provider} Gateway] Outbound text REJECTED or unconfirmed for ${finalCleanNumber}. Message NOT persisted as sent.`);
+              outboundFailed = true;
+              // Persist evidence of the failed attempt for auditability (Invariant 13)
+              try {
+                await prisma.message.create({
+                  data: {
+                    content: outgoingText,
+                    senderRole: 'agent',
+                    status: 'failed',
+                    chatId: chat.id,
+                    tenantId: tenant.id
+                  }
+                });
+              } catch (failPersistErr) {
+                console.error('⚠️ [Failed Audit] Could not persist failed message:', failPersistErr.message);
+              }
+              break; // Stop dispatching remaining fragments — the gateway is not accepting messages
+            }
+
+            markMessageAsSentByAi(msgId);
             console.log(`✅ [${provider} Gateway] Texto enviado (msgId: ${msgId}).`);
 
             const aiTextNow = new Date();
@@ -4339,7 +4470,7 @@ Atributos/Tags: ${Array.isArray(product.tags) ? product.tags.join(', ') : ''}
                   content: outgoingText,
                   senderRole: 'agent',
                   status: 'sent',
-                  externalId: msgId || null,
+                  externalId: msgId,
                   chatId: chat.id,
                   tenantId: tenant.id
                 }
@@ -4358,7 +4489,7 @@ Atributos/Tags: ${Array.isArray(product.tags) ? product.tags.join(', ') : ''}
                 from: 'business',
                 senderRole: 'agent',
                 status: 'sent',
-                externalId: msgId || null,
+                externalId: msgId,
                 messageId: savedMsg.id,
                 createdAt: savedMsg.createdAt.toISOString(),
                 lastMessageAt: savedMsg.createdAt.toISOString(),
@@ -4504,7 +4635,7 @@ Atributos/Tags: ${Array.isArray(product.tags) ? product.tags.join(', ') : ''}
     }
 
     // ── FOLLOW-UP EVALUATION POST-DISPATCH ──
-    if (!wasSuperseded && customer?.id && tenant?.id) {
+    if (!wasSuperseded && !outboundFailed && customer?.id && tenant?.id) {
       try {
         const refreshedCustomer = await prisma.customer.findUnique({
           where: { id: customer.id }

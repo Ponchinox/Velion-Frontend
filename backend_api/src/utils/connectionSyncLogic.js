@@ -137,7 +137,8 @@ export async function verifyAndReapplyEvolutionWebhook({
               webhookByEvents: false,
               events: [
                 'MESSAGES_UPSERT',
-                'CONNECTION_UPDATE'
+                'CONNECTION_UPDATE',
+                'MESSAGES_UPDATE'
               ]
             }
           },
