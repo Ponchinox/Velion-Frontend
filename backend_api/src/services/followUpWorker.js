@@ -37,14 +37,14 @@ export async function claimDueSequences(limit = BATCH_SIZE, prismaClient = defau
       SELECT id FROM "FollowUpSequence"
       WHERE status IN ('SCHEDULED', 'WAITING_NEXT')
         AND "nextRunAt" IS NOT NULL
-        AND "nextRunAt" <= NOW()
+        AND "nextRunAt" <= (NOW() AT TIME ZONE 'UTC')
       ORDER BY "nextRunAt" ASC
       LIMIT ${limit}
       FOR UPDATE SKIP LOCKED
     )
     UPDATE "FollowUpSequence"
     SET status = 'PROCESSING',
-        "claimedAt" = NOW()
+        "claimedAt" = (NOW() AT TIME ZONE 'UTC')
     WHERE id IN (SELECT id FROM candidate)
     RETURNING *;
   `;
