@@ -115,7 +115,8 @@ const QA_CATEGORIES = [
     name: 'Sales',
     type: 'standalone_files',
     files: [
-      'test_service_commercial_flow.js'
+      'test_service_commercial_flow.js',
+      'test_commercial_stage_gap_v1.js'
     ]
   },
   {

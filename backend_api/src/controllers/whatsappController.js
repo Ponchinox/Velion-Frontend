@@ -3091,15 +3091,22 @@ Diferencia SIEMPRE entre información no confirmada y solicitud de asesor:
 [MODO VENTAS - ACTIVACIÓN EXCLUSIVA ANTE INTENCIÓN COMERCIAL]
 Aplica las siguientes reglas comerciales ÚNICAMENTE cuando el usuario exprese interés de compra, cotización o contratación de productos/servicios:
 - CONSULTA: Responde directo, destaca 1 beneficio y el precio. Cierra con 1 pregunta amigable. NO presiones ni hables de pagos.
-- CONSULTAS NO SON COMPRAS: Que el cliente pregunte por precios, características, envíos, tiempos de entrega, cobertura de ciudad o medios de pago NO es una confirmación de compra.
-- CONFIRMACIÓN EXPLÍCITA (customerConfirmed): SOLO pasa customerConfirmed: true a update_commercial_state cuando el cliente exprese clara y explícitamente su decisión de comprar o contratar (ej. "quiero uno", "lo compro", "dame dos", "quiero pedirlo", "confirmo la matrícula", "deseo contratarlo"). NUNCA marques customerConfirmed: true si el cliente solo está preguntando información.
+- CONSULTAS NO SON COMPRAS (ANTI-SOBREACTIVACIÓN): Que el cliente pregunte por precios (ej. "¿Cuánto cuesta?"), stock o disponibilidad (ej. "¿Tienen disponible?", "¿Hay en color negro?"), características, envíos, tiempos de entrega, cobertura o medios de pago NO es una confirmación de compra ni selección de producto. Expresiones tentativas o futuras (ej. "Quizá compre uno después", "Voy a pensarlo") tampoco son compras. Permanece en EXPLORING sin invocar PRODUCT_SELECTED.
+- CONFIRMACIÓN EXPLÍCITA (customerConfirmed): SOLO pasa customerConfirmed: true a update_commercial_state cuando el cliente exprese clara y explícitamente su decisión de comprar, llevar o contratar (ej. "quiero uno", "quiero llevar 1", "me llevo 2", "lo compro", "dame dos", "quiero pedirlo", "confirmo la matrícula", "deseo contratarlo"). NUNCA marques customerConfirmed: true si el cliente solo está preguntando información.
 - DISTINCIÓN FÍSICO VS SERVICIO (CRÍTICO SEGÚN TIPO EN CATÁLOGO):
   * PRODUCTO FÍSICO (PHYSICAL_PRODUCT): Si el cliente no indicó cuántas unidades desea, pregúntale amablemente cuántas unidades desea llevar. NUNCA asumas quantity=1 en productos físicos sin confirmación. Requiere coordinar envío/entrega física; la ciudad o dirección representa destino de entrega y puede usar SHIPPING_COORDINATED.
   * SERVICIO / PROGRAMA (SERVICE): Aplica a academias, cursos, programas, talleres, membresías, asesorías o reparaciones. PROHIBIDO preguntar "¿cuántas unidades deseas?" o asumir vacantes/accesos. No verbalices automáticamente "1 unidad", "1 acceso" ni "1 vacante" salvo que el cliente lo pida explícitamente. PROHIBIDO hablar de paquetes físicos, despacho, flete, courier o envíos a domicilio. Si el cliente menciona su ciudad o distrito (ej. Lima, Carabayllo), es su lugar de residencia, NO una dirección de envío: NUNCA guardes shippingCity ni shippingAddress para un SERVICE, ni uses SHIPPING_COORDINATED. El flujo habla de inscripción, matrícula, reserva, contratación o adquisición.
 - LIMITES DE CATALOGO: Solo ofrece alternativas de la MISMA familia semantica. No ofrezcas categorias no relacionadas. NUNCA dispares imagenes no solicitadas.
-- CIERRE PASO A PASO:
-  * Para PHYSICAL_PRODUCT: 1. Variantes y Cantidad, 2. Envío/Destino, 3. Método de pago configurado.
-  * Para SERVICE: 1. Confirmación de interés en el servicio, 2. Método de pago configurado (salta de DETAILS_PROVIDED directo a PAYMENT_PENDING sin pasar por SHIPPING_COORDINATED).
+- CIERRE PASO A PASO Y SINCRONIZACIÓN INCREMENTAL INMEDIATA (OBLIGATORIO):
+  * El cierre con el cliente sigue siendo paso a paso en la conversación para una atención natural y humana:
+    1. Producto, variantes y cantidad confirmada.
+    2. Envío/Destino (para PHYSICAL_PRODUCT).
+    3. Método de pago configurado.
+  * PERO la sincronización técnica del estado comercial es INCREMENTAL e INMEDIATA: cada hito alcanzado DEBE persistirse en el mismo turno en que ocurre mediante la herramienta 'update_commercial_state'. PROHIBIDO esperar al final del checkout o a tener todos los datos para la primera sincronización.
+  * HITO PRODUCT_SELECTED: En cuanto producto y cantidad estén decididos (ej. el cliente dice "Quiero llevar 1", "Me llevo 2", "Lo quiero comprar" sobre un producto concreto): DEBES invocar INMEDIATAMENTE a 'update_commercial_state' con currentStage='PRODUCT_SELECTED', customerConfirmed=true, productId real, productName y quantity.
+  * En ese mismo turno, tras invocar la herramienta, continúa la conversación normalmente preguntando por la ciudad o distrito de destino para coordinar el envío (para PHYSICAL_PRODUCT). NO necesitas esperar la respuesta de la ciudad para registrar PRODUCT_SELECTED.
+  * HITO SHIPPING_COORDINATED: Cuando el cliente proporcione su ciudad o destino, vuelve a invocar 'update_commercial_state' con currentStage='SHIPPING_COORDINATED' y shippingCity.
+  * HITO PAYMENT_PENDING: Al acordar el método de pago autorizado, vuelve a invocar 'update_commercial_state' con currentStage='PAYMENT_PENDING' y paymentMethod.
   * Ambos: Ofrece ÚNICAMENTE los métodos de pago autorizados en INFORMACIÓN DE LA EMPRESA. Si NO hay métodos de pago configurados por la tienda: PROHIBIDO decir "te brindo los datos", "aquí tienes los datos", "puedes pagar por...", "te paso la cuenta" o preguntar "¿Deseas que te brinde los detalles para realizar el pago?". Responde de forma neutral: "Actualmente no tengo un método de pago registrado en el sistema. Ese dato debe confirmarse directamente con el negocio." NUNCA inventes métodos de pago ni digas "por coordinar con asesor" como si fuera un método de pago.
 - NO INVENTAR: Nunca inventes métodos de pago, empresas de envío, cuentas, números o titulares. No inventes productos, ciudades, métodos de pago ni cantidades no expresadas por el cliente. Nunca afirmes que un método es el único disponible salvo que los datos dinámicos del negocio lo indiquen explícitamente.
 - DATOS NO CONFIRMADOS VS TRANSFERENCIA: Consultas sobre fechas exactas, profesores, docentes, vacantes, horarios no configurados o dudas sobre admisión/ingreso NO son motivo de handoff. Explica con transparencia que no están confirmados en el sistema o que los resultados dependen del esfuerzo individual. NUNCA actives handoff ni pauses el bot ante preguntas de este tipo.
@@ -3281,14 +3288,14 @@ ${catalogIndexCsv}
         },
         {
           name: 'update_commercial_state',
-          description: 'Actualiza de forma estructurada el estado del proceso de compra y los datos del cliente. Llámala cuando el cliente confirme un producto de interés, cantidad, presupuesto, variante, ciudad, dirección, método de pago o cambie de etapa comercial.',
+          description: 'Sincroniza de forma estructurada e INCREMENTAL el estado del proceso de compra y los datos del cliente en cada hito comercial. OBLIGATORIO: Invócala de inmediato en el mismo turno en que el cliente elija un producto y defina cantidad (PRODUCT_SELECTED), sin esperar a recolectar ciudad, dirección o método de pago. Vuelve a invocarla en cada hito posterior al coordinar envío (SHIPPING_COORDINATED) o acordar método de pago (PAYMENT_PENDING). NUNCA postergues la primera sincronización hasta el final del proceso.',
           parameters: {
             type: 'OBJECT',
             properties: {
               currentStage: {
                 type: 'STRING',
                 enum: ['EXPLORING', 'PRODUCT_SELECTED', 'DETAILS_PROVIDED', 'SHIPPING_COORDINATED', 'PAYMENT_PENDING', 'PAYMENT_VERIFIED', 'COMPLETED'],
-                description: 'Etapa actual del proceso de compra. Nota: SHIPPING_COORDINATED es EXCLUSIVO para productos físicos (PHYSICAL_PRODUCT). Para servicios (SERVICE), pasa directo de DETAILS_PROVIDED a PAYMENT_PENDING. PAYMENT_VERIFIED significa que el cliente afirma haber pagado (pendiente de verificación humana). COMPLETED es cierre conversacional y NO autoriza a marcar el pago como PAID en la BD.'
+                description: 'Etapa actual del proceso de compra. Progresión incremental obligatoria: EXPLORING -> PRODUCT_SELECTED -> DETAILS_PROVIDED -> SHIPPING_COORDINATED -> PAYMENT_PENDING -> PAYMENT_VERIFIED -> COMPLETED. PRODUCT_SELECTED significa que el cliente ya eligió explícitamente un producto/servicio concreto y mostró intención inequívoca de adquirirlo (ej. tras consultar un producto específico dice: "Quiero llevar 1", "Me llevo 2", "Lo compro", "Quiero pedir uno"). Para producto físico con producto y cantidad conocidos, DEBES llamar update_commercial_state de inmediato con PRODUCT_SELECTED y customerConfirmed: true ANTES o al momento de preguntar destino. NO esperar a tener ciudad, dirección o método de pago. SHIPPING_COORDINATED es EXCLUSIVO para productos físicos (PHYSICAL_PRODUCT) cuando el cliente ya proporcionó ciudad o dirección. Para servicios (SERVICE), pasa de DETAILS_PROVIDED directo a PAYMENT_PENDING sin pasar por SHIPPING_COORDINATED. PAYMENT_VERIFIED significa que el cliente afirma haber pagado (pendiente de verificación humana). COMPLETED es cierre conversacional y NO autoriza a marcar el pago como PAID en la BD.'
               },
               intent: {
                 type: 'STRING',
@@ -3297,7 +3304,7 @@ ${catalogIndexCsv}
               },
               productId: { type: 'STRING', description: 'ID exacto del producto en catálogo o null' },
               productName: { type: 'STRING', description: 'Nombre del producto o servicio de interés' },
-              quantity: { type: 'INTEGER', description: 'Cantidad de unidades solicitadas (para PHYSICAL_PRODUCT; no aplica a SERVICE)' },
+              quantity: { type: 'INTEGER', description: 'Cantidad de unidades solicitadas o decididas por el cliente (ej. 1, 2). Obligatorio registrarla al pasar a PRODUCT_SELECTED en productos físicos; no aplica a SERVICE.' },
               budget: { type: 'NUMBER', description: 'Presupuesto indicado por el cliente' },
               variant: { type: 'STRING', description: 'Variante elegida (color, talla, modelo, modalidad)' },
               customerNeeds: { type: 'STRING', description: 'Nota breve sobre necesidades del cliente (máx 100 caracteres)' },
@@ -3306,7 +3313,7 @@ ${catalogIndexCsv}
               paymentMethod: { type: 'STRING', description: 'Método de pago preferido según los métodos autorizados de la empresa' },
               customerConfirmed: {
                 type: 'BOOLEAN',
-                description: 'true ÚNICAMENTE si el cliente ha confirmado de forma explícita que desea comprar el producto o contratar el servicio (ej. "quiero uno", "lo compro", "dame dos", "confirmo la matrícula", "deseo contratarlo"). false si solo está consultando precio, stock, horarios o características.'
+                description: 'true ÚNICAMENTE si el cliente ha confirmado de forma explícita que desea adquirir/comprar el producto o contratar el servicio (ej. "quiero uno", "quiero llevar 1", "lo compro", "dame dos", "confirmo la matrícula", "deseo contratarlo"). false si solo está consultando precio, stock, disponibilidad, horarios o características.'
               },
               explicitCustomerTiming: {
                 type: 'STRING',
