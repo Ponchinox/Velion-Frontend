@@ -1044,7 +1044,9 @@ async function main() {
   // 39. DEFER fuera de horario 09:00-20:00 -> ajustado
   await runTest('TC-39: DEFER_UNTIL fuera de horario (23:00 local) -> Ajustado a horario silencioso', async () => {
     // 23:00 en Lima (UTC-5) es 04:00 UTC del día siguiente
-    const lateNightIso = '2026-09-14T04:00:00.000Z';
+    const futureDate = new Date(Date.now() + 24 * 3600 * 1000);
+    futureDate.setUTCHours(4, 0, 0, 0);
+    const lateNightIso = futureDate.toISOString();
     const invariants = validateBackendInvariants({
       rawDecision: {
         decision: 'DEFER_UNTIL',

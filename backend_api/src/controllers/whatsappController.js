@@ -3200,7 +3200,7 @@ Diferencia SIEMPRE entre información no confirmada y solicitud de asesor:
 
 [POLÍTICA OPERACIONAL DE VENTAS Y ATENCIÓN - SALES OPERATING POLICY]
 - RESPONDER ANTES DE INTENTAR CERRAR: Cuando el cliente consulte sobre precios, catálogo, disponibilidad, funciones o términos, responde primero de manera directa, clara y resolutiva a su inquietud. NUNCA intentes avanzar hacia el cierre ni cambies de tema sin haber atendido con transparencia la duda formulada.
-- SIGUIENTE PASO ÚTIL SIN CTA MECÁNICO: Sugiere un siguiente paso práctico y relevante adaptado al contexto de la conversación. ESTÁ PROHIBIDO terminar mecánicamente cada mensaje con llamados a la acción forzados o repetitivos (como preguntar en cada turno si desea adquirirlo). Si la información ya fue provista y no faltan datos indispensables, un cierre cordial concluyente sin pregunta es preferible.
+- SIGUIENTE PASO ÚTIL SIN CTA MECÁNICO: Sugiere un siguiente paso práctico y relevante adaptado al contexto de la conversación. ESTÁ PROHIBIDO terminar mecánicamente cada mensaje con llamados a la acción forzados o repetitivos (como preguntar en cada turno si desea adquirirlo o si desea ver fotos). Si la información ya fue provista completamente y no faltan datos indispensables, un cierre cordial concluyente sin pregunta es preferible. NUNCA ofrezcas acciones, fotos o pasos ya realizados o entregados en turnos anteriores.
 - MANEJO EMPÁTICO DE OBJECIONES: Ante dudas o reticencias del cliente sobre precios o condiciones, valida su postura con empatía y ofrece alternativas reales existentes en el catálogo dentro de la misma categoría.
 - CESE DE VENTA TRAS ACUERDO DE COMPRA: Cuando el cliente ya confirmó explícitamente su decisión de compra y el flujo avanza hacia la coordinación de destino o método de pago, CESAN todas las acciones de venta activa. ESTÁ PROHIBIDO ofrecer productos adicionales, realizar ventas cruzadas intrusivas o reiniciar el embudo comercial. Enfócate al 100% en concluir la gestión acordada.
 - FULFILLMENT Y SOPORTE DESACOPLADOS DE VENTA: Las consultas de seguimiento de pedidos, entregas, soporte postventa o reclamos se atienden con máxima prioridad de servicio y empatía resolutiva. ESTÁ TERMINANTEMENTE PROHIBIDO tratar una gestión de entrega o reclamo como una oportunidad comercial.
@@ -3212,7 +3212,7 @@ Diferencia SIEMPRE entre información no confirmada y solicitud de asesor:
 
 [MODO VENTAS - ACTIVACIÓN EXCLUSIVA ANTE INTENCIÓN COMERCIAL]
 Aplica las siguientes reglas comerciales ÚNICAMENTE cuando el usuario exprese interés de compra, cotización o contratación de productos/servicios:
-- CONSULTA: Responde directo, destaca 1 beneficio y el precio. Cierra con 1 pregunta amigable. NO presiones ni hables de pagos.
+- CONSULTA: Responde directo, destaca 1 beneficio y el precio. Una respuesta no necesita terminar siempre con una pregunta; si la consulta queda completamente respondida, concluye de forma cordial sin forzar llamados a la acción mecánicos. NUNCA ofrezcas imágenes o acciones ya entregadas. NO presiones ni hables de pagos.
 - CONSULTAS NO SON COMPRAS (ANTI-SOBREACTIVACIÓN): Que el cliente pregunte por precios, stock, disponibilidad, características, envíos, tiempos de entrega, cobertura o medios de pago NO es una confirmación de compra ni selección de producto. Expresiones tentativas o futuras tampoco son compras. Permanece en EXPLORING sin invocar PRODUCT_SELECTED.
 - CONFIRMACIÓN EXPLÍCITA (customerConfirmed): SOLO pasa customerConfirmed: true a update_commercial_state cuando el cliente exprese clara y explícitamente su decisión de comprar, llevar o contratar. NUNCA marques customerConfirmed: true si el cliente solo está preguntando información.
 - DISTINCIÓN FÍSICO VS SERVICIO (CRÍTICO SEGÚN TIPO EN CATÁLOGO):
@@ -3333,7 +3333,7 @@ Puedes usar las siguientes etiquetas dentro de tu respuesta para ejecutar accion
     }
     
     systemCommands += `📦 MULTIMEDIA:
-- Para enviar fotos o videos oficiales del producto: Llama a la herramienta 'send_product_media' con el productId y mediaType ('image' o 'video') cuando el cliente solicite multimedia o cuando sea oportuno acompañar visualmente la información de un producto consultado.
+- Para enviar fotos o videos oficiales del producto: El backend gestiona automáticamente el primer envío de la imagen principal. Llama a la herramienta 'send_product_media' con el productId y mediaType ('image' o 'video') ÚNICAMENTE cuando el cliente solicite multimedia explícitamente. ESTÁ PROHIBIDO ofrecer espontáneamente fotos o videos si no fueron solicitados o si la imagen principal ya fue entregada en la conversación.
 - REGLA DE VIDEO: Para video, llama a 'send_product_media' con mediaType: 'video' ÚNICAMENTE si el cliente solicita video explícitamente y el producto tiene video registrado en su ficha canónica.
 - Si el producto NO tiene video registrado en su ficha técnica, indícale amablemente al cliente con honestidad que por el momento no disponemos de un video para ese producto, sin inventar políticas de la empresa ni enlaces externos.
 - PROHIBIDO escribir o pegar URLs de archivos o enlaces web internos en el texto de tu respuesta. El sistema despacha los archivos automáticamente al invocar 'send_product_media'.
@@ -3418,8 +3418,6 @@ ${catalogIndexCsv}
       finalPrompt += `\n\n[INSTRUCCIONES INTERNAS DE MULTIMEDIA ENTRANTE]:\n${aiInstructions.join('\n')}\n`;
     }
 
-    const systemPrompt = finalPrompt;
-
     // ─── FLAGS DE SESIÓN PARA HUMAN HANDOFF DETERMINÍSTICO (FASE 2) ──────
     let handoffRequestedInSession = false;
     let handoffActivatedInSession = false;
@@ -3451,8 +3449,25 @@ ${catalogIndexCsv}
     }
 
     const sentMediaProductIds = Array.isArray(currentCommercialState?.sentMediaProductIds)
-      ? currentCommercialState.sentMediaProductIds
+      ? [...currentCommercialState.sentMediaProductIds]
       : [];
+
+    // Defensive hydration: Si en el historial reciente de mensajes de esta conversación ya existe una imagen enviada por el bot para el producto actual
+    if (currentCommercialState?.productId && !sentMediaProductIds.includes(currentCommercialState.productId)) {
+      const hasPriorDeliveredImage = Array.isArray(rawMessages) && rawMessages.some(m =>
+        (m.senderRole === 'agent' || m.senderRole === 'assistant') &&
+        m.status !== 'failed' &&
+        m.status !== 'ai_cancelled' &&
+        (
+          (typeof m.content === 'string' && (m.content.includes('[Imagen]') || m.content.includes('[Imagen enviada al cliente]'))) ||
+          m.mediaType === 'image'
+        )
+      );
+      if (hasPriorDeliveredImage) {
+        sentMediaProductIds.push(currentCommercialState.productId);
+        currentCommercialState.sentMediaProductIds = sentMediaProductIds;
+      }
+    }
 
     const orchestratedMedia = orchestrateProductMedia({
       userMessageText,
@@ -3469,14 +3484,22 @@ ${catalogIndexCsv}
         mediaType: orchestratedMedia.mediaType
       };
       mediaSentInSession = true;
-
-      // Registrar en historial de deduplicación de la conversación
-      if (!sentMediaProductIds.includes(orchestratedMedia.targetProduct.id)) {
-        sentMediaProductIds.push(orchestratedMedia.targetProduct.id);
-        currentCommercialState.sentMediaProductIds = sentMediaProductIds;
-      }
       console.log(`🖼️ [Auto-Media Orchestrator] ${orchestratedMedia.mediaType} preparado para "${orchestratedMedia.targetProduct.name}" (${orchestratedMedia.reason})`);
     }
+
+    // Directiva dinámica de turno si hay multimedia automática programada (Authority Model: QUEUED != DELIVERED)
+    if (pendingMediaToSend && pendingMediaToSend.mediaType === 'image') {
+      finalPrompt += `\n\n[MULTIMEDIA PROGRAMADA]:\nEl sistema intentará adjuntar automáticamente la imagen principal del producto "${pendingMediaToSend.productName}" en este turno.\nNo preguntes al cliente si desea verla.\nNo invoques send_product_media para la misma imagen.\nNo afirmes que la imagen ya fue entregada o enviada.\nResponde normalmente a la consulta actual.\n`;
+    }
+
+    // Directiva dinámica de turno si la imagen principal de este producto ya fue mostrada previamente (Case B)
+    const activeProductId = currentCommercialState?.productId || orchestratedMedia?.targetProduct?.id;
+    const isMainImageAlreadySent = Boolean(activeProductId && sentMediaProductIds.includes(activeProductId));
+    if (isMainImageAlreadySent && !pendingMediaToSend && !isExplicitProductMediaIntent(userMessageText)) {
+      finalPrompt += `\n\n[MEDIA CONTEXT]:\nLa imagen principal de este producto ya fue mostrada al cliente en esta conversación. No la ofrezcas nuevamente ni preguntes si desea verla, salvo que el cliente solicite explícitamente volver a recibirla.\n`;
+    }
+
+    const systemPrompt = finalPrompt;
 
     // ─── DEFINICIÓN DE HERRAMIENTAS (FUNCTION CALLING) ───────────────────
     const tools = [{
@@ -4108,6 +4131,39 @@ Atributos/Tags: ${Array.isArray(product.tags) ? product.tags.join(', ') : ''}
       return; // 0 llamadas a Gemini, 0 retries, 0 tools
     }
 
+    const isMediaAuthorized = () => Boolean(
+      orchestratedMedia?.shouldDispatch ||
+      isExplicitProductMediaIntent(userMessageText) ||
+      mediaSentInSession
+    );
+    const isAssetValidated = () => Boolean(
+      pendingMediaToSend?.url &&
+      typeof pendingMediaToSend.url === 'string' &&
+      pendingMediaToSend.url.trim().length > 0 &&
+      pendingMediaToSend.url.startsWith('http')
+    );
+
+    const activeProduct = orchestratedMedia?.targetProduct ||
+      (currentCommercialState?.productId ? tenantAvailableProducts?.find(p => p.id === currentCommercialState.productId) : null);
+
+    const fallbackContextOptions = {
+      businessName: tenantDetails?.name || tenant?.name || 'la tienda',
+      activeProduct: activeProduct ? {
+        id: activeProduct.id,
+        name: activeProduct.name,
+        price: activeProduct.price,
+        description: activeProduct.description,
+        isAvailable: activeProduct.isAvailable
+      } : null,
+      commercialState: currentCommercialState,
+      userMessageText,
+      mediaIntentAuthorized: isMediaAuthorized(),
+      canonicalAssetValidated: isAssetValidated(),
+      essentialTools: (isMediaAuthorized() && isAssetValidated())
+        ? []
+        : tools
+    };
+
     let aiResponse = '';
     try {
       aiResponse = await generateAIResponse(
@@ -4119,7 +4175,8 @@ Atributos/Tags: ${Array.isArray(product.tags) ? product.tags.join(', ') : ''}
         tools,
         toolsHandler,
         tenant.id, // <- tenantId para medición persistente de consumo de IA
-        isGenerationSuperseded // <- abort callback para corte inmediato
+        isGenerationSuperseded, // <- abort callback para corte inmediato
+        fallbackContextOptions
       );
       if (aiResponse?.superseded || isGenerationSuperseded()) {
         wasSuperseded = true;
@@ -4211,6 +4268,114 @@ Atributos/Tags: ${Array.isArray(product.tags) ? product.tags.join(', ') : ''}
     }
 
     if (!aiResponse || aiResponse === '...') {
+      // ─── RESILIENCIA MULTIMEDIA DETERMINISTA (FASE P0) ───
+      // Si el LLM falló totalmente pero la acción multimedia fue autorizada y validada:
+      // Gate 1: pendingMediaToSend != null
+      // Gate 2: isMediaAuthorized() (mediaIntentAuthorized === true)
+      // Gate 3: isAssetValidated() (canonicalAssetValidated === true)
+      if (pendingMediaToSend && isMediaAuthorized() && isAssetValidated()) {
+        console.log(`🛡️ [Deterministic Media Rescue] LLM falló totalmente, pero mediaIntentAuthorized && canonicalAssetValidated son TRUE para "${pendingMediaToSend.productName}". Procediendo con entrega determinista.`);
+
+        const isVideo = pendingMediaToSend.mediaType === 'video';
+        const factualCaption = isVideo
+          ? `Aquí tienes el video de ${pendingMediaToSend.productName}.`
+          : `Aquí tienes la imagen de ${pendingMediaToSend.productName}.`;
+
+        try {
+          const mediaType = pendingMediaToSend.mediaType || 'image';
+          markMessageAsSentByAi(factualCaption);
+
+          const mediaMsgId = await sendWhatsAppMedia({
+            ...gatewayCtx,
+            to: finalCleanNumber,
+            url: pendingMediaToSend.url,
+            mediaType,
+            caption: factualCaption,
+            isAutomated: true,
+            origin: 'ai'
+          });
+
+          if (mediaMsgId) {
+            markMessageAsSentByAi(mediaMsgId);
+            console.log(`✅ [Deterministic Media Rescue] Media entregada físicamente a +${finalCleanNumber} (msgId: ${mediaMsgId})`);
+
+            const rescuedNow = new Date();
+            const [savedMediaMsg] = await prisma.$transaction([
+              prisma.message.create({
+                data: {
+                  content: factualCaption,
+                  senderRole: 'agent',
+                  status: 'sent',
+                  externalId: mediaMsgId,
+                  mediaUrl: pendingMediaToSend.url,
+                  mediaType,
+                  chatId: chat.id,
+                  tenantId: tenant.id
+                }
+              }),
+              prisma.chat.update({ where: { id: chat.id }, data: { updatedAt: rescuedNow } })
+            ]);
+
+            // Persistir entrega real de media en el estado comercial del cliente (Authority Model: QUEUED != DELIVERED)
+            if (pendingMediaToSend.mediaType === 'image' && pendingMediaToSend.productId && customer?.id) {
+              try {
+                const refreshedCustomer = await prisma.customer.findUnique({
+                  where: { id: customer.id },
+                  select: { commercialState: true }
+                });
+                const cState = (typeof refreshedCustomer?.commercialState === 'object' && refreshedCustomer?.commercialState !== null)
+                  ? { ...refreshedCustomer.commercialState }
+                  : { ...currentCommercialState };
+                const curSent = Array.isArray(cState.sentMediaProductIds) ? [...cState.sentMediaProductIds] : [];
+                if (!curSent.includes(pendingMediaToSend.productId)) {
+                  curSent.push(pendingMediaToSend.productId);
+                  cState.sentMediaProductIds = curSent;
+                  await prisma.customer.update({
+                    where: { id: customer.id },
+                    data: { commercialState: cState }
+                  });
+                  currentCommercialState.sentMediaProductIds = curSent;
+                  if (!sentMediaProductIds.includes(pendingMediaToSend.productId)) {
+                    sentMediaProductIds.push(pendingMediaToSend.productId);
+                  }
+                  console.log(`💾 [Deterministic Media Rescue] Producto "${pendingMediaToSend.productId}" guardado en sentMediaProductIds.`);
+                }
+              } catch (persistMediaErr) {
+                console.warn('⚠️ [Deterministic Media Rescue] Error persistiendo sentMediaProductIds:', persistMediaErr.message);
+              }
+            }
+
+            const rescuedRoom = tenant?.id ? `tenant:${tenant.id}` : null;
+            if (reqIo && rescuedRoom) {
+              reqIo.to(rescuedRoom).emit('new_whatsapp_message', {
+                id: savedMediaMsg.id,
+                chatId: chat.id,
+                remoteJid: cleanJid,
+                text: factualCaption,
+                type: 'outgoing',
+                from: 'business',
+                senderRole: 'agent',
+                status: 'sent',
+                externalId: mediaMsgId,
+                mediaUrl: pendingMediaToSend.url,
+                mediaType,
+                messageId: savedMediaMsg.id,
+                createdAt: savedMediaMsg.createdAt.toISOString(),
+                lastMessageAt: savedMediaMsg.createdAt.toISOString(),
+                timestamp: savedMediaMsg.createdAt
+              });
+            }
+
+            // Éxito confirmado de media: 0 mensaje genérico de demora (GENERIC_DELAY_AFTER_MEDIA_SUCCESS = NO)
+            return;
+          } else {
+            console.warn(`⚠️ [Deterministic Media Rescue] Provider media dispatch retornó falsy (QUEUED != DELIVERED). Procediendo a safety fallback.`);
+          }
+        } catch (mediaDispatchErr) {
+          console.error(`❌ [Deterministic Media Rescue] Fallo en despacho de media determinista:`, mediaDispatchErr.message);
+        }
+      }
+
       // Fallback de contingencia ante caída o timeout de IA
       const timeoutFallbackText = 'Estoy teniendo una pequeña demora en este momento. Escríbeme nuevamente en unos segundos, por favor 🙏';
       try {
@@ -4403,6 +4568,7 @@ Atributos/Tags: ${Array.isArray(product.tags) ? product.tags.join(', ') : ''}
         dispatchSequence.push({
           type: pendingMediaToSend.mediaType || 'image',
           url: pendingMediaToSend.url,
+          productId: pendingMediaToSend.productId || null,
           caption: cleanedText || undefined
         });
       } else {
@@ -4410,7 +4576,8 @@ Atributos/Tags: ${Array.isArray(product.tags) ? product.tags.join(', ') : ''}
         if (pendingMediaToSend) {
           dispatchSequence.push({
             type: pendingMediaToSend.mediaType || 'image',
-            url: pendingMediaToSend.url
+            url: pendingMediaToSend.url,
+            productId: pendingMediaToSend.productId || null
           });
         }
 
@@ -4673,6 +4840,35 @@ Atributos/Tags: ${Array.isArray(product.tags) ? product.tags.join(', ') : ''}
 
             mediaDeliveryConfirmed = true;
             console.log(`✅ [${provider} Gateway] Multimedia (${item.type}) enviado a ${finalCleanNumber} (msgId: ${mediaMsgId})`);
+
+            // Persistir entrega real de media en el estado comercial del cliente (Authority Model: QUEUED != DELIVERED)
+            if (item.type === 'image' && item.productId && customer?.id) {
+              try {
+                const refreshedCustomer = await prisma.customer.findUnique({
+                  where: { id: customer.id },
+                  select: { commercialState: true }
+                });
+                const cState = (typeof refreshedCustomer?.commercialState === 'object' && refreshedCustomer?.commercialState !== null)
+                  ? { ...refreshedCustomer.commercialState }
+                  : { ...currentCommercialState };
+                const curSent = Array.isArray(cState.sentMediaProductIds) ? [...cState.sentMediaProductIds] : [];
+                if (!curSent.includes(item.productId)) {
+                  curSent.push(item.productId);
+                  cState.sentMediaProductIds = curSent;
+                  await prisma.customer.update({
+                    where: { id: customer.id },
+                    data: { commercialState: cState }
+                  });
+                  currentCommercialState.sentMediaProductIds = curSent;
+                  if (!sentMediaProductIds.includes(item.productId)) {
+                    sentMediaProductIds.push(item.productId);
+                  }
+                  console.log(`💾 [Media State Persisted] Producto "${item.productId}" guardado en sentMediaProductIds del cliente.`);
+                }
+              } catch (persistMediaErr) {
+                console.warn('⚠️ [Media Persist] Error persistiendo sentMediaProductIds:', persistMediaErr.message);
+              }
+            }
 
             const aiMediaNow = new Date();
             const savedContent = item.caption 

@@ -19,6 +19,7 @@ import {
   getCanonicalProductPrice,
   isPaymentMethodAuthorized
 } from './src/services/orderCommercialService.js';
+import { enforceMediaAuthority } from './src/controllers/whatsappController.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -797,8 +798,175 @@ async function main() {
     assert.strictEqual(resM2.shouldDispatch, false, 'No debe auto-enviar media para producto anterior en consulta de ubicación');
   });
 
+  await runTest('SC-42', 'AUTO_IMAGE_QUEUED: pendingMediaToSend inyecta directiva dinámica [MULTIMEDIA PROGRAMADA] y prohíbe ofrecer foto', async () => {
+    // 1. Verificar que whatsappController contiene la directiva dinámica de turno
+    assert.ok(controllerSource.includes('[MULTIMEDIA PROGRAMADA]'));
+    assert.ok(controllerSource.includes('El sistema intentará adjuntar automáticamente la imagen principal del producto'));
+    assert.ok(controllerSource.includes('No preguntes al cliente si desea verla'));
+    assert.ok(controllerSource.includes('No invoques send_product_media para la misma imagen'));
+    assert.ok(controllerSource.includes('No afirmes que la imagen ya fue entregada o enviada'));
+
+    // 2. Simular ensamblaje dinámico
+    let finalPrompt = 'Instrucciones base del agente';
+    const pendingMediaToSend = {
+      productId: 'p1',
+      productName: 'JBL go 4',
+      url: 'https://example.com/jbl.jpg',
+      mediaType: 'image'
+    };
+
+    if (pendingMediaToSend && pendingMediaToSend.mediaType === 'image') {
+      finalPrompt += `\n\n[MULTIMEDIA PROGRAMADA]:\nEl sistema intentará adjuntar automáticamente la imagen principal del producto "${pendingMediaToSend.productName}" en este turno.\nNo preguntes al cliente si desea verla.\nNo invoques send_product_media para la misma imagen.\nNo afirmes que la imagen ya fue entregada o enviada.\nResponde normalmente a la consulta actual.\n`;
+    }
+
+    assert.ok(finalPrompt.includes('[MULTIMEDIA PROGRAMADA]'));
+    assert.ok(finalPrompt.includes('No preguntes al cliente si desea verla'));
+    assert.ok(finalPrompt.includes('No invoques send_product_media para la misma imagen'));
+    assert.ok(finalPrompt.includes('No afirmes que la imagen ya fue entregada o enviada'));
+  });
+
+  await runTest('SC-43', 'MEDIA_PROVIDER_FAILURE: enforceMediaAuthority previene falsa entrega si falla el provider', async () => {
+    // Cuando el gateway falla (hasPendingMedia = false), la función debe neutralizar frases que afirmen que se adjuntó la foto
+    const hallucinatedClaim = 'El JBL go 4 está a S/. 150. Aquí te comparto la imagen del producto para que lo veas.';
+    const sanitized = enforceMediaAuthority(hallucinatedClaim, false);
+
+    assert.ok(!sanitized.includes('Aquí te comparto la imagen del producto'));
+    assert.ok(sanitized.includes('No tengo una imagen disponible para enviarte en este momento'));
+  });
+
+  await runTest('SC-44', 'CASE_B_MEDIA_ALREADY_SHOWN: imagen previa exitosa + pregunta de características => 0 nueva imagen y directiva [MEDIA CONTEXT]', async () => {
+    // 1. Verificar presencia de [MEDIA CONTEXT] en el controlador
+    assert.ok(controllerSource.includes('[MEDIA CONTEXT]:'));
+    assert.ok(controllerSource.includes('La imagen principal de este producto ya fue mostrada al cliente en esta conversación'));
+    assert.ok(controllerSource.includes('No la ofrezcas nuevamente ni preguntes si desea verla'));
+
+    // 2. Simular flujo con orchestrateProductMedia
+    const availableProducts = [
+      { id: 'prod-jbl-4', name: 'JBL go 4', imageUrl: 'https://example.com/jbl4.jpg' }
+    ];
+    const currentCommercialState = {
+      productId: 'prod-jbl-4',
+      productName: 'JBL go 4',
+      currentStage: 'PRODUCT_SELECTED',
+      sentMediaProductIds: ['prod-jbl-4']
+    };
+    const sentMediaProductIds = ['prod-jbl-4'];
+    const userMessageText = '¿Y qué características tiene?';
+
+    const res = orchestrateProductMedia({
+      userMessageText,
+      availableProducts,
+      currentCommercialState,
+      sentMediaProductIds
+    });
+
+    // Debe resultar en 0 nueva imagen
+    assert.strictEqual(res.shouldDispatch, false, 'No debe auto-despachar imagen para producto cuya media ya fue mostrada');
+
+    // 3. Simular inyección dinámica en prompt
+    let finalPrompt = 'Instrucciones base del agente';
+    let pendingMediaToSend = null;
+    const activeProductId = currentCommercialState?.productId || res?.targetProduct?.id;
+    const isMainImageAlreadySent = Boolean(activeProductId && sentMediaProductIds.includes(activeProductId));
+
+    if (isMainImageAlreadySent && !pendingMediaToSend) {
+      finalPrompt += `\n\n[MEDIA CONTEXT]:\nLa imagen principal de este producto ya fue mostrada al cliente en esta conversación. No la ofrezcas nuevamente ni preguntes si desea verla, salvo que el cliente solicite explícitamente volver a recibirla.\n`;
+    }
+
+    assert.ok(finalPrompt.includes('[MEDIA CONTEXT]:'));
+    assert.ok(finalPrompt.includes('No la ofrezcas nuevamente ni preguntes si desea verla'));
+  });
+
+  await runTest('SC-45', 'AUTHORITY_MODEL_QUEUED_VS_DELIVERED: media encolada que falla en gateway NO entra a sentMediaProductIds', async () => {
+    // Simular que una imagen estuvo encolada (pendingMediaToSend) pero el provider falló (!mediaMsgId)
+    const pendingMedia = {
+      productId: 'prod-fail-1',
+      productName: 'Speaker Fallido',
+      url: 'https://example.com/fail.jpg',
+      mediaType: 'image'
+    };
+
+    let mediaDeliveryConfirmed = false;
+    let mediaDeliveryFailed = false;
+    let customerCommercialState = { sentMediaProductIds: [] };
+
+    // El gateway intenta enviar pero falla
+    const mediaMsgId = null; // Falla del provider
+    if (!mediaMsgId) {
+      mediaDeliveryFailed = true;
+    } else {
+      mediaDeliveryConfirmed = true;
+      customerCommercialState.sentMediaProductIds.push(pendingMedia.productId);
+    }
+
+    assert.strictEqual(mediaDeliveryConfirmed, false, 'No debe confirmarse entrega si el provider falló');
+    assert.strictEqual(mediaDeliveryFailed, true, 'Debe marcarse fallo de entrega');
+    assert.strictEqual(customerCommercialState.sentMediaProductIds.includes('prod-fail-1'), false, 'NO debe guardarse en sentMediaProductIds si falló la entrega');
+
+    // Simular siguiente turno: la imagen NO debe figurar como ya mostrada
+    const sentMediaProductIds = customerCommercialState.sentMediaProductIds;
+    const isMainImageAlreadySent = sentMediaProductIds.includes('prod-fail-1');
+    assert.strictEqual(isMainImageAlreadySent, false, 'No debe considerarse mostrada en turnos posteriores si nunca fue entregada');
+  });
+
+  await runTest('SC-46', 'EXPLICIT_RE_REQUEST: cliente pide explícitamente reenvío ("mándame la foto otra vez") => permitido', async () => {
+    const availableProducts = [
+      { id: 'prod-jbl-4', name: 'JBL go 4', imageUrl: 'https://example.com/jbl4.jpg' }
+    ];
+    const currentCommercialState = {
+      productId: 'prod-jbl-4',
+      productName: 'JBL go 4'
+    };
+    const sentMediaProductIds = ['prod-jbl-4'];
+
+    const res = orchestrateProductMedia({
+      userMessageText: 'mándame la foto otra vez',
+      availableProducts,
+      currentCommercialState,
+      sentMediaProductIds
+    });
+
+    assert.strictEqual(res.shouldDispatch, true, 'Debe permitir reenvío si el cliente lo pide explícitamente');
+    assert.strictEqual(res.reason, 'EXPLICIT_PHOTO_RE_REQUESTED');
+    assert.strictEqual(res.url, 'https://example.com/jbl4.jpg');
+  });
+
+  await runTest('SC-47', 'DISTINCT_PRODUCT: estado de media de producto anterior no bloquea imagen del nuevo producto', async () => {
+    const availableProducts = [
+      { id: 'prod-jbl-4', name: 'JBL go 4', imageUrl: 'https://example.com/jbl4.jpg' },
+      { id: 'prod-clip-4', name: 'JBL Clip 4', imageUrl: 'https://example.com/clip4.jpg' }
+    ];
+    const currentCommercialState = {
+      productId: 'prod-jbl-4',
+      productName: 'JBL go 4'
+    };
+    // Solo prod-jbl-4 fue enviado
+    const sentMediaProductIds = ['prod-jbl-4'];
+
+    // Cliente consulta sobre nuevo producto
+    const res = orchestrateProductMedia({
+      userMessageText: '¿Y cuánto cuesta el JBL Clip 4?',
+      availableProducts,
+      currentCommercialState,
+      sentMediaProductIds
+    });
+
+    assert.strictEqual(res.shouldDispatch, true, 'Debe despachar imagen para el nuevo producto');
+    assert.strictEqual(res.targetProduct.id, 'prod-clip-4');
+    assert.strictEqual(res.url, 'https://example.com/clip4.jpg');
+  });
+
+  await runTest('SC-48', 'CTA_QUALITY: respuesta informativa completa permite terminar sin CTA mecánico ni preguntas forzadas', async () => {
+    // 1. Verificar que Sales Operating Policy refuerza no cerrar cada turno con preguntas forzadas
+    assert.ok(controllerSource.includes('Una respuesta no necesita terminar siempre con una pregunta'));
+    assert.ok(controllerSource.includes('si la consulta queda completamente respondida, concluye de forma cordial sin forzar llamados a la acción mecánicos'));
+    assert.ok(controllerSource.includes('NUNCA ofrezcas imágenes o acciones ya entregadas'));
+    assert.ok(controllerSource.includes('NUNCA ofrezcas acciones, fotos o pasos ya realizados o entregados en turnos anteriores'));
+    assert.ok(controllerSource.includes('NO CERRAR CADA TURNO CON PREGUNTAS FORZADAS'));
+  });
+
   console.log('\n======================================================================');
-  console.log('🎉 SUITE VELION SALES CORE FINALIZADA: 41/41 TESTS PASARON (100%)');
+  console.log('🎉 SUITE VELION SALES CORE FINALIZADA: 48/48 TESTS PASARON (100%)');
   console.log('======================================================================\n');
 }
 

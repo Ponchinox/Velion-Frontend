@@ -72,16 +72,22 @@ const THINKING_LEVEL = ThinkingLevel.MINIMAL;
 /** Máx. ítems multimedia por petición */
 const MAX_MEDIA_ITEMS = 3;
 
-const ERR_TYPE = {
+export const ERR_TYPE = {
   TIMEOUT:       'TIMEOUT',
   RATE_LIMIT:    'RATE_LIMIT',
   AUTH:          'AUTH',
   BAD_REQUEST:   'BAD_REQUEST',
   NOT_FOUND:     'NOT_FOUND',
   SERVER_ERROR:  'SERVER_ERROR',
+  PROVIDER_5XX:  'PROVIDER_5XX',
   NETWORK:       'NETWORK',
   UNSAFE_OUTPUT: 'UNSAFE_OUTPUT',
   INCOMPLETE_GENERATION: 'INCOMPLETE_GENERATION',
+  PROHIBITED_CONTENT: 'PROHIBITED_CONTENT',
+  EMPTY_RESPONSE: 'EMPTY_RESPONSE',
+  CONTEXT_TOO_LARGE: 'CONTEXT_TOO_LARGE',
+  MALFORMED_RESPONSE: 'MALFORMED_RESPONSE',
+  TOOL_ERROR:    'TOOL_ERROR',
   UNKNOWN:       'UNKNOWN'
 };
 
@@ -115,16 +121,28 @@ function geminiError(msg) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * Clasifica un error de la API de Gemini en un tipo semántico.
- * Esto determina si se rota la key, se aplica cooldown o se aborta.
+ * Clasifica un error de la API de Gemini o Groq en un tipo semántico.
+ * Esto determina si se rota la key, se aplica contexto compacto o se activa fallback.
  */
-function classifyError(err) {
+export function classifyError(err) {
+  if (err?.isProhibitedContent || err?.blockReason === 'PROHIBITED_CONTENT' || (err?.message && String(err.message).toLowerCase().includes('prohibited_content'))) {
+    return ERR_TYPE.PROHIBITED_CONTENT;
+  }
+
   if (err?.name === 'AbortError' || err?.code === 'ABORT_ERR' || err?.message?.includes('abort')) {
     return ERR_TYPE.TIMEOUT;
   }
 
   const status = err?.status || err?.response?.status;
   const msg = (err?.message || String(err)).toLowerCase();
+
+  if (status === 413 || msg.includes('context_too_large') || msg.includes('request too large') || msg.includes('too large') || msg.includes('tokens per minute')) {
+    return ERR_TYPE.CONTEXT_TOO_LARGE;
+  }
+
+  if (err?.isEmptyResponse || msg.includes('respuesta vacía') || msg.includes('empty_response')) {
+    return ERR_TYPE.EMPTY_RESPONSE;
+  }
 
   if (status === 429 || msg.includes('429') || msg.includes('quota') ||
       msg.includes('rate limit') || msg.includes('resource_exhausted')) {
@@ -310,7 +328,7 @@ class GeminiKeyManager {
       this.backupClient = new GoogleGenAI({ apiKey: this.backupKey });
       geminiLog(`Key Manager: Principal (activa) + Backup (contingencia configurada).`);
     } else {
-      geminiLog(`Key Manager: Principal (activa, sin backup configurado).`);
+      geminiLog(`Key Manager: Modo de clave única activa (GEMINI_API_KEY).`);
     }
   }
 
@@ -340,7 +358,8 @@ class GeminiKeyManager {
 }
 
 // Singleton del manager
-const geminiKeyManager = new GeminiKeyManager();
+export { GeminiKeyManager };
+export const geminiKeyManager = new GeminiKeyManager();
 
 // ─────────────────────────────────────────────────────────────────────────────
 // PROCESAMIENTO DE MULTIMEDIA
@@ -490,6 +509,140 @@ async function buildGeminiContents(messages, mediaItems = []) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// COMPACT FALLBACK CONTEXT & BUDGETING (FASE P0: RESILIENCIA LLM)
+// ─────────────────────────────────────────────────────────────────────────────
+
+export const COMPACT_CONTEXT_HARD_BUDGET = 3000;
+
+/**
+ * Normalización semánticamente neutra para consultas benignas con falsos positivos.
+ * No evade seguridad; solo aplica puntuación estándar, espacios, mayúsculas canónicas
+ * y el nombre oficial del producto ya resuelto.
+ */
+export function applyNeutralCanonicalization(text, activeProduct = null) {
+  if (!text || typeof text !== 'string') return text || '';
+
+  // 1. Normalizar espacios duplicados y trim
+  let normalized = text.replace(/\s+/g, ' ').trim();
+
+  // 2. Normalizar signos de interrogación finales repetidos
+  normalized = normalized.replace(/\?+$/, '').trim();
+
+  // 3. Normalizar mayúsculas de términos y marcas frecuentes comunes (ej. jbl -> JBL)
+  normalized = normalized.replace(/\bjbl\b/gi, 'JBL');
+
+  // 4. Si el producto ya fue resuelto determinísticamente y el texto menciona la marca/término de forma coloquial
+  if (activeProduct?.name) {
+    const canonicalName = activeProduct.name.trim();
+    const firstWord = canonicalName.split(' ')[0];
+    const regex = new RegExp(`\\b(del|el)?\\s*(${firstWord})\\b`, 'i');
+    if (regex.test(normalized) && !normalized.toLowerCase().includes(canonicalName.toLowerCase())) {
+      normalized = normalized.replace(regex, `$1 ${canonicalName}`);
+    }
+  }
+
+  // Asegurar formato de pregunta amigable y limpio si parece una pregunta
+  if (/^(tienes|tienen|hay|tendra|cuanto|como|donde|existe)/i.test(normalized) && !normalized.startsWith('¿')) {
+    normalized = `¿${normalized}?`;
+  } else if (!normalized.endsWith('?') && /^(¿)/.test(normalized)) {
+    normalized = `${normalized}?`;
+  }
+
+  return normalized;
+}
+
+/**
+ * Construye un contexto compacto y estructurado para fallbacks de resiliencia (Gemini retry y Groq).
+ * Límite estricto de tokens: COMPACT_CONTEXT_HARD_BUDGET = 3000.
+ * Omite el catálogo completo (CSV de decenas de productos) y toma únicamente el producto activo,
+ * estado comercial relevante y un máximo de las últimas 3 interacciones conversacionales.
+ */
+export function buildCompactFallbackContext(options = {}) {
+  const {
+    systemPrompt = '',
+    messages = [],
+    activeProduct = null,
+    commercialState = null,
+    userMessageText = '',
+    businessName = 'la tienda',
+    isProhibitedContent = false,
+    essentialTools = [],
+    mediaIntentAuthorized = false,
+    canonicalAssetValidated = false
+  } = options;
+
+  // 1. Construir System Prompt Compacto
+  let compactPrompt = `Eres el asistente comercial inteligente de ${businessName}.
+Atiende con amabilidad, precisión y concisión en español. Responde en 1 a 3 oraciones.`.trim();
+
+  if (activeProduct) {
+    compactPrompt += `\n\n[PRODUCTO EN CONSULTA]:
+- Nombre: ${activeProduct.name}
+- Precio: ${activeProduct.price ? `S/. ${activeProduct.price}` : 'Consultar'}
+- Disponibilidad: ${activeProduct.isAvailable !== false ? 'Disponible' : 'Agotado'}
+${activeProduct.description ? `- Descripción: ${activeProduct.description.slice(0, 250)}` : ''}`.trim();
+  }
+
+  if (commercialState?.currentStage) {
+    compactPrompt += `\n\n[ESTADO COMERCIAL]: Etapa actual: ${commercialState.currentStage}.`;
+  }
+
+  // Directiva sobre multimedia si ya está autorizada determinísticamente
+  if (mediaIntentAuthorized && canonicalAssetValidated) {
+    compactPrompt += `\n\n[MULTIMEDIA]: La multimedia solicitada ya está autorizada y será enviada automáticamente por el sistema. Da una respuesta breve y amigable confirmándolo.`;
+  }
+
+  // 2. Historial de mensajes: Máximo últimas 3 interacciones útiles
+  const rawMessages = Array.isArray(messages) ? messages : [];
+  const usefulMessages = rawMessages.slice(-3);
+
+  const compactMessages = usefulMessages.map((m, idx) => {
+    const isLast = idx === usefulMessages.length - 1;
+    let content = m.content || '';
+    if (Array.isArray(m.parts)) {
+      content = m.parts.map(p => p.text || '').join('\n').trim();
+    }
+
+    // Si es el último mensaje del usuario y se detectó PROHIBITED_CONTENT
+    if (isLast && m.role === 'user' && isProhibitedContent) {
+      content = applyNeutralCanonicalization(content || userMessageText, activeProduct);
+    }
+
+    return {
+      role: m.role === 'model' || m.role === 'assistant' ? 'assistant' : 'user',
+      content: content || '.'
+    };
+  });
+
+  // Si no había mensajes o el último no era de usuario, añadir el mensaje actual
+  if (compactMessages.length === 0 || compactMessages[compactMessages.length - 1].role !== 'user') {
+    const text = isProhibitedContent
+      ? applyNeutralCanonicalization(userMessageText, activeProduct)
+      : (userMessageText || 'Hola');
+    compactMessages.push({ role: 'user', content: text });
+  }
+
+  // 3. Herramientas: Si la acción determinista ya está resuelta, Groq/fallback no recibe tools
+  const tools = (mediaIntentAuthorized && canonicalAssetValidated)
+    ? []
+    : (Array.isArray(essentialTools) ? essentialTools : []);
+
+  // Estimación de tokens
+  const estimatedPromptTokens = Math.round(compactPrompt.length / 4);
+  const estimatedMessagesTokens = Math.round(JSON.stringify(compactMessages).length / 4);
+  const estimatedToolsTokens = Math.round(JSON.stringify(tools).length / 4);
+  const totalEstimatedTokens = estimatedPromptTokens + estimatedMessagesTokens + estimatedToolsTokens;
+
+  return {
+    systemPrompt: compactPrompt,
+    messages: compactMessages,
+    tools,
+    estimatedTokens: totalEstimatedTokens,
+    isWithinBudget: totalEstimatedTokens <= COMPACT_CONTEXT_HARD_BUDGET
+  };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // LLAMADA A GEMINI CON TIMEOUT Y ROTACIÓN INTELIGENTE DE CLAVES
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -536,7 +689,8 @@ async function callGemini(
   tenantId = null,
   isSuperseded = null,
   sessionToolsCache = new Map(),
-  sessionState = {}
+  sessionState = {},
+  fallbackContextOptions = null
 ) {
   geminiKeyManager.init();
 
@@ -570,7 +724,7 @@ async function callGemini(
   };
 
   // Construir el historial una sola vez (operación async con Sharp y truncado a 2000 chars)
-  const contents = await buildGeminiContents(messages, mediaItems);
+  let contents = await buildGeminiContents(messages, mediaItems);
 
   // Configuración base con maxOutputTokens = 400
   let baseConfig = {
@@ -595,7 +749,7 @@ async function callGemini(
         throw supersededErr;
       }
 
-      const keyInfo = geminiKeyManager.getKeyForAttempt(1); // Always use active key
+      const keyInfo = geminiKeyManager.getKeyForAttempt(attempt);
 
       let isPrimary = true;
       if (attempt === 1) {
@@ -673,6 +827,14 @@ async function callGemini(
             config: { ...config, abortSignal: controller.signal },
           });
           geminiLog(`⏱️ [Gemini HTTP] ${requestLabel} completada en ${(Date.now() - reqStart) / 1000}s (Timeout límite: ${currentTimeoutMs / 1000}s)`);
+
+          if (resp?.promptFeedback?.blockReason) {
+            const blockErr = new Error(`PROHIBITED_CONTENT: ${resp.promptFeedback.blockReason}`);
+            blockErr.isProhibitedContent = true;
+            blockErr.blockReason = resp.promptFeedback.blockReason;
+            throw blockErr;
+          }
+
           return resp;
         } finally {
           clearTimeout(timeoutHandle);
@@ -683,6 +845,18 @@ async function callGemini(
         let response = await executeWithTimeout(`Intento ${attempt} - Petición Inicial`);
 
         accumulateUsage(response);
+
+        if (!response?.candidates || response.candidates.length === 0) {
+          if (response?.promptFeedback?.blockReason) {
+            const blockErr = new Error(`PROHIBITED_CONTENT: ${response.promptFeedback.blockReason}`);
+            blockErr.isProhibitedContent = true;
+            blockErr.blockReason = response.promptFeedback.blockReason;
+            throw blockErr;
+          }
+          const emptyErr = new Error('Respuesta vacía de Gemini (0 candidates)');
+          emptyErr.isEmptyResponse = true;
+          throw emptyErr;
+        }
 
         // Function Calling con límite duro MAX_TOOL_ROUNDS (3)
         let toolRounds = 0;
@@ -760,6 +934,18 @@ async function callGemini(
             response = await executeWithTimeout(`Intento ${attempt} - Ronda Tool ${toolRounds}`);
 
             accumulateUsage(response);
+
+            if (!response?.candidates || response.candidates.length === 0) {
+              if (response?.promptFeedback?.blockReason) {
+                const blockErr = new Error(`PROHIBITED_CONTENT: ${response.promptFeedback.blockReason}`);
+                blockErr.isProhibitedContent = true;
+                blockErr.blockReason = response.promptFeedback.blockReason;
+                throw blockErr;
+              }
+              const emptyErr = new Error('Respuesta vacía de Gemini (0 candidates) tras tool round');
+              emptyErr.isEmptyResponse = true;
+              throw emptyErr;
+            }
           } catch (funcErr) {
             if (funcErr?.isSuperseded || funcErr?.message === 'GENERATION_SUPERSEDED') {
               throw funcErr;
@@ -770,7 +956,22 @@ async function callGemini(
         }
 
         const latencyMs = Date.now() - attemptStartTime;
-        const rawText = response.text || '';
+        let rawText = '';
+        try {
+          rawText = response.text || '';
+        } catch (textErr) {
+          if (response?.promptFeedback?.blockReason) {
+            const blockErr = new Error(`PROHIBITED_CONTENT: ${response.promptFeedback.blockReason}`);
+            blockErr.isProhibitedContent = true;
+            blockErr.blockReason = response.promptFeedback.blockReason;
+            throw blockErr;
+          }
+          if (textErr?.message && (textErr.message.includes('safety') || textErr.message.includes('blocked') || textErr.message.includes('PROHIBITED'))) {
+            textErr.isProhibitedContent = true;
+            throw textErr;
+          }
+          throw textErr;
+        }
 
         const aiText = rawText
           .replace(/<think>[\s\S]*?<\/think>/gi, '')
@@ -848,6 +1049,26 @@ async function callGemini(
         if (attempt >= MAX_TOTAL_ATTEMPTS) {
           geminiError(`Se alcanzó el límite máximo de ${MAX_TOTAL_ATTEMPTS} intentos. Abortando.`);
           break;
+        }
+
+        // ─── MANEJO ESPECÍFICO DE PROHIBITED_CONTENT ───
+        // Si el intento 1 falló por PROHIBITED_CONTENT, reconstruir a contexto compacto con normalización neutra
+        if (errType === ERR_TYPE.PROHIBITED_CONTENT) {
+          geminiWarn(`⚠️ [PROHIBITED_CONTENT] Detectado en intento ${attempt}. Reconstruyendo a contexto compacto neutro para intento 2.`);
+          try {
+            const compact = buildCompactFallbackContext({
+              ...(fallbackContextOptions || {}),
+              systemPrompt,
+              messages,
+              isProhibitedContent: true,
+              essentialTools: tools
+            });
+            baseConfig.systemInstruction = compact.systemPrompt;
+            if (compact.tools) baseConfig.tools = compact.tools;
+            contents = await buildGeminiContents(compact.messages, []);
+          } catch (compactErr) {
+            geminiWarn(`Error reconstruyendo contexto compacto en retry: ${compactErr.message}`);
+          }
         }
 
         geminiLog(`Reintentando con intento ${attempt + 1}/${MAX_TOTAL_ATTEMPTS}...`);
@@ -1019,6 +1240,10 @@ export async function callGroq(
   const validToolNames = new Set(openAiTools.map(t => t.function?.name).filter(Boolean));
 
   const executedToolsCache = sessionToolsCache;
+
+  const payloadJson = JSON.stringify(openAiMessages);
+  const estimatedInputTokens = Math.round(payloadJson.length / 4);
+  console.log(`[GROQ_BUDGET] COMPACT_INPUT_ESTIMATED_TOKENS = ${estimatedInputTokens} (budget: ${COMPACT_CONTEXT_HARD_BUDGET})`);
 
   let toolRounds = 0;
   let finalAiText = '';
@@ -1247,7 +1472,8 @@ async function callAiProviderCascade(
   tools = [],
   toolsHandler = null,
   tenantId = null,
-  isSuperseded = null
+  isSuperseded = null,
+  fallbackContextOptions = null
 ) {
   if (typeof isSuperseded === 'function' && isSuperseded()) {
     geminiWarn('🛑 [SUPERSEDED] Generación obsoleta detectada al inicio de callAiProviderCascade. Abortando.');
@@ -1273,7 +1499,8 @@ async function callAiProviderCascade(
         tenantId,
         isSuperseded,
         sessionToolsCache,
-        sessionState
+        sessionState,
+        fallbackContextOptions
       );
       if (text) return text;
     } catch (err) {
@@ -1316,11 +1543,26 @@ async function callAiProviderCascade(
     } else {
       geminiLog(`🔄 [Groq Fallback] Activando tercer nivel de resiliencia (Groq)...`);
       try {
-        const groqText = await callGroq(
+        const isMediaResolved = Boolean(
+          fallbackContextOptions?.mediaIntentAuthorized &&
+          fallbackContextOptions?.canonicalAssetValidated
+        );
+
+        // Groq SIEMPRE recibe compact context y nunca el catálogo completo
+        const groqCompact = buildCompactFallbackContext({
+          ...(fallbackContextOptions || {}),
           systemPrompt,
           messages,
+          isProhibitedContent: lastError?.isProhibitedContent || false,
+          // Si la acción multimedia ya está resuelta determinísticamente, Groq NO recibe herramientas innecesarias
+          essentialTools: isMediaResolved ? [] : (fallbackContextOptions?.essentialTools || tools)
+        });
+
+        const groqText = await callGroq(
+          groqCompact.systemPrompt,
+          groqCompact.messages,
           mediaItems,
-          tools,
+          groqCompact.tools,
           toolsHandler,
           tenantId,
           isSuperseded,
@@ -1393,7 +1635,7 @@ const userQueues = new Map();
  * La memoria conversacional ahora se maneja inyectando directamente el historial
  * proveniente de la base de datos (PostgreSQL).
  *
- * @param {string}   prompt      - Instrucción del sistema
+ * @param {string|object} promptOrOptions - Instrucción del sistema o config object
  * @param {Array}    context     - Contexto/historial ya formateado [{role, content}]
  * @param {string[]} mediaItems  - Multimedia en Base64 (opcional)
  * @param {string}   userLockKey - Clave única para cola (ej. tenantId:remoteJid)
@@ -1401,7 +1643,7 @@ const userQueues = new Map();
  * @returns {Promise<string>}
  */
 export async function generateAIResponse(
-  prompt,
+  promptOrOptions,
   context = [],
   mediaItems = [],
   userLockKey = null,
@@ -1409,35 +1651,60 @@ export async function generateAIResponse(
   tools = [],
   toolsHandler = null,
   tenantId = null,
-  isSuperseded = null
+  isSuperseded = null,
+  fallbackContextOptions = null
 ) {
-  // ── Deduplicación por messageId ────────────────────────────────────────────
-  if (messageId) {
-    if (processedMessageIds.has(messageId)) {
-      console.warn(`⚠️ [AI] Mensaje duplicado detectado (messageId: ${messageId}). Ignorando.`);
-      return '';
-    }
-    markMessageId(messageId);
+  let prompt = promptOrOptions;
+  let ctx = context;
+  let media = mediaItems;
+  let lockKey = userLockKey;
+  let msgId = messageId;
+  let tls = tools;
+  let handler = toolsHandler;
+  let tId = tenantId;
+  let superseded = isSuperseded;
+  let fbOptions = fallbackContextOptions;
+
+  if (typeof promptOrOptions === 'object' && promptOrOptions !== null && !Array.isArray(promptOrOptions)) {
+    prompt = promptOrOptions.prompt || promptOrOptions.systemPrompt;
+    ctx = promptOrOptions.context || promptOrOptions.messages || [];
+    media = promptOrOptions.mediaItems || [];
+    lockKey = promptOrOptions.userLockKey || null;
+    msgId = promptOrOptions.messageId || null;
+    tls = promptOrOptions.tools || [];
+    handler = promptOrOptions.toolsHandler || null;
+    tId = promptOrOptions.tenantId || null;
+    superseded = promptOrOptions.isSuperseded || null;
+    fbOptions = promptOrOptions.fallbackContextOptions || null;
   }
 
-  if (!userLockKey) {
-    return _processAIRequest(prompt, context, mediaItems, tools, toolsHandler, tenantId, isSuperseded);
+  // ── Deduplicación por messageId ────────────────────────────────────────────
+  if (msgId) {
+    if (processedMessageIds.has(msgId)) {
+      console.warn(`⚠️ [AI] Mensaje duplicado detectado (messageId: ${msgId}). Ignorando.`);
+      return '';
+    }
+    markMessageId(msgId);
+  }
+
+  if (!lockKey) {
+    return _processAIRequest(prompt, ctx, media, tls, handler, tId, superseded, fbOptions);
   }
 
   // ── Cola de procesamiento secuencial por userLockKey ───────────────────────
-  const prevTask = userQueues.get(userLockKey) || Promise.resolve();
+  const prevTask = userQueues.get(lockKey) || Promise.resolve();
   
   const nextTask = (async () => {
     await prevTask.catch(() => {});
-    return _processAIRequest(prompt, context, mediaItems, tools, toolsHandler, tenantId, isSuperseded);
+    return _processAIRequest(prompt, ctx, media, tls, handler, tId, superseded, fbOptions);
   })();
 
-  userQueues.set(userLockKey, nextTask);
+  userQueues.set(lockKey, nextTask);
 
   // Limpieza para no saturar memoria
   nextTask.finally(() => {
-    if (userQueues.get(userLockKey) === nextTask) {
-      userQueues.delete(userLockKey);
+    if (userQueues.get(lockKey) === nextTask) {
+      userQueues.delete(lockKey);
     }
   }).catch(() => {});
 
@@ -1447,14 +1714,14 @@ export async function generateAIResponse(
 /**
  * Función interna que ejecuta la petición real.
  */
-async function _processAIRequest(prompt, context, mediaItems, tools, toolsHandler, tenantId = null, isSuperseded = null) {
+async function _processAIRequest(prompt, context, mediaItems, tools, toolsHandler, tenantId = null, isSuperseded = null, fallbackContextOptions = null) {
   try {
     // La memoria en RAM ha sido completamente eliminada en FASE 2.
     // 'context' ya contiene todo el historial recuperado de PostgreSQL.
     const fullContext = [...context];
 
     // ── Llamada a la cascada ────────────────────────────────────────────────
-    const aiText = await callAiProviderCascade(prompt, fullContext, mediaItems, tools, toolsHandler, tenantId, isSuperseded);
+    const aiText = await callAiProviderCascade(prompt, fullContext, mediaItems, tools, toolsHandler, tenantId, isSuperseded, fallbackContextOptions);
 
     return aiText;
   } catch (error) {
