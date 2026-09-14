@@ -19,7 +19,7 @@ import {
 } from '../services/aiMessageTracker.js';
 import { activateHumanHandoff, isUnknownInfoHandoff } from '../services/humanHandoffService.js';
 import { isHandoffActive } from '../services/humanHandoffGate.js';
-import { syncCommercialOrder } from '../services/orderCommercialService.js';
+import { syncCommercialOrder, isExplicitOpportunityRejection, handleOpportunityRejection } from '../services/orderCommercialService.js';
 import { createOperationalItem } from '../services/operationalItemService.js';
 import { emitOperationalItemCreated } from '../services/operationalItemEventService.js';
 import {
@@ -3034,6 +3034,28 @@ async function processBufferedMessage(bufferKey) {
         currentCommercialState = {};
       }
     }
+
+    // ─── GUARDA DETERMINÍSTICA DE RECHAZO / DESINTERÉS DE OPORTUNIDAD (CASE D) ───
+    const pendingOpportunityStages = ['PRODUCT_SELECTED', 'DETAILS_PROVIDED', 'SHIPPING_COORDINATED', 'PAYMENT_PENDING'];
+    const hasActiveOpportunity = pendingOpportunityStages.includes(currentCommercialState?.currentStage);
+
+    if (hasActiveOpportunity && isExplicitOpportunityRejection(userMessageText)) {
+      console.log(`🛑 [Commercial Rejection Guard] Cliente +${clientNumber} expresó rechazo de oportunidad activa ("${currentCommercialState.productName || currentCommercialState.productId}"). Transicionando a EXPLORING.`);
+      try {
+        const rejectionRes = await handleOpportunityRejection({
+          tenant,
+          customer,
+          clientNumber,
+          prismaClient: prisma
+        });
+        if (rejectionRes?.success && rejectionRes?.state) {
+          currentCommercialState = rejectionRes.state;
+        }
+      } catch (rejErr) {
+        console.warn('⚠️ [Commercial Rejection Guard] Error procesando rechazo de oportunidad:', rejErr.message);
+      }
+    }
+
     await prisma.customer.update({ where: { id: customer.id }, data: { sessionUpdatedAt: now } });
 
     // ─── RECUPERACIÓN DE HISTORIAL DESDE POSTGRESQL ───
@@ -4968,6 +4990,7 @@ Atributos/Tags: ${Array.isArray(product.tags) ? product.tags.join(', ') : ''}
               tenantId: tenant.id,
               customerId: customer.id,
               chatId: chat.id,
+              currentCommercialState: cState,
               currentStage: stage,
               orderId: cState.orderId || null,
               productId: cState.productId || null,

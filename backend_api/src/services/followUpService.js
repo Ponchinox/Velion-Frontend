@@ -1,6 +1,7 @@
 import defaultPrisma from '../db.js';
 import { isHandoffActive } from './humanHandoffGate.js';
 import { evaluateFollowUpDecision, shouldRunGateA } from './followUpDecisionService.js';
+import { isExplicitOpportunityRejection, cleanCommercialDraft } from './orderCommercialService.js';
 
 /**
  * followUpService.js — Núcleo de Lógica Comercial y Schedulig para Follow-ups V1
@@ -322,6 +323,11 @@ export function shouldCreateOrRefreshFollowUp({
   activeOrder = null,
   lastInboundMessage = null
 }) {
+  // 0. Detección determinística de rechazo explícito de la oportunidad comercial
+  if (isExplicitOpportunityRejection(lastInboundMessage?.content)) {
+    return { eligible: false, reason: 'OPPORTUNITY_REJECTED' };
+  }
+
   // 1. Tenant activo y con Follow-ups habilitado
   if (!tenant || tenant.active === false || tenant.followUpEnabled !== true) {
     return { eligible: false, reason: 'TENANT_FOLLOW_UP_DISABLED' };
@@ -419,6 +425,45 @@ export async function evaluateAndScheduleFollowUp({
     productName: resolvedProductName,
     orderId: resolvedOrderId
   };
+
+  // ─── INVARIANTE CRÍTICO: RECHAZO EXPLÍCITO DE LA OPORTUNIDAD ACTIVA (CASE D) ───
+  const inboundText = lastInboundMessage?.content;
+  if (isExplicitOpportunityRejection(inboundText)) {
+    console.log(`🛑 [FollowUp Invariant] Inbound expresa rechazo explícito de oportunidad ("${resolvedProductName || resolvedProductId}"). Bloqueando schedule/refresh y cancelando secuencia activa.`);
+
+    // 1. Cancelar secuencia activa existente de inmediato
+    const existingSeq = await db.followUpSequence.findFirst({
+      where: {
+        tenantId: tenant?.id || tenantId,
+        customerId: customer?.id || customerId,
+        status: { in: ['SCHEDULED', 'PROCESSING', 'NEUTRALIZED_INBOUND', 'WAITING_NEXT'] }
+      }
+    });
+
+    if (existingSeq) {
+      await db.followUpSequence.update({
+        where: { id: existingSeq.id },
+        data: {
+          status: 'CANCELLED',
+          cancelReason: 'OPPORTUNITY_REJECTED',
+          nextRunAt: null,
+          updatedAt: new Date()
+        }
+      });
+    }
+
+    // 2. Corregir commercialState del cliente si aún conservara una etapa pendiente
+    if (customer?.id && ['PRODUCT_SELECTED', 'DETAILS_PROVIDED', 'SHIPPING_COORDINATED', 'PAYMENT_PENDING'].includes(resolvedStage)) {
+      const cleanedState = cleanCommercialDraft(currentCommercialState);
+      cleanedState.currentStage = 'EXPLORING';
+      await db.customer.update({
+        where: { id: customer.id },
+        data: { commercialState: cleanedState }
+      }).catch(err => console.warn('⚠️ [FollowUp Invariant] Error actualizando customer commercialState:', err.message));
+    }
+
+    return { scheduled: false, reason: 'OPPORTUNITY_REJECTED', cancelledSequenceId: existingSeq?.id || null };
+  }
 
   // 1. Evaluación determinista de precondiciones
   const check = shouldCreateOrRefreshFollowUp({
@@ -821,6 +866,7 @@ export async function cancelFollowUpOnOrderEvent({
           cancelReason: 'ORDER_PAID',
           recoveredOrderId,
           recoveredAt,
+          nextRunAt: null,
           updatedAt: new Date()
         }
       });
@@ -831,6 +877,7 @@ export async function cancelFollowUpOnOrderEvent({
         data: {
           status: 'CANCELLED',
           cancelReason,
+          nextRunAt: null,
           updatedAt: new Date()
         }
       });

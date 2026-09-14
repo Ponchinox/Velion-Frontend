@@ -20,6 +20,7 @@ import { applyQuietHours, isValidIanaTimezone } from './followUpService.js';
 import { sanitizeOperationalText } from './operationalItemService.js';
 import { evaluateAiBudgetGuard } from './aiBudgetGuardService.js';
 import { recordTenantAiUsage } from './aiUsageService.js';
+import { isExplicitOpportunityRejection } from './orderCommercialService.js';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // ENUMS Y CONSTANTES
@@ -755,7 +756,7 @@ export function shouldEscalateToHigh({ rawDecision, context, invariantsResult })
  * Determina si Gate A debe ejecutarse para evitar crear secuencias innecesarias.
  * Solo ejecuta llamada Gemini si hay señales reales de cierre o alto riesgo.
  */
-export function shouldRunGateA({ commercialState = {}, activeOrder = null, lastInboundMessage: _lastInboundMessage = null }) {
+export function shouldRunGateA({ commercialState = {}, activeOrder = null, lastInboundMessage = null }) {
   const stage = commercialState.currentStage;
   const payMethod = String(commercialState.paymentMethod || '').toLowerCase();
   const isContraentrega = payMethod.includes('contraentrega') || payMethod.includes('efectivo') || payMethod.includes('recibir');
@@ -763,9 +764,10 @@ export function shouldRunGateA({ commercialState = {}, activeOrder = null, lastI
   const shippingComplete = Boolean(commercialState.shippingCity && commercialState.shippingAddress);
   const hasExplicitTiming = Boolean(commercialState.explicitCustomerTiming);
   const hasOrder = Boolean(activeOrder || commercialState.orderId || commercialState.activeOrderId);
+  const isRejection = isExplicitOpportunityRejection(lastInboundMessage?.content);
 
-  // Alto riesgo de venta acordada / ya cerrada
-  if (stage === 'SHIPPING_COORDINATED' || stage === 'PAYMENT_PENDING') {
+  // Alto riesgo de venta acordada / ya cerrada o rechazo explícito
+  if (stage === 'SHIPPING_COORDINATED' || stage === 'PAYMENT_PENDING' || isRejection) {
     return true;
   }
 

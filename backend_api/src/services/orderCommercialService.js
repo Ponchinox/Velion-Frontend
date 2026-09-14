@@ -40,6 +40,56 @@ export function cleanCommercialDraft(state) {
 }
 
 /**
+ * Detecta si el mensaje del usuario expresa un rechazo o desinterés explícito
+ * sobre la oportunidad o producto comercial en curso.
+ * Diferenciado de isFollowUpOptOutRequested (que es opt-out global de contacto).
+ *
+ * Casos positivos:
+ * - "No, mejor ya no me interesa el JBL"
+ * - "Ya no me interesa"
+ * - "No quiero nada, gracias"
+ * - "Ya no lo quiero" / "No lo quiero"
+ * - "No voy a comprar" / "No voy a llevar"
+ * - "Cancela el pedido" / "Cancela la orden"
+ * - "Descarto esa opción" / "Mejor ya no"
+ *
+ * Casos negativos (NO deben coincidir):
+ * - "¿No tienes otros audífonos?"
+ * - "¿No hay en color negro?"
+ * - "No sé si me quede bien"
+ * - "No puedo pagar con tarjeta?"
+ * - "¿No hacen envíos a provincia?"
+ */
+export function isExplicitOpportunityRejection(text) {
+  if (!text || typeof text !== 'string') return false;
+  const normalized = text
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .trim();
+
+  // 1. Presencia de intención alternativa, contrapropuesta comercial o cambio de producto/variante
+  // Fail-open: Si el cliente propone una alternativa o sigue explorando, NO es abandono de oportunidad.
+  const ALTERNATIVE_INTENT_PATTERN = /\b(pero\s+(?:si|quiero|prefiero|busco|deseo|tienes|muestrame)|prefiero\b|quiero\s+(?:solo\b|el\b|la\b|los\b|las\b|otr[oa]s?\b|un[oa]s?\b|mas\b)|(?:muestrame|ensename|pasame|mandame|recomiendame|tienes?|tendras?|hay)\s+(?:otr[oa]s?|mas|algun[oa]?|alternativa)|(?:que|cual|cuales)\s+otr[oa]s?|(?:puedo|se\s+puede|es\s+posible)\s+(?:pagar|recoger|hacer|enviar))\b/i;
+
+  if (ALTERNATIVE_INTENT_PATTERN.test(normalized)) {
+    return false;
+  }
+
+  // 2. Rechazo acotado a un atributo/variante, método de entrega, método de pago, cantidad o condición temporal
+  const ATTRIBUTE_OR_MODALITY_REJECTION = /\b(no\s+(?:quiero|me\s+interesa|deseo))\s+(?:el\s+|la\s+|los\s+|las\s+|ese\s+|esa\s+|este\s+|esta\s+)?(?:delivery|envio|recojo|domicilio|pagar|tarjeta|transferencia|efectivo|yape|plin|color|tamano|modelo|talla|version|\d+)\b|\bno\s+(?:quiero|voy\s+a)\s+(?:comprar|llevar|pedir)?\s*(?:hoy|ahora|por\s+hoy)\b/i;
+
+  if (ATTRIBUTE_OR_MODALITY_REJECTION.test(normalized)) {
+    return false;
+  }
+
+  // 3. Abandono explícito de la oportunidad / producto
+  const OPPORTUNITY_REJECTION_PATTERN = /\b(ya\s+no\s+(?:quiero|deseo|me\s+interesa|compro|voy\s+a\s+(?:llevar|comprar))|no\s+(?:me\s+interesa|quiero(?:\s+(?:nada|el|la|los|las|eso|ninguno|comprarl[oa]))?|deseo|lo\s+quiero|la\s+quiero|los\s+quiero|(?:lo\s+|la\s+|los\s+)?voy\s+a\s+(?:llevar|comprar|pedir))|descarto|descartado|(?:cancela|cancelar|cancelo)(?:\s+(?:el|la|mi|este|esta|todo)\s+(?:pedido|orden|compra))?|mejor\s+ya\s+no|paso,\s*gracias|paso\s+por\s+ahora)\b/i;
+
+  return OPPORTUNITY_REJECTION_PATTERN.test(normalized);
+}
+
+/**
  * Detecta pseudo-métodos de pago que intentan evadir la configuración real del tenant.
  * Ej: "asesor", "por coordinar con asesor", "coordinar con asesor", etc.
  */
@@ -559,8 +609,9 @@ export async function syncCommercialOrder({
     updatedState = cleanCommercialDraft(updatedState);
     updatedState.currentStage = 'EXPLORING';
 
+    const cancelReason = args.cancelReason || args.reason || (updatedState.activeOrderId ? 'ORDER_CANCELED' : 'OPPORTUNITY_REJECTED');
     try {
-      await cancelFollowUpOnOrderEvent({ tenantId: tenant.id, customerId: customer.id, order: { status: 'CANCELED' }, prismaClient: db });
+      await cancelFollowUpOnOrderEvent({ tenantId: tenant.id, customerId: customer.id, reason: cancelReason, prismaClient: db });
     } catch (fuErr) {
       console.warn('⚠️ [Order Security] Error cancelando seguimiento en EXPLORING:', fuErr.message);
     }
@@ -573,4 +624,61 @@ export async function syncCommercialOrder({
   });
 
   return { success: true, state: updatedState };
+}
+
+/**
+ * Maneja el rechazo o desinterés explícito del cliente hacia la oportunidad comercial actual.
+ * Transiciona el estado a EXPLORING, limpia los campos del borrador (preservando sentMediaProductIds
+ * y metadatos no efímeros) y cancela de forma determinística cualquier seguimiento activo.
+ *
+ * @param {object} params
+ * @param {object} params.tenant
+ * @param {object} params.customer
+ * @param {string} params.clientNumber
+ * @param {object} [params.prismaClient]
+ * @returns {Promise<{ success: boolean, state: object }>}
+ */
+export async function handleOpportunityRejection({
+  tenant,
+  customer,
+  clientNumber,
+  prismaClient = prisma
+}) {
+  const db = prismaClient;
+  if (!tenant?.id || !customer?.id) return { success: false, state: null };
+
+  const currentCommercialState = (typeof customer.commercialState === 'object' && customer.commercialState !== null)
+    ? customer.commercialState
+    : {};
+
+  const activeStages = ['PRODUCT_SELECTED', 'DETAILS_PROVIDED', 'SHIPPING_COORDINATED', 'PAYMENT_PENDING'];
+  const hasActiveOpportunity = activeStages.includes(currentCommercialState.currentStage);
+
+  if (!hasActiveOpportunity) {
+    return { success: false, state: currentCommercialState };
+  }
+
+  // 1. Sincronizar transición a EXPLORING usando syncCommercialOrder existente
+  const result = await syncCommercialOrder({
+    tenant,
+    customer,
+    clientNumber,
+    currentCommercialState,
+    args: { currentStage: 'EXPLORING', reason: 'OPPORTUNITY_REJECTED' },
+    prismaClient: db
+  });
+
+  // 2. Asegurar cancelación de secuencias con motivo explícito OPPORTUNITY_REJECTED
+  try {
+    await cancelFollowUpOnOrderEvent({
+      tenantId: tenant.id,
+      customerId: customer.id,
+      reason: 'OPPORTUNITY_REJECTED',
+      prismaClient: db
+    });
+  } catch (fuErr) {
+    console.warn('⚠️ [Rejection Handler] Error cancelando seguimiento:', fuErr.message);
+  }
+
+  return { success: true, state: result.state };
 }
