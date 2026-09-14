@@ -435,6 +435,118 @@ async function runResilienceCascadeTests() {
     );
 
     // ─────────────────────────────────────────────────────────────────────────
+    // Test 11: CASE C QUALITY FIX — COMPACT FALLBACK CONVERSATION
+    // ─────────────────────────────────────────────────────────────────────────
+    console.log('\n--- 11. CASE C QUALITY FIX: COMPACT FALLBACK CONVERSATION ---');
+
+    // Context with active conversation (history > 0)
+    const activeConversationContext = buildCompactFallbackContext({
+      systemPrompt: 'System Prompt Original',
+      messages: [
+        { role: 'user', content: 'Hola' },
+        { role: 'model', content: 'Hola, ¿en qué puedo ayudarte?' },
+        { role: 'user', content: 'Tienes video del jbl?' }
+      ],
+      activeProduct,
+      userMessageText: 'Tienes video del jbl?',
+      businessName: 'AudioStore',
+      mediaIntentAuthorized: true,
+      canonicalAssetValidated: true
+    });
+
+    // A. ACTIVE_CONVERSATION_NO_REGREETING
+    assert(
+      'ACTIVE_CONVERSATION_NO_REGREETING: Compact prompt forbids re-greeting when history exists',
+      activeConversationContext.systemPrompt.includes('ESTÁ ESTRICTAMENTE PROHIBIDO volver a saludar') &&
+      activeConversationContext.systemPrompt.includes('Esta conversación ya está en curso')
+    );
+
+    // B. NO_IMPLEMENTATION_LEAK
+    const forbiddenInternalTerms = [
+      'el sistema enviará',
+      'será enviada automáticamente',
+      'enviará automáticamente',
+      'pendingMedia',
+      'attached automatically',
+      'auto-send'
+    ];
+    const hasLeakInPrompt = forbiddenInternalTerms.some(term =>
+      activeConversationContext.systemPrompt.toLowerCase().includes(term.toLowerCase())
+    );
+    assert(
+      'NO_IMPLEMENTATION_LEAK: Compact prompt contains 0 internal leak phrasing',
+      !hasLeakInPrompt &&
+      activeConversationContext.systemPrompt.includes('[GUARDRAIL DE IMPLEMENTACIÓN]') &&
+      activeConversationContext.systemPrompt.includes('NUNCA menciones ni reveles mecanismos internos')
+    );
+
+    // C. NO_UNSUPPORTED_HYPE
+    assert(
+      'NO_UNSUPPORTED_HYPE: Compact prompt forbids ungrounded promotional claims/adjectives',
+      activeConversationContext.systemPrompt.includes('espectacular') &&
+      activeConversationContext.systemPrompt.includes('increíble') &&
+      activeConversationContext.systemPrompt.includes('No uses calificativos comerciales o promocionales no respaldados')
+    );
+
+    // D. MEDIA_RESPONSE_IS_BRIEF
+    assert(
+      'MEDIA_RESPONSE_IS_BRIEF: Prompt directs model to reply in a single brief sentence without forced CTAs',
+      activeConversationContext.systemPrompt.includes('Responde en UNA sola frase breve y natural') &&
+      activeConversationContext.systemPrompt.includes('Claro, aquí tienes el video')
+    );
+
+    // E. NEW_CONVERSATION_GREETING_ALLOWED
+    const emptyHistoryContext = buildCompactFallbackContext({
+      systemPrompt: 'System Prompt Original',
+      messages: [],
+      activeProduct,
+      userMessageText: 'Hola, buenas tardes',
+      businessName: 'AudioStore'
+    });
+    assert(
+      'NEW_CONVERSATION_GREETING_ALLOWED: New conversation allows initial greeting without strict prohibition',
+      emptyHistoryContext.systemPrompt.includes('Saludo inicial breve y cordial permitido') &&
+      !emptyHistoryContext.systemPrompt.includes('ESTÁ ESTRICTAMENTE PROHIBIDO volver a saludar')
+    );
+
+    // F. Simulated model response quality evaluation
+    const idealCaseCResponse = 'Claro, aquí tienes el video del JBL Go 4.';
+    const leakyCaseCResponse = '¡Hola! Claro que sí, el sistema te enviará automáticamente el video del espectacular JBL go 4 que tenemos disponible. Si tienes alguna duda sobre su precio o características, quedo atento para ayudarte.';
+
+    const verifyCaseCQuality = (text, isOngoing) => {
+      const issues = [];
+      if (isOngoing && /^(¡?hola|buenas|buen d[ií]a)/i.test(text.trim())) {
+        issues.push('REGREETING_DETECTED');
+      }
+      if (/el sistema|backend|autom[aá]ticamente|automatizaci[oó]n|tool|provider|prompt/i.test(text)) {
+        issues.push('IMPLEMENTATION_LEAK');
+      }
+      if (/espectacular|incre[ií]ble|el mejor|premium|oficial|garantizado/i.test(text)) {
+        issues.push('UNSUPPORTED_HYPE');
+      }
+      const sentences = text.split(/[.!?]+/).filter(s => s.trim().length > 0);
+      if (sentences.length > 2) {
+        issues.push('RESPONSE_TOO_LONG_FOR_MEDIA_CONFIRMATION');
+      }
+      return { ok: issues.length === 0, issues };
+    };
+
+    const idealCheck = verifyCaseCQuality(idealCaseCResponse, true);
+    const leakyCheck = verifyCaseCQuality(leakyCaseCResponse, true);
+
+    assert(
+      'Ideal Case C response passes quality validation (no greeting, no leak, no hype, brief)',
+      idealCheck.ok === true && idealCheck.issues.length === 0
+    );
+    assert(
+      'Old problematic response is correctly flagged by quality criteria',
+      leakyCheck.ok === false &&
+      leakyCheck.issues.includes('REGREETING_DETECTED') &&
+      leakyCheck.issues.includes('IMPLEMENTATION_LEAK') &&
+      leakyCheck.issues.includes('UNSUPPORTED_HYPE')
+    );
+
+    // ─────────────────────────────────────────────────────────────────────────
     // Resumen Final
     // ─────────────────────────────────────────────────────────────────────────
     console.log('\n' + '═'.repeat(70));

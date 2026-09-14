@@ -571,6 +571,13 @@ export function buildCompactFallbackContext(options = {}) {
     canonicalAssetValidated = false
   } = options;
 
+  // 2. Historial de mensajes: Máximo últimas 3 interacciones útiles
+  const rawMessages = Array.isArray(messages) ? messages : [];
+  const usefulMessages = rawMessages.slice(-3);
+  const hasPriorHistory = typeof options.hasPriorHistory === 'boolean'
+    ? options.hasPriorHistory
+    : (rawMessages.length > 1 || usefulMessages.some(m => m.role === 'model' || m.role === 'assistant'));
+
   // 1. Construir System Prompt Compacto
   let compactPrompt = `Eres el asistente comercial inteligente de ${businessName}.
 Atiende con amabilidad, precisión y concisión en español. Responde en 1 a 3 oraciones.`.trim();
@@ -587,14 +594,35 @@ ${activeProduct.description ? `- Descripción: ${activeProduct.description.slice
     compactPrompt += `\n\n[ESTADO COMERCIAL]: Etapa actual: ${commercialState.currentStage}.`;
   }
 
-  // Directiva sobre multimedia si ya está autorizada determinísticamente
+  // Directiva sobre multimedia cuando acompaña a la respuesta
   if (mediaIntentAuthorized && canonicalAssetValidated) {
-    compactPrompt += `\n\n[MULTIMEDIA]: La multimedia solicitada ya está autorizada y será enviada automáticamente por el sistema. Da una respuesta breve y amigable confirmándolo.`;
+    const prodRef = activeProduct?.name ? ` del ${activeProduct.name}` : '';
+    compactPrompt += `\n\n[MULTIMEDIA]:
+El cliente solicitó una imagen o video del producto actual y ese recurso acompañará esta respuesta.
+Responde en UNA sola frase breve y natural confirmando que se lo compartes.
+Ejemplo de estilo permitido:
+"Claro, aquí tienes el video${prodRef}."
+No copies literalmente el ejemplo si el contexto requiere otra variante.`;
   }
 
-  // 2. Historial de mensajes: Máximo últimas 3 interacciones útiles
-  const rawMessages = Array.isArray(messages) ? messages : [];
-  const usefulMessages = rawMessages.slice(-3);
+  // Continuidad conversacional (regla anti re-saludo)
+  if (hasPriorHistory) {
+    compactPrompt += `\n\n[CONTINUIDAD CONVERSACIONAL]:
+Esta conversación ya está en curso (hay historial previo). ESTÁ ESTRICTAMENTE PROHIBIDO volver a saludar con "Hola", "Buenas", "Buen día" o equivalentes. Continúa de forma directa y natural desde el turno anterior.`;
+  } else {
+    compactPrompt += `\n\n[CONTINUIDAD CONVERSACIONAL]:
+No existe conversación previa. Saludo inicial breve y cordial permitido.`;
+  }
+
+  // Guardrail contra fugas internas de implementación
+  compactPrompt += `\n\n[GUARDRAIL DE IMPLEMENTACIÓN]:
+NUNCA menciones ni reveles mecanismos internos como "sistema", "backend", "automatización", "modelo", "proveedor", "herramienta", "tool", "prompt" o "proceso interno" al hablar con el cliente.`;
+
+  // Precisión comercial, contención de hype e identidad
+  compactPrompt += `\n\n[ESTILO COMERCIAL Y PRECISIÓN FACTUAL]:
+- No uses calificativos comerciales o promocionales no respaldados por datos canónicos. Evita términos como "espectacular", "increíble", "el mejor", "premium", "original", "oficial", "garantizado", salvo que consten expresamente en los datos del producto.
+- Sé amable, claro y profesional sin inventar atributos ni exagerar.
+- Conversa con naturalidad: no digas espontáneamente "soy una IA" ni "soy un sistema", pero tampoco afirmes ser humano si el cliente pregunta directamente por tu identidad.`;
 
   const compactMessages = usefulMessages.map((m, idx) => {
     const isLast = idx === usefulMessages.length - 1;
