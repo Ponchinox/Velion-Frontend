@@ -3,6 +3,7 @@ import fs from 'fs';
 import path from 'path';
 import bcrypt from 'bcryptjs';
 import { encryptText } from '../utils/cryptoUtils.js';
+import { invalidateGlobalPromptCache } from '../services/globalConfigService.js';
 
 // Claves de configuración que se gestionan en la tabla SystemConfig de PostgreSQL
 const CONFIG_KEYS = [
@@ -593,6 +594,7 @@ export async function saveGlobalConfig(req, res) {
       );
 
     await Promise.all(upsertPromises);
+    invalidateGlobalPromptCache();
     return res.json({ message: 'Configuración global actualizada con éxito en PostgreSQL.' });
   } catch (error) {
     console.error('Error en saveGlobalConfig:', error);

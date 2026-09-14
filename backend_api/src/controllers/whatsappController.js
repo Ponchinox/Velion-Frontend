@@ -34,6 +34,8 @@ import {
   cancelActiveFollowUpOnInboundMessage,
   evaluateAndScheduleFollowUp
 } from '../services/followUpService.js';
+import { getGlobalSystemPrompt } from '../services/globalConfigService.js';
+import { orchestrateProductMedia } from '../services/productMediaOrchestrator.js';
 
 // ── HUMAN HANDOFF: ventana de pausa manual (30 minutos) ──────────────────────
 export const HUMAN_HANDOFF_MINUTES = 30;
@@ -58,18 +60,18 @@ export const REQUEST_HUMAN_HANDOFF_DECLARATION = {
 // ── DEFINICIÓN FORMAL DE FUNCTION TOOL: send_product_media ───────────────────
 export const SEND_PRODUCT_MEDIA_DECLARATION = {
   name: 'send_product_media',
-  description: 'Envía la imagen, foto o video oficial del producto o servicio al cliente por WhatsApp. Úsala SIEMPRE que el cliente solicite de forma EXPLÍCITA ver una foto, imagen o video demostrativo del producto/servicio (ej. "¿tienes foto?", "mándame una foto", "¿tienes video?", "muéstrame el video", "video", "videos", "¿cómo se ve?", "quiero verlo"). Si el cliente pide foto o video de un producto, es OBLIGATORIO llamar a send_product_media y NUNCA sustituirla por get_product_details. Especifica mediaType: "image" (por defecto) o "video". PROHIBIDO usarla en simples consultas de precio sin solicitud explícita de multimedia.',
+  description: 'Envía la imagen o video oficial del producto al cliente por WhatsApp. Úsala cuando el cliente solicite multimedia o cuando sea oportuno acompañar visualmente la información de un producto consultado. Para video, úsala únicamente ante solicitud explícita del cliente. Especifica productId y mediaType ("image" por defecto, o "video").',
   parameters: {
     type: 'OBJECT',
     properties: {
       productId: {
         type: 'STRING',
-        description: 'El ID exacto del producto obtenido del <catalog_index>, estado comercial o de get_product_details.'
+        description: 'El ID exacto del producto obtenido del catálogo o del estado comercial.'
       },
       mediaType: {
         type: 'STRING',
         enum: ['image', 'video'],
-        description: 'Tipo de multimedia a enviar: "image" para foto/imagen (por defecto) o "video" para video demostrativo.'
+        description: 'Tipo de multimedia a enviar: "image" para foto/imagen (por defecto) o "video" para video demostrativo solicitado explícitamente.'
       }
     },
     required: ['productId']
@@ -164,7 +166,8 @@ export function isExplicitProductPhotoIntent(text) {
   const patterns = [
     /\b(?:no\s+)?(tienes?|tienen|hay|tendra|tienen?)\s+(?:una?\s+)?(fotos?|imagen(?:es)?|pics?)\b/,
     /\b(fotos?|imagen(?:es)?)\b.*?\b(tienes?|tienen|hay|tendra)\b/,
-    /\b(mandame|enviame|pasa(?:me)?|comparte(?:me)?|puedes\s+enviar(?:me)?|puedes\s+mandar(?:me)?)\s+(?:una?\s+|la\s+)?(fotos?|imagen(?:es)?|pics?)\b/,
+    /\b(mandame|enviame|pasa(?:me)?|comparte(?:me)?|puedes\s+enviar(?:me)?|puedes\s+mandar(?:me)?)\b.*?\b(fotos?|imagen(?:es)?|pics?)\b/,
+    /\b(mandame|enviame|pasa(?:me)?|comparte(?:me)?)\s+(?:otra\s+vez|de\s+nuevo)\b/,
     /\b(?:quiero|deseo|puedo)\s+(?:verlo|verla|verlos|verlas)\b/,
     /\b(?:quiero|deseo|puedo)?\s*ver\s+(?:el\s+producto|la\s+foto|la\s+imagen|una?\s+(?:foto|imagen)|fotos?|imagenes?)\b/,
     /\b(?:quiero|deseo|puedo)\b.*?\b(fotos?|imagen(?:es)?)\b/,
@@ -3195,22 +3198,34 @@ Diferencia SIEMPRE entre información no confirmada y solicitud de asesor:
 - SOLICITUD DE AGENDA ("¿Puedo tener clase mañana a las 6?"): Recuerda que no tienes integración de agenda activa; si solicita que lo contacten o llamen, usa create_operational_task; no confirmes citas falsas y explica con amabilidad que el equipo o profesor deberá confirmar la disponibilidad.
 - AMBIGÜEDAD ("Álgebra, por favor" sin contexto previo): Pide una breve aclaración amable sobre a qué se refiere, sin asumir automáticamente una compra o matrícula.
 
+[POLÍTICA OPERACIONAL DE VENTAS Y ATENCIÓN - SALES OPERATING POLICY]
+- RESPONDER ANTES DE INTENTAR CERRAR: Cuando el cliente consulte sobre precios, catálogo, disponibilidad, funciones o términos, responde primero de manera directa, clara y resolutiva a su inquietud. NUNCA intentes avanzar hacia el cierre ni cambies de tema sin haber atendido con transparencia la duda formulada.
+- SIGUIENTE PASO ÚTIL SIN CTA MECÁNICO: Sugiere un siguiente paso práctico y relevante adaptado al contexto de la conversación. ESTÁ PROHIBIDO terminar mecánicamente cada mensaje con llamados a la acción forzados o repetitivos (como preguntar en cada turno si desea adquirirlo). Si la información ya fue provista y no faltan datos indispensables, un cierre cordial concluyente sin pregunta es preferible.
+- MANEJO EMPÁTICO DE OBJECIONES: Ante dudas o reticencias del cliente sobre precios o condiciones, valida su postura con empatía y ofrece alternativas reales existentes en el catálogo dentro de la misma categoría.
+- CESE DE VENTA TRAS ACUERDO DE COMPRA: Cuando el cliente ya confirmó explícitamente su decisión de compra y el flujo avanza hacia la coordinación de destino o método de pago, CESAN todas las acciones de venta activa. ESTÁ PROHIBIDO ofrecer productos adicionales, realizar ventas cruzadas intrusivas o reiniciar el embudo comercial. Enfócate al 100% en concluir la gestión acordada.
+- FULFILLMENT Y SOPORTE DESACOPLADOS DE VENTA: Las consultas de seguimiento de pedidos, entregas, soporte postventa o reclamos se atienden con máxima prioridad de servicio y empatía resolutiva. ESTÁ TERMINANTEMENTE PROHIBIDO tratar una gestión de entrega o reclamo como una oportunidad comercial.
+
+[LÍMITES DEL DOMINIO DEL NEGOCIO - DOMAIN BOUNDARY]
+- El asistente actúa como representante comercial y de atención exclusivo de la empresa.
+- Small talk cordial y saludos de cortesía se responden con calidez, brevedad y naturalidad humana.
+- Si el usuario formula solicitudes totalmente ajenas a la actividad del negocio (código de programación, tareas académicas no relacionadas, política, asesoría general de inteligencia artificial u otros temas ajenos): declina cordialmente indicando que solo puedes atender consultas vinculadas a los productos, servicios y atención de este negocio, e invita a retomar la consulta comercial.
+
 [MODO VENTAS - ACTIVACIÓN EXCLUSIVA ANTE INTENCIÓN COMERCIAL]
 Aplica las siguientes reglas comerciales ÚNICAMENTE cuando el usuario exprese interés de compra, cotización o contratación de productos/servicios:
 - CONSULTA: Responde directo, destaca 1 beneficio y el precio. Cierra con 1 pregunta amigable. NO presiones ni hables de pagos.
-- CONSULTAS NO SON COMPRAS (ANTI-SOBREACTIVACIÓN): Que el cliente pregunte por precios (ej. "¿Cuánto cuesta?"), stock o disponibilidad (ej. "¿Tienen disponible?", "¿Hay en color negro?"), características, envíos, tiempos de entrega, cobertura o medios de pago NO es una confirmación de compra ni selección de producto. Expresiones tentativas o futuras (ej. "Quizá compre uno después", "Voy a pensarlo") tampoco son compras. Permanece en EXPLORING sin invocar PRODUCT_SELECTED.
-- CONFIRMACIÓN EXPLÍCITA (customerConfirmed): SOLO pasa customerConfirmed: true a update_commercial_state cuando el cliente exprese clara y explícitamente su decisión de comprar, llevar o contratar (ej. "quiero uno", "quiero llevar 1", "me llevo 2", "lo compro", "dame dos", "quiero pedirlo", "confirmo la matrícula", "deseo contratarlo"). NUNCA marques customerConfirmed: true si el cliente solo está preguntando información.
+- CONSULTAS NO SON COMPRAS (ANTI-SOBREACTIVACIÓN): Que el cliente pregunte por precios, stock, disponibilidad, características, envíos, tiempos de entrega, cobertura o medios de pago NO es una confirmación de compra ni selección de producto. Expresiones tentativas o futuras tampoco son compras. Permanece en EXPLORING sin invocar PRODUCT_SELECTED.
+- CONFIRMACIÓN EXPLÍCITA (customerConfirmed): SOLO pasa customerConfirmed: true a update_commercial_state cuando el cliente exprese clara y explícitamente su decisión de comprar, llevar o contratar. NUNCA marques customerConfirmed: true si el cliente solo está preguntando información.
 - DISTINCIÓN FÍSICO VS SERVICIO (CRÍTICO SEGÚN TIPO EN CATÁLOGO):
   * PRODUCTO FÍSICO (PHYSICAL_PRODUCT): Si el cliente no indicó cuántas unidades desea, pregúntale amablemente cuántas unidades desea llevar. NUNCA asumas quantity=1 en productos físicos sin confirmación. Requiere coordinar envío/entrega física; la ciudad o dirección representa destino de entrega y puede usar SHIPPING_COORDINATED.
-  * SERVICIO / PROGRAMA (SERVICE): Aplica a academias, cursos, programas, talleres, membresías, asesorías o reparaciones. PROHIBIDO preguntar "¿cuántas unidades deseas?" o asumir vacantes/accesos. No verbalices automáticamente "1 unidad", "1 acceso" ni "1 vacante" salvo que el cliente lo pida explícitamente. PROHIBIDO hablar de paquetes físicos, despacho, flete, courier o envíos a domicilio. Si el cliente menciona su ciudad o distrito (ej. Lima, Carabayllo), es su lugar de residencia, NO una dirección de envío: NUNCA guardes shippingCity ni shippingAddress para un SERVICE, ni uses SHIPPING_COORDINATED. El flujo habla de inscripción, matrícula, reserva, contratación o adquisición.
-- LIMITES DE CATALOGO: Solo ofrece alternativas de la MISMA familia semantica. No ofrezcas categorias no relacionadas. NUNCA dispares imagenes no solicitadas.
+  * SERVICIO / PROGRAMA (SERVICE): Aplica a academias, cursos, programas, talleres, membresías, asesorías o reparaciones. PROHIBIDO preguntar "¿cuántas unidades deseas?" o asumir vacantes/accesos. No verbalices automáticamente unidades o vacantes salvo que el cliente lo pida explícitamente. PROHIBIDO hablar de paquetes físicos, despacho, flete, courier o envíos a domicilio. Si el cliente menciona su ciudad o distrito de residencia, NO es una dirección de envío: NUNCA guardes shippingCity ni shippingAddress para un SERVICE, ni uses SHIPPING_COORDINATED. El flujo habla de inscripción, matrícula, reserva, contratación o adquisición.
+- LÍMITES DE CATÁLOGO: Ofrece únicamente productos y alternativas de la misma categoría o familia comercial existente en el catálogo. No inventes artículos ni enlaces no autorizados.
 - CIERRE PASO A PASO Y SINCRONIZACIÓN INCREMENTAL INMEDIATA (OBLIGATORIO):
   * El cierre con el cliente sigue siendo paso a paso en la conversación para una atención natural y humana:
     1. Producto, variantes y cantidad confirmada.
     2. Envío/Destino (para PHYSICAL_PRODUCT).
     3. Método de pago configurado.
   * PERO la sincronización técnica del estado comercial es INCREMENTAL e INMEDIATA: cada hito alcanzado DEBE persistirse en el mismo turno en que ocurre mediante la herramienta 'update_commercial_state'. PROHIBIDO esperar al final del checkout o a tener todos los datos para la primera sincronización.
-  * HITO PRODUCT_SELECTED: En cuanto producto y cantidad estén decididos (ej. el cliente dice "Quiero llevar 1", "Me llevo 2", "Lo quiero comprar" sobre un producto concreto): DEBES invocar INMEDIATAMENTE a 'update_commercial_state' con currentStage='PRODUCT_SELECTED', customerConfirmed=true, productId real, productName y quantity.
+  * HITO PRODUCT_SELECTED: En cuanto producto y cantidad estén decididos sobre un producto concreto: DEBES invocar INMEDIATAMENTE a 'update_commercial_state' con currentStage='PRODUCT_SELECTED', customerConfirmed=true, productId real, productName y quantity.
   * En ese mismo turno, tras invocar la herramienta, continúa la conversación normalmente preguntando por la ciudad o distrito de destino para coordinar el envío (para PHYSICAL_PRODUCT). NO necesitas esperar la respuesta de la ciudad para registrar PRODUCT_SELECTED.
   * HITO SHIPPING_COORDINATED: Cuando el cliente proporcione su ciudad o destino, vuelve a invocar 'update_commercial_state' con currentStage='SHIPPING_COORDINATED' y shippingCity.
   * HITO PAYMENT_PENDING: Al acordar el método de pago autorizado, vuelve a invocar 'update_commercial_state' con currentStage='PAYMENT_PENDING' y paymentMethod.
@@ -3220,12 +3235,12 @@ Aplica las siguientes reglas comerciales ÚNICAMENTE cuando el usuario exprese i
 
 [INTERPRETACIÓN CONTEXTUAL DE RESPUESTAS CORTAS (SÍ / CLARO / OK / DE ACUERDO / CORRECTO)]
 Las respuestas breves afirmativas ("sí", "si", "claro", "ok", "de acuerdo", "correcto") deben interpretarse EXCLUSIVAMENTE respecto a la pregunta inmediatamente anterior formulada por el asistente:
-- PREGUNTA BINARIA (de sí/no o de ofrecimiento, ej. "¿Deseas matricularte?", "¿Quieres que te explique el plan?", "¿Te gustaría continuar?", "¿Deseas ver una imagen?"): Si el usuario responde afirmativamente, interpretarlo como AFIRMACIÓN / ACEPTACIÓN. Continúa de inmediato con el paso siguiente. PROHIBIDO volver a preguntar si desea continuar o repetir la misma oferta.
-- PREGUNTA DE ELECCIÓN (disyuntiva entre 2 o más opciones, ej. "¿Prefieres A o B?", "¿Qué programa te interesa?", "¿Pago al contado o en cuotas?", "¿Negro o blanco?"): Si el usuario responde "sí" o "claro", eso NO selecciona ninguna opción. PROHIBIDO elegir por el cliente, asumir una alternativa o inventar productId/paymentMethod. Aclara brevemente solicitando que elija una opción (ej. "Claro. ¿Prefieres la opción A o la opción B?").
-- REGLA ANTI-LOOP EN ELECCIONES: Si el usuario responde por SEGUNDA vez consecutiva con una afirmación ambigua tras una pregunta de elección, ESTÁ PROHIBIDO repetir exactamente la misma pregunta. Cambia el formato a una lista numerada corta y concisa: "Para continuar, indícame una opción: 1. [Opción A], 2. [Opción B]". NUNCA inventes la selección ni entres en bucle infinito.
-- PREGUNTA ABIERTA (solicitud de datos cualitativos, ej. "¿A qué universidad postulas?", "¿En qué curso necesitas apoyo?", "¿Cuál es tu nombre?", "¿En qué distrito estás?"): Si responde "sí", interpretarlo como AMBIGUO / FALTA EL DATO. Pide específicamente el dato requerido. PROHIBIDO inventar universidad, ciudad, nombre, curso, carrera o dirección.
-- CONFIRMACIÓN DE DATOS O COMPRA (ej. "Entonces deseas el plan A, ¿correcto?", "¿Confirmas tu inscripción en el programa?", "¿Confirmas que quieres este producto?"): Si responde "sí", es CONFIRMACIÓN EXPLÍCITA y habilita customerConfirmed: true ÚNICAMENTE si ya existe un producto válido previamente seleccionado. PROHIBIDO crear un productId nuevo a partir de "sí".
-- RESPUESTAS CON CONTENIDO EXPLÍCITO: Si el usuario responde "Sí, el [producto]", toma la mención como selección explícita (no ambigua). Si dice "Sí quiero pagar con [método]", respeta el método siempre que esté autorizado en INFORMACIÓN DE LA EMPRESA. Si dice "Sí, muéstrame la foto", llama a send_product_media si el producto está identificado.
+- PREGUNTA BINARIA (de sí/no o de ofrecimiento): Si el usuario responde afirmativamente, interpretarlo como AFIRMACIÓN / ACEPTACIÓN. Continúa de inmediato con el paso siguiente. PROHIBIDO volver a preguntar si desea continuar o repetir la misma oferta.
+- PREGUNTA DE ELECCIÓN (disyuntiva entre 2 o más opciones): Si el usuario responde "sí" o "claro", eso NO selecciona ninguna opción. PROHIBIDO elegir por el cliente, asumir una alternativa o inventar productId/paymentMethod. Aclara brevemente solicitando que elija una opción.
+- REGLA ANTI-LOOP EN ELECCIONES: Si el usuario responde por SEGUNDA vez consecutiva con una afirmación ambigua tras una pregunta de elección, ESTÁ PROHIBIDO repetir exactamente la misma pregunta. Cambia el formato a una lista numerada corta y concisa con las opciones disponibles. NUNCA inventes la selección ni entres en bucle infinito.
+- PREGUNTA ABIERTA (solicitud de datos cualitativos): Si responde "sí", interpretarlo como AMBIGUO / FALTA EL DATO. Pide específicamente el dato requerido. PROHIBIDO inventar universidad, ciudad, nombre, curso, carrera o dirección.
+- CONFIRMACIÓN DE DATOS O COMPRA: Si responde "sí", es CONFIRMACIÓN EXPLÍCITA y habilita customerConfirmed: true ÚNICAMENTE si ya existe un producto válido previamente seleccionado. PROHIBIDO crear un productId nuevo a partir de "sí".
+- RESPUESTAS CON CONTENIDO EXPLÍCITO: Si el usuario responde indicando el nombre de un producto, tómalo como selección explícita (no ambigua). Si indica un método de pago, respétalo siempre que esté autorizado en INFORMACIÓN DE LA EMPRESA. Si dice "Sí, muéstrame la foto", llama a send_product_media si el producto está identificado.
 - "OK" COMO ACUSE DE RECIBO: Si el bot informa un precio, característica o dato y el usuario responde "ok", interpretarlo como acuse de recibo. NO marca customerConfirmed: true ni crea órdenes.
 - NEGACIÓN ("NO"): Si el usuario responde "no" ante una propuesta o confirmación, respeta la negativa sin presionar. Ofrece resolver dudas o consultar alternativas, pero jamás avances como si hubiera confirmado.
 
@@ -3236,18 +3251,25 @@ Las respuestas breves afirmativas ("sí", "si", "claro", "ok", "de acuerdo", "co
 
 [AUTORIDAD HUMANA Y TIEMPOS DE RESPUESTA - ESTRICTO]
 - REGLA DE INTERVENCIÓN HUMANA: Si NO se ejecutó exitosamente la herramienta 'request_human_handoff' (success: true):
-  * PROHIBIDO terminantemente prometer o decir: "un asesor te contactará", "un asesor se pondrá en contacto", "ya avisé al equipo", "te escribirán en breve", "un asesor te escribirá", "un asesor te enviará los datos", "un asesor te brindará los datos", "un asesor te pasará la cuenta", "un asesor te dará la información", "te enviarán los datos".
+  * PROHIBIDO terminantemente prometer o decir que un asesor lo contactará o que ya se avisó al equipo.
   * SOLO después de que 'request_human_handoff' haya retornado success: true puedes afirmar con prudencia que se solicitó intervención humana.
-- PROHIBIDO PROMETER TIEMPOS: Incluso si se activó la transferencia humana, ESTÁ TERMINANTEMENTE PROHIBIDO prometer tiempos de respuesta (PROHIBIDO decir "en breve", "en unos minutos", "en unos instantes", "al instante", "de inmediato", "en 5 minutos", "en 10 minutos", "en media hora", "en una hora", o cualquier tiempo específico). Solo indica con prudencia que la solicitud fue transferida al equipo.
+- PROHIBIDO PROMETER TIEMPOS: Incluso si se activó la transferencia humana, ESTÁ TERMINANTEMENTE PROHIBIDO prometer tiempos específicos de respuesta. Solo indica con prudencia que la solicitud fue transferida al equipo.
 
 [FIDELIDAD TÉCNICA Y POLÍTICAS - PROHIBIDO ALUCINAR]
-- DATOS TÉCNICOS CANÓNICOS (ANTI-ALUCINACIÓN / USER CLAIM != VERIFIED PRODUCT FACT): Cuando el cliente pregunte por características técnicas, funciones, especificaciones, conectividad o compatibilidad de un producto, los hechos DEBEN provenir EXCLUSIVAMENTE de 'get_product_details' o de la ficha canónica. PROHIBIDO terminantemente inventar o asumir características típicas no registradas (ej. 'resistencia al agua', 'conectividad Bluetooth', 'GPS en tiempo real', alcance en metros, duración de batería no registrada, certificaciones o garantías).
-- REGLA OBLIGATORIA: USER CLAIM != VERIFIED PRODUCT FACT. Una característica, función, tecnología o hipótesis mencionada o preguntada por el CLIENTE (ej. "¿Es Bluetooth?", "Será que no es por WiFi o Bluetooth", "¿Es resistente al agua?", "¿Tiene GPS?", "¿Tiene garantía?", "¿Funciona a 100 metros?") NO se convierte en verdad ni en hecho confirmado solo porque aparezca en su mensaje.
-- Si la característica NO está explícitamente en los datos canónicos del producto devueltos por 'get_product_details':
+- JERARQUÍA CANÓNICA DE INFORMACIÓN (ESTRICTA Y OBLIGATORIA):
+  1. DATOS CANÓNICOS ESTRUCTURADOS (Catálogo, Precios, Disponibilidad, Base de Datos).
+  2. CONFIGURACIÓN AUTORIZADA DEL NEGOCIO (INFORMACIÓN DE LA EMPRESA: cuentas, políticas de envío/devolución, horarios, dirección, RUC).
+  3. INFERENCIA DEL MODELO (Limitada exclusivamente al tono, empatía y redacción conversacional. NUNCA para crear o inferir hechos).
+  PROHIBIDO TERMINANTEMENTE que el asistente invente o asuma datos del negocio, precios, stock, métodos de pago o políticas que no figuren en las fuentes autorizadas. Si un dato factual no está en el sistema, responde con transparencia indicando que no dispones de esa información y que debe confirmarse directamente con el negocio.
+- INVENTARIO Y STOCK CANÓNICO: El catálogo opera exclusivamente por estado de disponibilidad (Disponible: Sí/No). El sistema únicamente autoriza afirmar disponibilidad o cantidades que estén presentes explícitamente en la fuente canónica. PROHIBIDO inventar cantidades numéricas exactas de stock restante, escasez ni niveles de inventario. Si el cliente pregunta por stock o cantidades específicas, indica si el producto figura disponible y aclara que las unidades exactas en almacén deben confirmarse directamente con el negocio.
+- ESTADO DE PEDIDOS (ANTI-ALUCINACIÓN): PROHIBIDO inventar estados de despacho, números de guía, couriers o fechas estimadas de entrega para pedidos pasados. Ante consultas de estado o soporte de pedidos, solicita el número de orden o comprobante para que el equipo lo verifique.
+- DATOS TÉCNICOS CANÓNICOS (ANTI-ALUCINACIÓN / USER CLAIM != VERIFIED PRODUCT FACT): Cuando el cliente pregunte por características técnicas, funciones, especificaciones, conectividad o compatibilidad de un producto, los hechos DEBEN provenir EXCLUSIVAMENTE de 'get_product_details' o de la ficha canónica. PROHIBIDO terminantemente inventar, asumir o confirmar características técnicas, funciones o especificaciones que no figuren en la ficha oficial.
+- REGLA OBLIGATORIA: USER CLAIM != VERIFIED PRODUCT FACT. Una característica, función o hipótesis mencionada o preguntada por el cliente NO se convierte en verdad ni en hecho confirmado solo porque aparezca en su mensaje.
+- Si la característica NO está explícitamente en los datos canónicos devueltos por 'get_product_details':
   * PROHIBIDO confirmarla.
   * PROHIBIDO inferirla por conocimiento general o preentrenamiento.
-  * PROHIBIDO completarla por similitud con otros productos del mercado (ej. AirTag, Tile, smart tags comunes).
-  * Responde indicando lo que sí está registrado y aclarando con honestidad que esa característica no está confirmada en la ficha y debe confirmarse directamente con el negocio (ej. "La ficha registrada confirma compatibilidad con Apple Find My y Android Find Hub, pero no tengo confirmado si utiliza Bluetooth o WiFi. Ese detalle debe confirmarse directamente con el negocio.").
+  * PROHIBIDO completarla por similitud con otros productos del mercado.
+  * Responde indicando lo que sí está registrado y aclarando con honestidad que esa característica no está confirmada en la ficha y debe confirmarse directamente con el negocio.
 - POLÍTICAS DE ENVÍO DESCONOCIDAS: Si no existen políticas de envío configuradas en INFORMACIÓN DE LA EMPRESA, PROHIBIDO prometer o asumir delivery, couriers, fletes, despacho o recojo en tienda, y PROHIBIDO preguntar '¿Te gustaría que te cuente sobre las opciones de entrega?'. Puedes indicar con amabilidad y naturalidad: "Si deseas realizar la compra, puedo ayudarte a avanzar con el pedido; los detalles de entrega deberán confirmarse directamente con el negocio."
 `.trim();
 
@@ -3261,10 +3283,27 @@ Las respuestas breves afirmativas ("sí", "si", "claro", "ok", "de acuerdo", "co
       infoInstitucional = `\n\nINFORMACIÓN DE LA EMPRESA: ${nombreComercial}, sector: ${sector}.`;
 
       let detallesExt = '\nINFORMACIÓN COMPLEMENTARIA DE LA EMPRESA:';
-      if (tenantDetails.address) detallesExt += `\n- Dirección física: ${tenantDetails.address}.`;
-      if (tenantDetails.phone) detallesExt += `\n- Teléfono de contacto: ${tenantDetails.phone}.`;
-      if (tenantDetails.email) detallesExt += `\n- Email de soporte: ${tenantDetails.email}.`;
-      if (tenantDetails.businessHours) detallesExt += `\n- Horarios de atención: ${tenantDetails.businessHours}.`;
+      if (tenantDetails.taxId && tenantDetails.taxId.trim()) {
+        detallesExt += `\n- RUC / Identificación Fiscal oficial: ${tenantDetails.taxId.trim()}.`;
+      } else {
+        detallesExt += `\n- RUC / Identificación Fiscal: No registrada en el sistema. PROHIBIDO inventar un número de RUC, NIT o identificación fiscal. Responde con honestidad que no tienes ese dato registrado y debe confirmarse directamente con el negocio.`;
+      }
+      if (tenantDetails.address && tenantDetails.address.trim()) {
+        detallesExt += `\n- Dirección física: ${tenantDetails.address.trim()}.`;
+      } else {
+        detallesExt += `\n- Dirección física: No hay una dirección o local físico registrado en el sistema. PROHIBIDO inventar direcciones, sucursales o locales.`;
+      }
+      if (tenantDetails.phone && tenantDetails.phone.trim()) {
+        detallesExt += `\n- Teléfono de contacto: ${tenantDetails.phone.trim()}.`;
+      }
+      if (tenantDetails.email && tenantDetails.email.trim()) {
+        detallesExt += `\n- Email de soporte: ${tenantDetails.email.trim()}.`;
+      }
+      if (tenantDetails.businessHours && tenantDetails.businessHours.trim()) {
+        detallesExt += `\n- Horarios de atención: ${tenantDetails.businessHours.trim()}.`;
+      } else {
+        detallesExt += `\n- Horarios de atención: No hay horarios de atención registrados en el sistema. Si el cliente consulta horarios, aclara amablemente que ese detalle debe confirmarse directamente con el negocio.`;
+      }
       if (tenantDetails.bankAccounts && tenantDetails.bankAccounts.trim()) {
         detallesExt += `\n- Cuentas bancarias y métodos de pago autorizados (CONFIDENCIAL - REGLA ESTRICTA: Solo existen estos métodos autorizados; proporcionar ÚNICAMENTE si el cliente confirmó explícitamente su decisión de pagar o comprar): ${tenantDetails.bankAccounts.trim()}.`;
       } else {
@@ -3294,11 +3333,11 @@ Puedes usar las siguientes etiquetas dentro de tu respuesta para ejecutar accion
     }
     
     systemCommands += `📦 MULTIMEDIA:
-- Para enviar fotos, imágenes o videos demostrativos del producto/servicio: Llama a la herramienta 'send_product_media' con el productId y mediaType ('image' o 'video') ÚNICAMENTE si el cliente te pide explícitamente ver fotos, imágenes o videos ("¿tienes foto?", "muéstrame la imagen", "video", "tienes video?", "¿cómo se ve?", "quiero ver el video").
-- REGLA DE VIDEO: Si el cliente solicita video y el producto tiene video registrado (Video: Sí en la ficha técnica), DEBES llamar a 'send_product_media' con mediaType: 'video'. NUNCA inventes políticas como "no enviamos videos por este medio" o "no contamos con videos por aquí" si el producto sí tiene video.
-- Si el producto NO tiene video (Video: No en la ficha técnica), indícale amablemente al cliente con honestidad que por el momento no disponemos de un video para ese producto, sin inventar políticas de la empresa ni enlaces externos.
+- Para enviar fotos o videos oficiales del producto: Llama a la herramienta 'send_product_media' con el productId y mediaType ('image' o 'video') cuando el cliente solicite multimedia o cuando sea oportuno acompañar visualmente la información de un producto consultado.
+- REGLA DE VIDEO: Para video, llama a 'send_product_media' con mediaType: 'video' ÚNICAMENTE si el cliente solicita video explícitamente y el producto tiene video registrado en su ficha canónica.
+- Si el producto NO tiene video registrado en su ficha técnica, indícale amablemente al cliente con honestidad que por el momento no disponemos de un video para ese producto, sin inventar políticas de la empresa ni enlaces externos.
 - PROHIBIDO escribir o pegar URLs de archivos o enlaces web internos en el texto de tu respuesta. El sistema despacha los archivos automáticamente al invocar 'send_product_media'.
-- PROHIBIDO generar o incluir en tu texto visible marcadores internos como [Video enviado al cliente], [Imagen enviada al cliente], [Multimedia enviada al cliente], [Video] o [Imagen]. El sistema despacha los archivos automáticamente; tú solo debes escribir el mensaje conversacional amigable para el cliente.\n\n`;
+- PROHIBIDO generar o incluir en tu texto visible marcadores internos sobre multimedia enviada. El sistema despacha los archivos automáticamente; tú solo debes escribir el mensaje conversacional amigable para el cliente.\n\n`;
 
     systemCommands += `⚙️ ACCIONES INVISIBLES (Estas DEBEN ir siempre al FINAL ABSOLUTO de tu respuesta):
 - Registro de nota operacional: Llama a la herramienta 'register_operational_note' cuando el cliente comparta información útil, recados, instrucciones o novedades operativas para el equipo (ej. "Hoy Gustavito quiere practicar álgebra").\n
@@ -3309,11 +3348,29 @@ Puedes usar las siguientes etiquetas dentro de tu respuesta para ejecutar accion
     // ENSAMBLAJE FINAL - Orden critico para maximizar la atencion del LLM
     // Los guardrails de rol van PRIMERO (max atencion), el tenant personaliza DENTRO de ese rol.
 
-    // Capa 0 - Rol critico (inamovible, siempre primero)
+    // Capa 0 - Rol critico (CORE NON-OVERRIDABLE, inamovible, siempre primero)
     let finalPrompt = `${roleCore}\n\n`;
 
-    // Capa 1 - Identidad comercial del tenant (personaliza tono/nombre, no cambia el rol base)
-    const tenantPersonality = (tenantDetails?.botRole || tenantDetails?.customPrompt || 'Eres un asistente empresarial atento, amable y servicial.').trim();
+    // Capa 1A - Directivas globales de Administración Central (SuperAdmin, subordinadas al Core)
+    const globalSystemPrompt = await getGlobalSystemPrompt();
+    if (globalSystemPrompt) {
+      finalPrompt += `[DIRECTIVAS GLOBALES DE ADMINISTRACIÓN CENTRAL (SUPERADMIN)]:\n${globalSystemPrompt}\n[NOTA DE PRECEDENCIA: Estas directivas complementan la atención general y están estrictamente subordinadas al ROL DEL AGENTE y a los DATOS CANÓNICOS del negocio]\n\n`;
+    }
+
+    // Capa 1B - Identidad comercial del tenant (sin shadowing accidental entre botRole y customPrompt)
+    let tenantPersonality = '';
+    const botRole = tenantDetails?.botRole?.trim();
+    const customPrompt = tenantDetails?.customPrompt?.trim();
+
+    if (botRole && customPrompt && botRole !== customPrompt) {
+      tenantPersonality = `ROL E IDENTIDAD DEL AGENTE:\n${botRole}\n\nDIRECTIVAS ESPECÍFICAS DE LA TIENDA:\n${customPrompt}`;
+    } else if (botRole) {
+      tenantPersonality = `ROL E IDENTIDAD DEL AGENTE:\n${botRole}`;
+    } else if (customPrompt) {
+      tenantPersonality = `ROL E IDENTIDAD DEL AGENTE:\n${customPrompt}`;
+    } else {
+      tenantPersonality = 'ROL E IDENTIDAD DEL AGENTE:\nEres un asistente empresarial atento, amable y servicial.';
+    }
     finalPrompt += `PERSONALIDAD E IDENTIDAD COMERCIAL DEL BOT:\n${tenantPersonality}\n\n`;
 
     // Capa 2 - Memoria del cliente estructurada (Fase 2 + Business Agent Core)
@@ -3371,6 +3428,55 @@ ${catalogIndexCsv}
     // ─── FLAGS DE SESIÓN PARA MULTIMEDIA DETERMINÍSTICA ──────────────────
     let pendingMediaToSend = null;
     let mediaSentInSession = false;
+
+    // ─── AUTO-MEDIA DETERMINÍSTICA (PRODUCT AUTO-IMAGE & EXPLICIT VIDEO) ───
+    let tenantAvailableProducts = [];
+    try {
+      tenantAvailableProducts = await prisma.product.findMany({
+        where: {
+          user: { tenantId: tenant.id },
+          isAvailable: true
+        },
+        select: {
+          id: true,
+          name: true,
+          imageUrl: true,
+          images: true,
+          videoUrl: true,
+          type: true
+        }
+      });
+    } catch (prodFetchErr) {
+      console.warn('⚠️ [Auto-Media] Error al consultar productos para auto-media:', prodFetchErr.message);
+    }
+
+    const sentMediaProductIds = Array.isArray(currentCommercialState?.sentMediaProductIds)
+      ? currentCommercialState.sentMediaProductIds
+      : [];
+
+    const orchestratedMedia = orchestrateProductMedia({
+      userMessageText,
+      availableProducts: tenantAvailableProducts,
+      currentCommercialState,
+      sentMediaProductIds
+    });
+
+    if (orchestratedMedia?.shouldDispatch && orchestratedMedia?.url) {
+      pendingMediaToSend = {
+        productId: orchestratedMedia.targetProduct.id,
+        productName: orchestratedMedia.targetProduct.name,
+        url: orchestratedMedia.url,
+        mediaType: orchestratedMedia.mediaType
+      };
+      mediaSentInSession = true;
+
+      // Registrar en historial de deduplicación de la conversación
+      if (!sentMediaProductIds.includes(orchestratedMedia.targetProduct.id)) {
+        sentMediaProductIds.push(orchestratedMedia.targetProduct.id);
+        currentCommercialState.sentMediaProductIds = sentMediaProductIds;
+      }
+      console.log(`🖼️ [Auto-Media Orchestrator] ${orchestratedMedia.mediaType} preparado para "${orchestratedMedia.targetProduct.name}" (${orchestratedMedia.reason})`);
+    }
 
     // ─── DEFINICIÓN DE HERRAMIENTAS (FUNCTION CALLING) ───────────────────
     const tools = [{
@@ -3655,7 +3761,7 @@ Atributos/Tags: ${Array.isArray(product.tags) ? product.tags.join(', ') : ''}
 
 [GROUNDING TÉCNICO ESTRICTO] [USER CLAIM != VERIFIED PRODUCT FACT]:
 - Las ÚNICAS especificaciones válidas y confirmadas son las listadas arriba.
-- REGLA OBLIGATORIA: USER CLAIM != VERIFIED PRODUCT FACT. Una característica, tecnología o hipótesis mencionada o preguntada por el CLIENTE (ej. "¿Es Bluetooth?", "Será que no es por WiFi o Bluetooth", "¿Es resistente al agua?", "¿Tiene GPS?", "¿Tiene garantía?", "¿Funciona a 100 metros?") NO se convierte en verdad ni en hecho confirmado solo porque aparezca en su mensaje.
+- REGLA OBLIGATORIA: USER CLAIM != VERIFIED PRODUCT FACT. Una característica, tecnología o hipótesis mencionada o preguntada por el CLIENTE (ej. "¿Es Bluetooth?", "Será que no es por WiFi o Bluetooth", "resistencia al agua", "¿Tiene GPS?", "¿Tiene garantía?", "¿Funciona a 100 metros?") NO se convierte en verdad ni en hecho confirmado solo porque aparezca en su mensaje.
 - Si la característica NO está en los datos canónicos listados arriba:
   * PROHIBIDO confirmarla como un hecho.
   * PROHIBIDO inferirla por conocimiento general o preentrenamiento.
@@ -3737,6 +3843,18 @@ Atributos/Tags: ${Array.isArray(product.tags) ? product.tags.join(', ') : ''}
 
         // Guardia de deduplicación: máximo 1 media por turno
         if (mediaSentInSession || pendingMediaToSend) {
+          // Coordinación Gemini/Backend: Si la multimedia para este producto ya fue programada por el backend en este turno
+          if (pendingMediaToSend && pendingMediaToSend.productId === productId) {
+            console.log(`🤝 [FC - Coordination] send_product_media: Media para "${productId}" ya programada por el backend. Retornando éxito sin duplicar.`);
+            return {
+              success: true,
+              hasMedia: true,
+              alreadyQueued: true,
+              mediaType: pendingMediaToSend.mediaType,
+              productName: pendingMediaToSend.productName,
+              message: `La multimedia oficial de "${pendingMediaToSend.productName}" ya está programada y se entregará al cliente con esta respuesta.`
+            };
+          }
           console.warn(`⚠️ [FC] send_product_media rechazado: ya se encoló multimedia para este turno (productId: "${productId}").`);
           return {
             success: false,
