@@ -15,6 +15,9 @@ if (!process.env.DATABASE_URL) {
   process.env.DATABASE_URL = 'postgresql://mock:mock@localhost:5432/mock';
 }
 
+const fixedNow = new Date('2026-09-14T14:00:00-05:00').getTime();
+Date.now = () => fixedNow;
+
 import assert from 'node:assert';
 import {
   evaluateFollowUpDecision,

@@ -288,6 +288,7 @@ async function main() {
     name: 'Tienda JBL Perú',
     followUpEnabled: true,
     timezone: 'America/Lima',
+    termsAndPolicies: 'Envíos a todo el país vía Olva Courier. Tiempo de entrega: 24 a 48 horas.',
     bankAccounts: 'Transferencia BCP: 191-99887766-0-12, Yape: 996028790'
   };
   db.tenants.set(tenant.id, tenant);

@@ -202,6 +202,7 @@ export async function processFollowUpSequence(sequenceRecord, prismaClient = def
     if (!seq || seq.status !== 'PROCESSING') return;
 
     // ─── PRE-FLIGHT GATE 1 (SISTEMA, HORARIOS Y POLÍTICAS) ───
+    const now = new Date(Date.now());
 
     // 1. Tenant activo y follow-up habilitado
     if (!seq.tenant || seq.tenant.active === false || seq.tenant.followUpEnabled !== true) {
@@ -223,24 +224,7 @@ export async function processFollowUpSequence(sequenceRecord, prismaClient = def
       return { success: false, status: 'SCHEDULED', reason: 'INVALID_TIMEZONE' };
     }
 
-    // 3. Horario silencioso (09:00 - 20:00 local)
-    const now = new Date(Date.now());
-    const quietCheckedDate = applyQuietHours(now, seq.tenant.timezone);
-    if (!quietCheckedDate || quietCheckedDate.getTime() > now.getTime() + 60000) {
-      // Estamos fuera de horario local. Reprogramamos al siguiente horario permitido.
-      console.log(`🌙 [FollowUp Gate 1] Fuera de horario permitido para ${seq.customer.phone}. Reprogramando a ${quietCheckedDate?.toISOString()}.`);
-      await db.followUpSequence.update({
-        where: { id: seqId },
-        data: {
-          status: seq.currentAttempt === 0 ? 'SCHEDULED' : 'WAITING_NEXT',
-          nextRunAt: quietCheckedDate,
-          claimedAt: null
-        }
-      });
-      return { success: false, status: 'SCHEDULED', reason: 'QUIET_HOURS_RESCHEDULED' };
-    }
-
-    // 4. Human Handoff (Autoridad Fail-Closed)
+    // 3. Human Handoff (Autoridad Fail-Closed)
     const handoffActive = await isHandoffActive({
       tenantId: seq.tenantId,
       contactId: seq.chat?.contactId,
@@ -257,7 +241,7 @@ export async function processFollowUpSequence(sequenceRecord, prismaClient = def
       return { success: false, status: 'CANCELLED', reason: 'HUMAN_HANDOFF' };
     }
 
-    // 5. Supresión de cliente (Opt-out)
+    // 4. Supresión de cliente (Opt-out)
     if (seq.customer.followUpSuppressed === true) {
       console.log(`🚫 [FollowUp Gate 1] Cliente ${seq.customer.phone} tiene seguimientos suprimidos. Cancelando.`);
       await db.followUpSequence.update({
@@ -267,7 +251,7 @@ export async function processFollowUpSequence(sequenceRecord, prismaClient = def
       return { success: false, status: 'CANCELLED', reason: 'OPT_OUT' };
     }
 
-    // 6. Autoridad de Orden y Pagos (CORRECCIÓN #8: VERIFYING cancela seguimiento)
+    // 5. Autoridad de Orden y Pagos (CORRECCIÓN #8: VERIFYING cancela seguimiento)
     if (seq.order) {
       if (seq.order.paymentStatus === 'PAID') {
         const lastSentAttempt = await db.followUpAttempt.findFirst({
@@ -312,6 +296,22 @@ export async function processFollowUpSequence(sequenceRecord, prismaClient = def
         });
         return { success: false, status: 'CANCELLED', reason: 'ORDER_CANCELED' };
       }
+    }
+
+    // 6. Horario silencioso (09:00 - 20:00 local)
+    const quietCheckedDate = applyQuietHours(now, seq.tenant.timezone);
+    if (!quietCheckedDate || quietCheckedDate.getTime() > now.getTime() + 60000) {
+      // Estamos fuera de horario local. Reprogramamos al siguiente horario permitido.
+      console.log(`🌙 [FollowUp Gate 1] Fuera de horario permitido para ${seq.customer.phone}. Reprogramando a ${quietCheckedDate?.toISOString()}.`);
+      await db.followUpSequence.update({
+        where: { id: seqId },
+        data: {
+          status: seq.currentAttempt === 0 ? 'SCHEDULED' : 'WAITING_NEXT',
+          nextRunAt: quietCheckedDate,
+          claimedAt: null
+        }
+      });
+      return { success: false, status: 'SCHEDULED', reason: 'QUIET_HOURS_RESCHEDULED' };
     }
 
     // 7. Política de Canal Meta (Ventana de 24h)

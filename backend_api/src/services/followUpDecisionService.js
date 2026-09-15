@@ -20,7 +20,7 @@ import { applyQuietHours, isValidIanaTimezone } from './followUpService.js';
 import { sanitizeOperationalText } from './operationalItemService.js';
 import { evaluateAiBudgetGuard } from './aiBudgetGuardService.js';
 import { recordTenantAiUsage } from './aiUsageService.js';
-import { isExplicitOpportunityRejection } from './orderCommercialService.js';
+import { isExplicitOpportunityRejection, hasCanonicalShippingConfig } from './orderCommercialService.js';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // ENUMS Y CONSTANTES
@@ -212,6 +212,12 @@ CONCEPTOS Y CRITERIOS OPERACIONALES:
 6. REQUISITO DE CONFIANZA:
    Para "SEND_FOLLOW_UP", tu confianza (confidence) debe ser >= 0.90. Ante la menor duda o ambigüedad, sé conservador.
 
+7. BLOQUEO O ACCIÓN DEL NEGOCIO (MERCHANT BLOCKER):
+   Si el asistente indicó al cliente que un dato (método de pago, políticas/costos de entrega, cuentas bancarias, etc.) debe confirmarse directamente con el negocio/humano, o el negocio debe brindar datos para continuar, y el asistente NO formuló una pregunta concreta pendiente al cliente:
+   - pendingActor: "MERCHANT"
+   - decision: "DO_NOT_FOLLOW_UP"
+   - PROHIBIDO marcar pendingActor: "CUSTOMER" ni crear seguimiento comercial cuando la siguiente acción o dato depende de la tienda o asesor humano.
+
 Devuelve ÚNICAMENTE un objeto JSON estructurado que cumpla el esquema requerido.`;
 }
 
@@ -250,7 +256,9 @@ export async function buildSemanticDecisionContext({
         active: true,
         followUpEnabled: true,
         followUpDecisionMode: true,
-        timezone: true
+        timezone: true,
+        bankAccounts: true,
+        termsAndPolicies: true
       }
     });
   }
@@ -395,7 +403,13 @@ export async function buildSemanticDecisionContext({
       name: resolvedTenant?.name || 'Tienda',
       timezone: resolvedTenant?.timezone || 'America/Lima',
       followUpEnabled: resolvedTenant?.followUpEnabled === true,
-      followUpDecisionMode: resolvedTenant?.followUpDecisionMode || DECISION_MODES.OFF
+      followUpDecisionMode: resolvedTenant?.followUpDecisionMode || DECISION_MODES.OFF,
+      bankAccounts: resolvedTenant?.bankAccounts || null,
+      termsAndPolicies: resolvedTenant?.termsAndPolicies || null
+    },
+    capabilities: {
+      hasPaymentConfig: Boolean(resolvedTenant?.bankAccounts && resolvedTenant.bankAccounts.trim()),
+      hasShippingConfig: hasCanonicalShippingConfig(resolvedTenant)
     },
     customer: {
       id: resolvedCustomer?.id || customerId,
@@ -522,6 +536,67 @@ export function validateBackendInvariants({ rawDecision, context: _context, time
   const pendingActor = String(rawDecision.pendingActor || 'UNKNOWN').trim().toUpperCase();
   const explicitNextContactAt = rawDecision.explicitNextContactAt ? String(rawDecision.explicitNextContactAt).trim() : null;
   const reason = rawDecision.reason ? String(rawDecision.reason).slice(0, 300) : 'Sin motivo especificado';
+
+  // ── INVARIANTE 0A: MERCHANT BLOCKER GUARD (CANONICAL STATE FIRST) ──
+  // Si el cliente ya proporcionó su ubicación o avanzó en los datos de entrega, pero la tienda
+  // carece de configuración canónica de envíos (hasShippingConfig === false) o métodos de pago autorizados (hasPaymentConfig === false),
+  // y no existe una pregunta concreta que SOLO el cliente pueda responder:
+  // El avance está 100% bloqueado por el NEGOCIO (MERCHANT).
+  const cState = _context?.commercialState || {};
+  const tenantObj = _context?.tenant || {};
+  const hasShipping = Boolean(_context?.capabilities?.hasShippingConfig ?? hasCanonicalShippingConfig(tenantObj));
+  const hasPayments = Boolean(_context?.capabilities?.hasPaymentConfig ?? (tenantObj?.bankAccounts && tenantObj.bankAccounts.trim()));
+  const customerProvidedLocation = Boolean(cState.shippingCity || cState.shippingAddress);
+  const isCustomerPending = decision === DECISION_ACTIONS.SEND_FOLLOW_UP || pendingActor === PENDING_ACTORS.CUSTOMER;
+
+  if (isCustomerPending && customerProvidedLocation && (!hasShipping || !hasPayments)) {
+    // Si la tienda carece de shipping o de pagos, el cliente no puede destrabar la venta por sí mismo.
+    // Verificamos si el asistente formuló una pregunta explícita al cliente (control positivo).
+    let assistantAsksSpecificCustomerQuestion = false;
+    if (_context?.recentMessages && Array.isArray(_context.recentMessages)) {
+      const lastMsg = _context.recentMessages[_context.recentMessages.length - 1];
+      if (lastMsg && lastMsg.role === 'assistant' && typeof lastMsg.text === 'string') {
+        assistantAsksSpecificCustomerQuestion = /\?|¿/.test(lastMsg.text);
+      }
+    }
+
+    if (!assistantAsksSpecificCustomerQuestion) {
+      return {
+        valid: true,
+        normalizedDecision: DECISION_ACTIONS.DO_NOT_FOLLOW_UP,
+        confidence: Math.max(confidence, 0.95),
+        pendingActor: PENDING_ACTORS.MERCHANT,
+        conversationClosed,
+        purchaseConfirmed,
+        fulfillmentOnly,
+        reason: 'MERCHANT_BLOCKER_CANONICAL_STATE: El cliente ya indicó su ubicación pero el negocio no cuenta con configuración canónica de envíos o pagos.'
+      };
+    }
+  }
+
+  // ── INVARIANTE 0B: MERCHANT BLOCKER GUARD (SECONDARY TEXT DEFENSE) ──
+  // Si el último mensaje del asistente indicó que los datos/detalles deben confirmarse con el negocio
+  // (por falta de método de pago configurado, falta de shipping config, etc.) y NO formuló una pregunta
+  // concreta al cliente, el actor pendiente es el NEGOCIO (MERCHANT) y no procede seguimiento comercial al cliente.
+  if (isCustomerPending && _context?.recentMessages && Array.isArray(_context.recentMessages)) {
+    const lastMsg = _context.recentMessages[_context.recentMessages.length - 1];
+    if (lastMsg && lastMsg.role === 'assistant' && typeof lastMsg.text === 'string') {
+      const isMerchantBlockerText = /(?:confirmar(?:se)?\s+(?:directamente\s+)?con\s+el\s+negocio|no\s+tengo\s+(?:un\s+)?m[eé]todo\s+de\s+pago\s+registrado|detalles\s+de\s+entrega\s+deben\s+confirmarse|no\s+tengo\s+informaci[oó]n\s+de\s+despachos)/i.test(lastMsg.text);
+      const asksCustomerQuestion = /\?|¿/.test(lastMsg.text);
+      if (isMerchantBlockerText && !asksCustomerQuestion) {
+        return {
+          valid: true,
+          normalizedDecision: DECISION_ACTIONS.DO_NOT_FOLLOW_UP,
+          confidence: Math.max(confidence, 0.95),
+          pendingActor: PENDING_ACTORS.MERCHANT,
+          conversationClosed,
+          purchaseConfirmed,
+          fulfillmentOnly,
+          reason: 'MERCHANT_BLOCKER_SECONDARY_TEXT: El asistente indicó que los datos deben confirmarse directamente con el negocio.'
+        };
+      }
+    }
+  }
 
   // ── INVARIANTE 1: SEND_FOLLOW_UP RESTRICCIONES DURAS ──
   if (decision === DECISION_ACTIONS.SEND_FOLLOW_UP) {
@@ -766,8 +841,8 @@ export function shouldRunGateA({ commercialState = {}, activeOrder = null, lastI
   const hasOrder = Boolean(activeOrder || commercialState.orderId || commercialState.activeOrderId);
   const isRejection = isExplicitOpportunityRejection(lastInboundMessage?.content);
 
-  // Alto riesgo de venta acordada / ya cerrada o rechazo explícito
-  if (stage === 'SHIPPING_COORDINATED' || stage === 'PAYMENT_PENDING' || isRejection) {
+  // Alto riesgo de venta acordada / ya cerrada, datos provistos o rechazo explícito
+  if (stage === 'SHIPPING_COORDINATED' || stage === 'DETAILS_PROVIDED' || stage === 'PAYMENT_PENDING' || isRejection) {
     return true;
   }
 

@@ -19,7 +19,7 @@ import {
 } from '../services/aiMessageTracker.js';
 import { activateHumanHandoff, isUnknownInfoHandoff } from '../services/humanHandoffService.js';
 import { isHandoffActive } from '../services/humanHandoffGate.js';
-import { syncCommercialOrder, isExplicitOpportunityRejection, handleOpportunityRejection, isPostSaleOrderInquiry } from '../services/orderCommercialService.js';
+import { syncCommercialOrder, isExplicitOpportunityRejection, handleOpportunityRejection, isPostSaleOrderInquiry, hasCanonicalShippingConfig } from '../services/orderCommercialService.js';
 import { createOperationalItem } from '../services/operationalItemService.js';
 import { emitOperationalItemCreated } from '../services/operationalItemEventService.js';
 import {
@@ -285,8 +285,11 @@ export function enforceMediaAuthority(text, hasPendingMedia) {
  *    - Prohíbe prometer contacto o envío de datos por asesor ("un asesor te enviará los datos", "un asesor te brindará los detalles", "te pasará la cuenta", "ya avisé al equipo", etc.).
  * C) Sanitización de tiempos:
  *    - Elimina promesas de tiempo exacto o garantizado ("en 5 minutos", "en media hora", "en breve", "en unos minutos", etc.) incluso con handoff activo.
+ * D) Si NO hay políticas de envío configuradas (hasShippingConfig === false):
+ *    - Elimina afirmaciones no respaldadas de envíos/cobertura a ciudades ("enviamos a...", "hacemos envíos a...", "llegamos a...", etc.).
+ *    - Lo sustituye por indicación neutral de que los detalles de entrega deben confirmarse con el negocio.
  */
-export function enforceBusinessAuthority(text, { hasPaymentConfig = true, handoffSuccess = false, operationalTaskCreated = false } = {}) {
+export function enforceBusinessAuthority(text, { hasPaymentConfig = true, hasShippingConfig = true, handoffSuccess = false, operationalTaskCreated = false } = {}) {
   if (!text || typeof text !== 'string') return text || '';
 
   let result = text;
@@ -367,10 +370,26 @@ export function enforceBusinessAuthority(text, { hasPaymentConfig = true, handof
   result = result.replace(/\s*en\s+un\s+momento\b/gi, '');
   result = result.replace(/\s*de\s+inmediato\b/gi, '');
   result = result.replace(/\s*al\s+instante\b/gi, '');
+
+  // D) Si NO existe shipping config (hasShippingConfig === false):
+  if (!hasShippingConfig) {
+    const ungroundedShippingPatterns = [
+      /(?:(?:entendido|perfecto|excelente|genial|listo),?\s*)?(?:s[ií],?\s*)?(?:(?:s[ií]\s+)?(?:enviamos|hacemos\s+env[ií]os?|realizamos\s+env[ií]os?|llegamos|tenemos\s+(?:env[ií]os?|delivery|cobertura))\s+(?:a|hasta)\s+[^:.\n!,]+|te\s+lo\s+(?:enviamos|mandamos)\s+a\s+[^:.\n!,]+)(?:\s*[:.¡!,])?/gi,
+      /(?:(?:s[ií],?\s*)?(?:hacemos|contamos\s+con)\s+delivery(?:\s+(?:a|en|para)\s+[^:.\n!,]+)?)(?:\s*[:.¡!,])?/gi
+    ];
+
+    for (const pattern of ungroundedShippingPatterns) {
+      if (pattern.test(result)) {
+        result = result.replace(pattern, 'Entendido, tomo nota de tu ubicación. Los detalles de entrega deben confirmarse directamente con el negocio.');
+      }
+    }
+  }
+
   result = result.replace(/([.!?]\s+)([a-z])/g, (_, p1, p2) => p1 + p2.toUpperCase());
 
   // Deduplicación y limpieza de formato
   result = result.replace(/(?:Actualmente no tengo un método de pago registrado\. Ese dato debe confirmarse con el negocio\.\s*)+/g, 'Actualmente no tengo un método de pago registrado. Ese dato debe confirmarse con el negocio. ');
+  result = result.replace(/(?:Los detalles de entrega deben confirmarse directamente con el negocio\.\s*)+/g, 'Los detalles de entrega deben confirmarse directamente con el negocio. ');
   result = result.replace(/(?:Ese dato debe confirmarse directamente con el negocio\.\s*)+/g, 'Ese dato debe confirmarse directamente con el negocio. ');
   result = result.replace(/Actualmente no tengo un método de pago registrado\.\s*Ese dato debe confirmarse (?:directamente )?con el negocio\.\s*Ese dato debe confirmarse directamente con el negocio\./g, 'Actualmente no tengo un método de pago registrado. Ese dato debe confirmarse con el negocio.');
   result = result.replace(/\s{2,}/g, ' ').replace(/\.\s*\./g, '.').trim();
@@ -3318,7 +3337,7 @@ Aplica las siguientes reglas comerciales ÚNICAMENTE cuando el usuario exprese i
   * PERO la sincronización técnica del estado comercial es INCREMENTAL e INMEDIATA: cada hito alcanzado DEBE persistirse en el mismo turno en que ocurre mediante la herramienta 'update_commercial_state'. PROHIBIDO esperar al final del checkout o a tener todos los datos para la primera sincronización.
   * HITO PRODUCT_SELECTED: En cuanto producto y cantidad estén decididos sobre un producto concreto: DEBES invocar INMEDIATAMENTE a 'update_commercial_state' con currentStage='PRODUCT_SELECTED', customerConfirmed=true, productId real, productName y quantity.
   * En ese mismo turno, tras invocar la herramienta, continúa la conversación normalmente preguntando por la ciudad o distrito de destino para coordinar el envío (para PHYSICAL_PRODUCT). NO necesitas esperar la respuesta de la ciudad para registrar PRODUCT_SELECTED.
-  * HITO SHIPPING_COORDINATED: Cuando el cliente proporcione su ciudad o destino, vuelve a invocar 'update_commercial_state' con currentStage='SHIPPING_COORDINATED' y shippingCity.
+  * HITO SHIPPING_COORDINATED / DETAILS_PROVIDED: Cuando el cliente proporcione su ciudad o destino, vuelve a invocar 'update_commercial_state' con currentStage='SHIPPING_COORDINATED' (o 'DETAILS_PROVIDED' si no hay políticas de envío configuradas) y shippingCity.
   * HITO PAYMENT_PENDING: Al acordar el método de pago autorizado, vuelve a invocar 'update_commercial_state' con currentStage='PAYMENT_PENDING' y paymentMethod.
   * Ambos: Ofrece ÚNICAMENTE los métodos de pago autorizados en INFORMACIÓN DE LA EMPRESA. Si NO hay métodos de pago configurados por la tienda: PROHIBIDO decir "te brindo los datos", "aquí tienes los datos", "puedes pagar por...", "te paso la cuenta" o preguntar "¿Deseas que te brinde los detalles para realizar el pago?". Responde de forma neutral: "Actualmente no tengo un método de pago registrado en el sistema. Ese dato debe confirmarse directamente con el negocio." NUNCA inventes métodos de pago ni digas "por coordinar con asesor" como si fuera un método de pago.
 - NO INVENTAR: Nunca inventes métodos de pago, empresas de envío, cuentas, números o titulares. No inventes productos, ciudades, métodos de pago ni cantidades no expresadas por el cliente. Nunca afirmes que un método es el único disponible salvo que los datos dinámicos del negocio lo indiquen explícitamente.
@@ -3361,7 +3380,10 @@ Las respuestas breves afirmativas ("sí", "si", "claro", "ok", "de acuerdo", "co
   * PROHIBIDO inferirla por conocimiento general o preentrenamiento.
   * PROHIBIDO completarla por similitud con otros productos del mercado.
   * Responde indicando lo que sí está registrado y aclarando con honestidad que esa característica no está confirmada en la ficha y debe confirmarse directamente con el negocio.
-- POLÍTICAS DE ENVÍO DESCONOCIDAS: Si no existen políticas de envío configuradas en INFORMACIÓN DE LA EMPRESA, PROHIBIDO prometer o asumir delivery, couriers, fletes, despacho o recojo en tienda, y PROHIBIDO preguntar '¿Te gustaría que te cuente sobre las opciones de entrega?'. Puedes indicar con amabilidad y naturalidad: "Si deseas realizar la compra, puedo ayudarte a avanzar con el pedido; los detalles de entrega deberán confirmarse directamente con el negocio."
+- POLÍTICAS DE ENVÍO Y COBERTURA (ANTI-ALUCINACIÓN): La dirección física de la empresa NO constituye cobertura de despacho ni delivery. Si no existen políticas de envío configuradas en INFORMACIÓN DE LA EMPRESA:
+  * PROHIBIDO afirmar "enviamos a [ciudad]", "hacemos envíos a...", "llegamos a...", o prometer delivery, couriers, fletes, despacho o recojo en tienda, y PROHIBIDO preguntar '¿Te gustaría que te cuente sobre las opciones de entrega?'.
+  * Si el cliente proporciona su ciudad o dirección, puedes tomar nota de su ubicación pero DEBES aclarar: "Los detalles de entrega deberán confirmarse directamente con el negocio."
+  * PROHIBIDO inventar o asumir cobertura geográfica, tiempos de entrega (ETA) o tarifas.
 `.trim();
 
 
@@ -3380,7 +3402,7 @@ Las respuestas breves afirmativas ("sí", "si", "claro", "ok", "de acuerdo", "co
         detallesExt += `\n- RUC / Identificación Fiscal: No registrada en el sistema. PROHIBIDO inventar un número de RUC, NIT o identificación fiscal. Responde con honestidad que no tienes ese dato registrado y debe confirmarse directamente con el negocio.`;
       }
       if (tenantDetails.address && tenantDetails.address.trim()) {
-        detallesExt += `\n- Dirección física: ${tenantDetails.address.trim()}.`;
+        detallesExt += `\n- Dirección física de sede o tienda: ${tenantDetails.address.trim()}. REGLA ESTRICTA: Esta es solo la ubicación física del negocio; NO implica cobertura de despacho ni autoriza a afirmar "enviamos a [ciudad]", "hacemos envíos", ni inferir delivery a esa u otras zonas. Si no hay políticas de envío configuradas, cualquier detalle de entrega debe confirmarse con el negocio.`;
       } else {
         detallesExt += `\n- Dirección física: No hay una dirección o local físico registrado en el sistema. PROHIBIDO inventar direcciones, sucursales o locales.`;
       }
@@ -3403,7 +3425,7 @@ Las respuestas breves afirmativas ("sí", "si", "claro", "ok", "de acuerdo", "co
       if (tenantDetails.termsAndPolicies && tenantDetails.termsAndPolicies.trim()) {
         detallesExt += `\n- Políticas de envío, devolución y términos: ${tenantDetails.termsAndPolicies.trim()}.`;
       } else {
-        detallesExt += `\n- Políticas de envío, devolución y términos: No hay políticas ni tarifas de envío configuradas en el sistema. PROHIBIDO afirmar delivery, couriers, despacho o recojo, y PROHIBIDO preguntar '¿Te gustaría que te cuente sobre las opciones de entrega?'. Si el cliente consulta sobre envíos o avanza en la compra, indícale amablemente que puedes ayudarle a avanzar con el pedido y que los detalles de entrega deberán confirmarse directamente con el negocio.`;
+        detallesExt += `\n- Políticas de envío, devolución y términos: No hay políticas ni tarifas de envío configuradas en el sistema. PROHIBIDO afirmar "enviamos a [ciudad]", "hacemos envíos", delivery, couriers, despacho o recojo, y PROHIBIDO preguntar '¿Te gustaría que te cuente sobre las opciones de entrega?'. La dirección física del negocio NO es cobertura de delivery. Si el cliente indica su ciudad o consulta sobre envíos, toma nota de su ubicación y aclara que los detalles de entrega deberán confirmarse directamente con el negocio.`;
       }
       
       infoInstitucional += detallesExt;
@@ -3636,7 +3658,7 @@ ${catalogIndexCsv}
               currentStage: {
                 type: 'STRING',
                 enum: ['EXPLORING', 'PRODUCT_SELECTED', 'DETAILS_PROVIDED', 'SHIPPING_COORDINATED', 'PAYMENT_PENDING', 'PAYMENT_VERIFIED', 'COMPLETED'],
-                description: 'Etapa actual del proceso de compra. Progresión incremental obligatoria: EXPLORING -> PRODUCT_SELECTED -> DETAILS_PROVIDED -> SHIPPING_COORDINATED -> PAYMENT_PENDING -> PAYMENT_VERIFIED -> COMPLETED. PRODUCT_SELECTED significa que el cliente ya eligió explícitamente un producto/servicio concreto y mostró intención inequívoca de adquirirlo (ej. tras consultar un producto específico dice: "Quiero llevar 1", "Me llevo 2", "Lo compro", "Quiero pedir uno"). Para producto físico con producto y cantidad conocidos, DEBES llamar update_commercial_state de inmediato con PRODUCT_SELECTED y customerConfirmed: true ANTES o al momento de preguntar destino. NO esperar a tener ciudad, dirección o método de pago. SHIPPING_COORDINATED es EXCLUSIVO para productos físicos (PHYSICAL_PRODUCT) cuando el cliente ya proporcionó ciudad o dirección. Para servicios (SERVICE), pasa de DETAILS_PROVIDED directo a PAYMENT_PENDING sin pasar por SHIPPING_COORDINATED. PAYMENT_VERIFIED significa que el cliente afirma haber pagado (pendiente de verificación humana). COMPLETED es cierre conversacional y NO autoriza a marcar el pago como PAID en la BD.'
+                description: 'Etapa actual del proceso de compra. Progresión incremental obligatoria: EXPLORING -> PRODUCT_SELECTED -> DETAILS_PROVIDED -> SHIPPING_COORDINATED -> PAYMENT_PENDING -> PAYMENT_VERIFIED -> COMPLETED. PRODUCT_SELECTED significa que el cliente ya eligió explícitamente un producto/servicio concreto y mostró intención inequívoca de adquirirlo (ej. tras consultar un producto específico dice: "Quiero llevar 1", "Me llevo 2", "Lo compro", "Quiero pedir uno"). Para producto físico con producto y cantidad conocidos, DEBES llamar update_commercial_state de inmediato con PRODUCT_SELECTED y customerConfirmed: true ANTES o al momento de preguntar destino. NO esperar a tener ciudad, dirección o método de pago. SHIPPING_COORDINATED es EXCLUSIVO para productos físicos (PHYSICAL_PRODUCT) cuando el cliente ya proporcionó ciudad o dirección y la tienda tiene cobertura/políticas de envío configuradas. Si la tienda no tiene políticas de envío configuradas, pasa a DETAILS_PROVIDED registrando la ciudad. Para servicios (SERVICE), pasa de DETAILS_PROVIDED directo a PAYMENT_PENDING sin pasar por SHIPPING_COORDINATED. PAYMENT_VERIFIED significa que el cliente afirma haber pagado (pendiente de verificación humana). COMPLETED es cierre conversacional y NO autoriza a marcar el pago como PAID en la BD.'
               },
               intent: {
                 type: 'STRING',
@@ -4672,8 +4694,10 @@ Atributos/Tags: ${Array.isArray(product.tags) ? product.tags.join(', ') : ''}
 
     // ─── AUTHORITY MODEL PARA PAGOS Y ASESORES (BUSINESS AUTHORITY POST-GENERATION GUARD) ───
     const hasPaymentConfig = Boolean(tenantDetails?.bankAccounts && tenantDetails.bankAccounts.trim());
+    const hasShippingConfig = hasCanonicalShippingConfig(tenantDetails);
     cleanedText = enforceBusinessAuthority(cleanedText, {
       hasPaymentConfig,
+      hasShippingConfig,
       handoffSuccess: handoffActivatedInSession,
       operationalTaskCreated: postSaleTaskCreated
     });
@@ -4837,6 +4861,7 @@ Atributos/Tags: ${Array.isArray(product.tags) ? product.tags.join(', ') : ''}
             }
             outgoingText = enforceBusinessAuthority(outgoingText, {
               hasPaymentConfig,
+              hasShippingConfig,
               handoffSuccess: handoffActivatedInSession,
               operationalTaskCreated: postSaleTaskCreated
             });
@@ -4937,7 +4962,7 @@ Atributos/Tags: ${Array.isArray(product.tags) ? product.tags.join(', ') : ''}
               if (item.caption && typeof item.caption === 'string' && item.caption.trim()) {
                 const fallbackText = enforceBusinessAuthority(
                   enforceMediaAuthority(item.caption, false),
-                  { hasPaymentConfig, handoffSuccess: handoffActivatedInSession, operationalTaskCreated: postSaleTaskCreated }
+                  { hasPaymentConfig, hasShippingConfig, handoffSuccess: handoffActivatedInSession, operationalTaskCreated: postSaleTaskCreated }
                 );
                 if (fallbackText.trim()) {
                   try {
@@ -5043,7 +5068,7 @@ Atributos/Tags: ${Array.isArray(product.tags) ? product.tags.join(', ') : ''}
             if (item.caption && typeof item.caption === 'string' && item.caption.trim()) {
               const fallbackText = enforceBusinessAuthority(
                 enforceMediaAuthority(item.caption, false),
-                { hasPaymentConfig, handoffSuccess: handoffActivatedInSession, operationalTaskCreated: postSaleTaskCreated }
+                { hasPaymentConfig, hasShippingConfig, handoffSuccess: handoffActivatedInSession, operationalTaskCreated: postSaleTaskCreated }
               );
               if (fallbackText.trim()) {
                 try {

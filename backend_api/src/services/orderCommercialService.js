@@ -112,6 +112,35 @@ export function isPostSaleOrderInquiry(text) {
 }
 
 /**
+ * Determina de forma estricta y fail-closed si un tenant cuenta con configuración canónica de envíos.
+ * La presencia de dirección física, políticas de garantía o devoluciones NO constituye configuración de envíos.
+ * Requiere términos logísticos explícitos (envío, delivery, despacho, flete, courier).
+ *
+ * @param {object|string} tenantOrTerms - Objeto tenant o string de termsAndPolicies
+ * @returns {boolean}
+ */
+export function hasCanonicalShippingConfig(tenantOrTerms) {
+  const text = typeof tenantOrTerms === 'string'
+    ? tenantOrTerms
+    : (tenantOrTerms?.termsAndPolicies || '');
+
+  if (!text || typeof text !== 'string') return false;
+  const trimmed = text.trim();
+  if (!trimmed) return false;
+
+  // Debe contener términos logísticos explícitos
+  const hasLogisticsTerms = /\b(?:env[ií]os?|delivery|despachos?|fletes?|couriers?|entrega\s+a\s+domicilio)\b/i.test(trimmed);
+  if (!hasLogisticsTerms) return false;
+
+  // Si explícitamente niega envíos ("no realizamos envíos", "no hacemos delivery", "sin delivery"):
+  if (/\b(?:no\s+(?:hacemos|realizamos|contamos\s+con|tenemos)\s+(?:env[ií]os?|delivery)|sin\s+(?:env[ií]os?|delivery))\b/i.test(trimmed)) {
+    return false;
+  }
+
+  return true;
+}
+
+/**
  * Detecta pseudo-métodos de pago que intentan evadir la configuración real del tenant.
  * Ej: "asesor", "por coordinar con asesor", "coordinar con asesor", etc.
  */
@@ -211,21 +240,24 @@ export async function syncCommercialOrder({
     throw new Error('syncCommercialOrder requiere un customer con id válido.');
   }
 
-  // 1. Obtener y validar métodos de pago reales del tenant (fuente canónica: tenant.bankAccounts)
+  // 1. Obtener y validar métodos de pago y políticas de envío reales del tenant
   let tenantBankAccounts = tenant.bankAccounts;
-  if (tenantBankAccounts === undefined && db.tenant?.findUnique) {
+  let tenantTerms = tenant.termsAndPolicies;
+  if ((tenantBankAccounts === undefined || tenantTerms === undefined) && db.tenant?.findUnique) {
     try {
       const tRecord = await db.tenant.findUnique({
         where: { id: tenant.id },
-        select: { bankAccounts: true }
+        select: { bankAccounts: true, termsAndPolicies: true }
       });
-      tenantBankAccounts = tRecord?.bankAccounts;
+      if (tenantBankAccounts === undefined) tenantBankAccounts = tRecord?.bankAccounts;
+      if (tenantTerms === undefined) tenantTerms = tRecord?.termsAndPolicies;
     } catch (tErr) {
       console.warn(`⚠️ [Order Security] No se pudo consultar tenant en BD:`, tErr.message);
     }
   }
 
   const tenantHasConfiguredPayments = Boolean(tenantBankAccounts && tenantBankAccounts.trim());
+  const tenantHasShippingConfig = hasCanonicalShippingConfig(tenantTerms);
 
   if (args.paymentMethod) {
     // A. Rechazar rotundamente pseudo-métodos ("asesor", "por coordinar con asesor", etc.)
@@ -258,6 +290,15 @@ export async function syncCommercialOrder({
   }
 
   let updatedState = { ...currentCommercialState, ...args };
+
+  // ── SHIPPING AUTHORITY GUARD ──
+  // Si el cliente o el modelo indican currentStage='SHIPPING_COORDINATED' pero la tienda NO tiene configuración/políticas de envío:
+  // Preservar la ciudad y dirección proporcionadas por el cliente como hechos válidos (customer input fact),
+  // pero normalizar el stage a DETAILS_PROVIDED para no atribuir falsamente una capacidad logística no demostrada.
+  if (updatedState.currentStage === 'SHIPPING_COORDINATED' && !tenantHasShippingConfig) {
+    console.log(`ℹ️ [Order Commercial] Tenant sin shipping config: normalizando stage de SHIPPING_COORDINATED a DETAILS_PROVIDED (preservando shippingCity="${updatedState.shippingCity || ''}")`);
+    updatedState.currentStage = 'DETAILS_PROVIDED';
+  }
   const triggerStages = ['PAYMENT_PENDING', 'PAYMENT_VERIFIED', 'COMPLETED'];
 
   if (triggerStages.includes(updatedState.currentStage)) {
