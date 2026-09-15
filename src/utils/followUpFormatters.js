@@ -243,42 +243,42 @@ export const STATUS_BADGES = {
   SCHEDULED: {
     label: 'Programado',
     shortLabel: 'Programado',
-    color: 'bg-indigo-50 text-indigo-700 border-indigo-200 dark:bg-indigo-950/40 dark:text-indigo-300 dark:border-indigo-800/50'
+    color: 'bg-indigo-50 text-indigo-700 border-indigo-200'
   },
   PROCESSING: {
     label: 'Preparando seguimiento',
     shortLabel: 'Preparando',
-    color: 'bg-amber-50 text-amber-700 border-amber-200 dark:bg-amber-950/40 dark:text-amber-300 dark:border-amber-800/50'
+    color: 'bg-amber-50 text-amber-700 border-amber-200'
   },
   WAITING_NEXT: {
     label: 'Esperando respuesta',
     shortLabel: 'Esperando',
-    color: 'bg-sky-50 text-sky-700 border-sky-200 dark:bg-sky-950/40 dark:text-sky-300 dark:border-sky-800/50'
+    color: 'bg-sky-50 text-sky-700 border-sky-200'
   },
   RECOVERED: {
     label: 'Recuperado',
     shortLabel: 'Recuperado',
-    color: 'bg-emerald-50 text-emerald-700 border-emerald-200 dark:bg-emerald-950/40 dark:text-emerald-300 dark:border-emerald-800/50'
+    color: 'bg-emerald-50 text-emerald-700 border-emerald-200'
   },
   EXHAUSTED: {
     label: 'Sin respuesta tras 3 intentos',
     shortLabel: 'Completado',
-    color: 'bg-slate-100 text-slate-700 border-slate-200 dark:bg-slate-800 dark:text-slate-300 dark:border-slate-700'
+    color: 'bg-slate-100 text-slate-700 border-slate-200'
   },
   CANCELLED: {
     label: 'Cancelado',
     shortLabel: 'Cancelado',
-    color: 'bg-rose-50 text-rose-700 border-rose-200 dark:bg-rose-950/40 dark:text-rose-300 dark:border-rose-800/50'
+    color: 'bg-rose-50 text-rose-700 border-rose-200'
   },
   NEUTRALIZED_INBOUND: {
     label: 'Cliente respondió',
     shortLabel: 'Respondió',
-    color: 'bg-purple-50 text-purple-700 border-purple-200 dark:bg-purple-950/40 dark:text-purple-300 dark:border-purple-800/50'
+    color: 'bg-purple-50 text-purple-700 border-purple-200'
   },
   SEMANTIC_NOT_ELIGIBLE: {
     label: 'No elegible',
     shortLabel: 'No elegible',
-    color: 'bg-slate-100 text-slate-700 border-slate-200 dark:bg-slate-800 dark:text-slate-300 dark:border-slate-700'
+    color: 'bg-slate-100 text-slate-700 border-slate-200'
   }
 };
 
