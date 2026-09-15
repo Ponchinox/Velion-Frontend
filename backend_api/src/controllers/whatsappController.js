@@ -3539,6 +3539,7 @@ ${catalogIndexCsv}
     // ─── FLAGS DE SESIÓN PARA MULTIMEDIA DETERMINÍSTICA ──────────────────
     let pendingMediaToSend = null;
     let mediaSentInSession = false;
+    let consultedProduct = null;
 
     // ─── AUTO-MEDIA DETERMINÍSTICA (PRODUCT AUTO-IMAGE & EXPLICIT VIDEO) ───
     let tenantAvailableProducts = [];
@@ -3590,6 +3591,13 @@ ${catalogIndexCsv}
           currentCommercialState,
           sentMediaProductIds
         });
+
+    if (orchestratedMedia?.targetProduct && !orchestratedMedia.targetProduct._isRejected) {
+      consultedProduct = {
+        id: orchestratedMedia.targetProduct.id,
+        name: orchestratedMedia.targetProduct.name
+      };
+    }
 
     if (orchestratedMedia?.shouldDispatch && orchestratedMedia?.url) {
       pendingMediaToSend = {
@@ -3879,6 +3887,8 @@ ${catalogIndexCsv}
             return { result: 'Producto no encontrado o no disponible en esta tienda.' };
           }
 
+          consultedProduct = { id: productId, name: product.name };
+
           if (product.user?.tenantId && product.user.tenantId !== tenant.id) {
              // Basic security to avoid cross-tenant leaks if ID is guessed
              // But we don't fetch user here. Let's just trust the findUnique 
@@ -4060,6 +4070,8 @@ Atributos/Tags: ${Array.isArray(product.tags) ? product.tags.join(', ') : ''}
               message: 'El producto no fue encontrado en esta tienda. Informa con amabilidad al cliente.'
             };
           }
+
+          consultedProduct = { id: productId, name: product.name };
 
           if (requestedMediaType === 'video') {
             let canonicalVideoUrl = null;
@@ -5136,6 +5148,63 @@ Atributos/Tags: ${Array.isArray(product.tags) ? product.tags.join(', ') : ''}
                 orderId: cState.orderId
               }
             });
+          }
+        } else {
+          // ── EVALUACIÓN TEMPRANA: PRODUCT_INTERESTED ──
+          // Si el cliente no avanzó aún a PRODUCT_SELECTED ni etapa posterior, pero se identificó
+          // un producto canónico concreto en la conversación o turno y el bot dejó una pregunta comercial:
+          const earlyProdId = cState?.productId ||
+            consultedProduct?.id ||
+            pendingMediaToSend?.productId ||
+            (orchestratedMedia?.targetProduct && !orchestratedMedia.targetProduct._isRejected ? orchestratedMedia.targetProduct.id : null) ||
+            (Array.isArray(cState?.sentMediaProductIds) && cState.sentMediaProductIds.length > 0 ? cState.sentMediaProductIds[cState.sentMediaProductIds.length - 1] : null);
+
+          let earlyProdName = cState?.productName ||
+            consultedProduct?.name ||
+            pendingMediaToSend?.productName ||
+            (orchestratedMedia?.targetProduct && !orchestratedMedia.targetProduct._isRejected ? orchestratedMedia.targetProduct.name : null);
+
+          if (earlyProdId && !earlyProdName) {
+            const foundProd = tenantAvailableProducts?.find(p => p.id === earlyProdId);
+            if (foundProd) earlyProdName = foundProd.name;
+          }
+
+          if (earlyProdId) {
+            const lastInbound = await prisma.message.findFirst({
+              where: { chatId: chat.id, senderRole: { in: ['contact', 'user'] } },
+              orderBy: { createdAt: 'desc' }
+            });
+            const lastBotMsg = await prisma.message.findFirst({
+              where: { chatId: chat.id, senderRole: { in: ['agent', 'assistant'] } },
+              orderBy: { createdAt: 'desc' }
+            });
+
+            if (lastInbound) {
+              await evaluateAndScheduleFollowUp({
+                tenantId: tenant.id,
+                customerId: customer.id,
+                chatId: chat.id,
+                currentCommercialState: {
+                  ...cState,
+                  productId: earlyProdId,
+                  productName: earlyProdName
+                },
+                currentStage: 'PRODUCT_INTERESTED',
+                orderId: null,
+                productId: earlyProdId,
+                productName: earlyProdName,
+                lastInboundMessage: lastInbound,
+                lastBotMessage: lastBotMsg,
+                explicitCustomerTiming: cState?.explicitCustomerTiming || null,
+                contextSnapshot: {
+                  customerName: customer.name,
+                  currentStage: 'PRODUCT_INTERESTED',
+                  productId: earlyProdId,
+                  productName: earlyProdName,
+                  orderId: null
+                }
+              });
+            }
           }
         }
       } catch (fuErr) {

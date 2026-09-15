@@ -20,6 +20,7 @@ export const ALLOWED_HOURS_START = 9;  // 09:00 AM local
 export const ALLOWED_HOURS_END = 20;   // 20:00 PM local (8 PM)
 
 export const VALID_STAGES = Object.freeze([
+  'PRODUCT_INTERESTED',
   'PRODUCT_SELECTED',
   'DETAILS_PROVIDED',
   'SHIPPING_COORDINATED',
@@ -313,6 +314,24 @@ export function calculateAttemptTimestamp(arg1, arg2, arg3) {
 }
 
 /**
+ * Detecta si el mensaje del usuario es meramente social, un saludo genérico o carece
+ * de intención comercial identificable hacia un producto concreto.
+ */
+export function isPurelySocialOrGenericMessage(text) {
+  if (!text || typeof text !== 'string') return true;
+  const normalized = text.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim();
+  if (!normalized) return true;
+  const genericPatterns = [
+    /^(hola+|buenas|buen dia|buenos dias|buenas tardes|buenas noches|ola+|holi|saludos|hi|hello)\.?$/i,
+    /^(que venden\??|que productos tienen\??|que ofrecen\??|catalogo\??|menu\??)\.?$/i,
+    /^(gracias|muchas gracias|vale gracias|ok gracias|perfecto gracias)\.?$/i,
+    /^(solo (miraba|estaba mirando|curioseando|viendo))\.?$/i,
+    /^(ok|dale|bueno|bien|ya|vale|genial|entendido)\.?$/i
+  ];
+  return genericPatterns.some(pat => pat.test(normalized));
+}
+
+/**
  * Filtro exhaustivo de elegibilidad comercial para iniciar o continuar un seguimiento.
  */
 export function shouldCreateOrRefreshFollowUp({
@@ -321,7 +340,8 @@ export function shouldCreateOrRefreshFollowUp({
   currentCommercialState = {},
   chat: _chat,
   activeOrder = null,
-  lastInboundMessage = null
+  lastInboundMessage = null,
+  lastBotMessage = null
 }) {
   // 0. Detección determinística de rechazo explícito de la oportunidad comercial
   if (isExplicitOpportunityRejection(lastInboundMessage?.content)) {
@@ -354,6 +374,30 @@ export function shouldCreateOrRefreshFollowUp({
   const stage = currentCommercialState?.currentStage;
   if (!stage || !VALID_STAGES.includes(stage)) {
     return { eligible: false, reason: 'STAGE_NOT_ELIGIBLE' };
+  }
+
+  // 5b. Guardias deterministas para elegibilidad temprana (PRODUCT_INTERESTED)
+  if (stage === 'PRODUCT_INTERESTED') {
+    // A. Requiere producto canónico identificado
+    if (!currentCommercialState?.productId) {
+      return { eligible: false, reason: 'NO_CANONICAL_PRODUCT' };
+    }
+    // B. No califica conversación meramente social o genérica sin interés en producto
+    if (isPurelySocialOrGenericMessage(lastInboundMessage?.content)) {
+      return { eligible: false, reason: 'GENERIC_OR_SOCIAL_INQUIRY' };
+    }
+    // C. Si se dispone del mensaje previo del asistente, verificar ausencia de merchant blocker y pregunta pendiente
+    if (lastBotMessage?.content) {
+      const botText = String(lastBotMessage.content);
+      const isMerchantBlocker = /(?:confirmar(?:se)?\s+(?:directamente\s+)?con\s+el\s+negocio|no\s+tengo\s+(?:un\s+)?m[eé]todo\s+de\s+pago\s+registrado|detalles\s+de\s+entrega\s+deben\s+confirmarse|no\s+tengo\s+informaci[oó]n\s+de\s+despachos)/i.test(botText);
+      if (isMerchantBlocker) {
+        return { eligible: false, reason: 'MERCHANT_BLOCKER' };
+      }
+      const asksCustomer = /\?|¿/.test(botText);
+      if (!asksCustomer) {
+        return { eligible: false, reason: 'NO_PENDING_CUSTOMER_QUESTION' };
+      }
+    }
   }
 
   // 6. Verificación de órdenes existentes (Corrección #8: VERIFYING también detiene follow-up)
@@ -397,6 +441,7 @@ export async function evaluateAndScheduleFollowUp({
   orderId = null,
   activeOrder = null,
   lastInboundMessage = null,
+  lastBotMessage = null,
   explicitCustomerTiming = null,
   explicitTimingIso = null,
   contextSnapshot = null,
@@ -416,6 +461,21 @@ export async function evaluateAndScheduleFollowUp({
   if (!activeOrder && (orderId || currentCommercialState?.orderId)) {
     const ordId = orderId || currentCommercialState.orderId;
     activeOrder = await db.order.findUnique({ where: { id: ordId } });
+  }
+
+  let resolvedLastBotMsg = lastBotMessage;
+  if (!resolvedLastBotMsg && (chat?.id || chatId)) {
+    try {
+      resolvedLastBotMsg = await db.message.findFirst({
+        where: {
+          chatId: chat?.id || chatId,
+          senderRole: { in: ['agent', 'assistant'] }
+        },
+        orderBy: { createdAt: 'desc' }
+      });
+    } catch {
+      resolvedLastBotMsg = null;
+    }
   }
 
   const resolvedStage = currentStage || currentCommercialState?.currentStage;
@@ -458,7 +518,7 @@ export async function evaluateAndScheduleFollowUp({
     }
 
     // 2. Corregir commercialState del cliente si aún conservara una etapa pendiente
-    if (customer?.id && ['PRODUCT_SELECTED', 'DETAILS_PROVIDED', 'SHIPPING_COORDINATED', 'PAYMENT_PENDING'].includes(resolvedStage)) {
+    if (customer?.id && ['PRODUCT_INTERESTED', 'PRODUCT_SELECTED', 'DETAILS_PROVIDED', 'SHIPPING_COORDINATED', 'PAYMENT_PENDING'].includes(resolvedStage)) {
       const cleanedState = cleanCommercialDraft(currentCommercialState);
       cleanedState.currentStage = 'EXPLORING';
       await db.customer.update({
@@ -477,7 +537,8 @@ export async function evaluateAndScheduleFollowUp({
     currentCommercialState: normalizedCommercialState,
     chat,
     activeOrder,
-    lastInboundMessage
+    lastInboundMessage,
+    lastBotMessage: resolvedLastBotMsg
   });
 
   if (!check.eligible) {
@@ -625,6 +686,9 @@ export async function evaluateAndScheduleFollowUp({
     }
   });
 
+  const isEarlyInterest = normalizedCommercialState.currentStage === 'PRODUCT_INTERESTED';
+  const targetMaxAttempts = isEarlyInterest ? 1 : 3;
+
   if (!existingSequence) {
     // ─── CREAR NUEVA SECUENCIA ───
     try {
@@ -639,7 +703,7 @@ export async function evaluateAndScheduleFollowUp({
           stageAtCreation: normalizedCommercialState.currentStage,
           status: 'SCHEDULED',
           currentAttempt: 0,
-          maxAttempts: 3,
+          maxAttempts: targetMaxAttempts,
           anchorAt,
           nextRunAt: scheduledNextRunAt,
           contextSnapshot: finalContextSnapshot,
@@ -667,6 +731,12 @@ export async function evaluateAndScheduleFollowUp({
     if (existingSequence.currentAttempt === 0) {
       // El bot todavía no envió ningún seguimiento proactivo; el cliente continúa conversando.
       // REFRESH: actualizamos anchorAt y recalculamos nextRunAt sin crear otra secuencia.
+      const isUpgraded = existingSequence.stageAtCreation === 'PRODUCT_INTERESTED' &&
+        normalizedCommercialState.currentStage !== 'PRODUCT_INTERESTED';
+      const updatedMaxAttempts = isUpgraded
+        ? 3
+        : (normalizedCommercialState.currentStage === 'PRODUCT_INTERESTED' ? 1 : (existingSequence.maxAttempts || 3));
+
       const updatedSeq = await db.followUpSequence.update({
         where: { id: existingSequence.id },
         data: {
@@ -674,6 +744,7 @@ export async function evaluateAndScheduleFollowUp({
           nextRunAt: scheduledNextRunAt,
           status: 'SCHEDULED',
           stageAtCreation: normalizedCommercialState.currentStage,
+          maxAttempts: updatedMaxAttempts,
           productId: normalizedCommercialState.productId || existingSequence.productId,
           productName: normalizedCommercialState.productName || existingSequence.productName,
           contextSnapshot: finalContextSnapshot,
@@ -707,7 +778,7 @@ export async function evaluateAndScheduleFollowUp({
           stageAtCreation: normalizedCommercialState.currentStage,
           status: 'SCHEDULED',
           currentAttempt: 0,
-          maxAttempts: 3,
+          maxAttempts: targetMaxAttempts,
           anchorAt,
           nextRunAt: scheduledNextRunAt,
           contextSnapshot: finalContextSnapshot,

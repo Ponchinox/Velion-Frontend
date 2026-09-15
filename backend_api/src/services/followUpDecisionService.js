@@ -218,6 +218,18 @@ CONCEPTOS Y CRITERIOS OPERACIONALES:
    - decision: "DO_NOT_FOLLOW_UP"
    - PROHIBIDO marcar pendingActor: "CUSTOMER" ni crear seguimiento comercial cuando la siguiente acción o dato depende de la tienda o asesor humano.
 
+8. INTERÉS COMERCIAL TEMPRANO POR PRODUCTO CONCRETO:
+   Si el cliente demostró interés comercial por un producto concreto del catálogo (consultó disponibilidad, precio o características) y el asistente le presentó el producto formulándole una pregunta comercial pendiente al cliente (ej. cuántas unidades desea, qué color o talla prefiere, o si desea coordinar la entrega):
+   - Si el cliente aún no ha respondido a esa pregunta y la conversación quedó ahí (sin rechazo ni compra cerrada):
+     * pendingActor: "CUSTOMER"
+     * conversationClosed: false
+     * purchaseConfirmed: false
+     * fulfillmentOnly: false
+     * decision: "SEND_FOLLOW_UP" (si confidence >= 0.90)
+   - Si la interacción fue meramente social o genérica ("Hola", "Qué venden?", "Gracias", "Solo estaba mirando") o no hay un producto concreto identificado:
+     * decision: "DO_NOT_FOLLOW_UP"
+     * pendingActor: "NONE"
+
 Devuelve ÚNICAMENTE un objeto JSON estructurado que cumpla el esquema requerido.`;
 }
 
@@ -349,7 +361,7 @@ export async function buildSemanticDecisionContext({
   }
 
   // 6. Consultar Producto verificado en catálogo
-  const targetProductId = productId || liveCommercialState.productId;
+  const targetProductId = productId || liveCommercialState.productId || liveCommercialState.lastConsultedProductId || (Array.isArray(liveCommercialState.sentMediaProductIds) && liveCommercialState.sentMediaProductIds.length > 0 ? liveCommercialState.sentMediaProductIds[liveCommercialState.sentMediaProductIds.length - 1] : null);
   let verifiedProduct = null;
   if (targetProductId) {
     verifiedProduct = await getTenantVerifiedProduct({
@@ -462,7 +474,7 @@ export function formatContextForModel(context) {
 
   let out = `### ESTADO COMERCIAL ACTUAL:\n`;
   out += `- Stage: ${cState.currentStage || 'NO_STAGE'}\n`;
-  out += `- Producto: ${cState.productName || 'No especificado'} (ID: ${cState.productId || 'N/A'})\n`;
+  out += `- Producto: ${cState.productName || prod?.name || 'No especificado'} (ID: ${cState.productId || prod?.id || 'N/A'})\n`;
   out += `- Variante/Talla/Color: ${cState.variant || 'Pendiente'}\n`;
   out += `- Cantidad: ${cState.quantity || 'Pendiente'}\n`;
   out += `- Ciudad envío: ${cState.shippingCity || 'Pendiente'}\n`;
@@ -841,8 +853,8 @@ export function shouldRunGateA({ commercialState = {}, activeOrder = null, lastI
   const hasOrder = Boolean(activeOrder || commercialState.orderId || commercialState.activeOrderId);
   const isRejection = isExplicitOpportunityRejection(lastInboundMessage?.content);
 
-  // Alto riesgo de venta acordada / ya cerrada, datos provistos o rechazo explícito
-  if (stage === 'SHIPPING_COORDINATED' || stage === 'DETAILS_PROVIDED' || stage === 'PAYMENT_PENDING' || isRejection) {
+  // Alto riesgo de venta acordada / ya cerrada, datos provistos, interés temprano o rechazo explícito
+  if (stage === 'SHIPPING_COORDINATED' || stage === 'DETAILS_PROVIDED' || stage === 'PAYMENT_PENDING' || stage === 'PRODUCT_INTERESTED' || isRejection) {
     return true;
   }
 
