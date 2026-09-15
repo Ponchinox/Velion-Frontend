@@ -43,8 +43,8 @@ export function sanitizeOperationalText(rawText, maxLength = 300) {
   // 2. Redactar datos altamente sensibles (Tarjetas, CVV, Contraseñas/Tokens)
   // Tarjetas: Secuencias de 13 a 19 dígitos (posiblemente separados por espacios o guiones)
   text = text.replace(/\b(?:\d[ -]*?){13,19}\b/g, '[TARJETA_REDACTADA]');
-  // CVV / CVC
-  text = text.replace(/\b(?:cvv|cvc|security code)\s*[:=]?\s*\d{3,4}\b/gi, '[CVV_REDACTADO]');
+  // CVV / CVC (incluye variantes naturales: "cvv es 123", "código de seguridad es 123", "cvc 456", etc.)
+  text = text.replace(/\b(?:cvv|cvc|security\s*code|c[oó]digo\s*(?:de\s*)?seguridad)\s*(?:es\s*)?[:=]?\s*\d{3,4}\b/gi, '[CVV_REDACTADO]');
   // Contraseñas y API keys
   text = text.replace(/\b(?:password|contrase[ñn]a|token|api[_-]?key)\s*[:=]\s*\S+/gi, '[SECRETO_REDACTADO]');
 

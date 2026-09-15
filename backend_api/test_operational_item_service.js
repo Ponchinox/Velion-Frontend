@@ -723,7 +723,7 @@ async function runTests() {
     console.log('✅ A30: Cross-chat message consistency verified (sourceMessageId must match chatId)');
   }
 
-  // BONUS: Privacy & Redaction Sanity Check
+  // BONUS: Privacy & Redaction Sanity Check (CVV Natural Forms & Negative Controls)
   {
     const sensitive = 'Mi tarjeta es 4532 1122 3344 5566 y mi CVV: 789 y password=supersecret';
     const cleaned = sanitizeOperationalText(sensitive);
@@ -733,7 +733,43 @@ async function runTests() {
     assert.ok(!cleaned.includes('4532'));
     assert.ok(!cleaned.includes('789'));
     assert.ok(!cleaned.includes('supersecret'));
-    console.log('✅ BONUS: Privacy redaction masks credit cards, CVVs, and credentials');
+
+    // Natural Spanish CVV/CVC variants
+    const naturalVariants = [
+      { input: 'cvv 123', expectedMask: '[CVV_REDACTADO]', forbidden: '123' },
+      { input: 'cvv: 123', expectedMask: '[CVV_REDACTADO]', forbidden: '123' },
+      { input: 'cvv es 123', expectedMask: '[CVV_REDACTADO]', forbidden: '123' },
+      { input: 'cvv es: 123', expectedMask: '[CVV_REDACTADO]', forbidden: '123' },
+      { input: 'mi cvv es 123', expectedMask: '[CVV_REDACTADO]', forbidden: '123' },
+      { input: 'código de seguridad es 123', expectedMask: '[CVV_REDACTADO]', forbidden: '123' },
+      { input: 'codigo de seguridad es 123', expectedMask: '[CVV_REDACTADO]', forbidden: '123' },
+      { input: 'cvc es 123', expectedMask: '[CVV_REDACTADO]', forbidden: '123' },
+      { input: 'cvc 456', expectedMask: '[CVV_REDACTADO]', forbidden: '456' },
+      { input: 'código de seguridad 123', expectedMask: '[CVV_REDACTADO]', forbidden: '123' },
+      { input: 'tarjeta 4557 8899 1234 5678 cvv es 123', expectedMask: '[CVV_REDACTADO]', forbidden: '123' }
+    ];
+
+    for (const { input, expectedMask, forbidden } of naturalVariants) {
+      const res = sanitizeOperationalText(input);
+      assert.ok(res.includes(expectedMask), `Debe contener ${expectedMask} para "${input}"`);
+      assert.ok(!res.includes(forbidden), `No debe filtrar ${forbidden} para "${input}"`);
+    }
+
+    // Negative controls: No deben redactar números normales sin contexto sensible
+    const negativeControls = [
+      'tengo 123 productos',
+      'pedido 456',
+      'precio 123 soles',
+      'código postal 15001'
+    ];
+
+    for (const ctrl of negativeControls) {
+      const res = sanitizeOperationalText(ctrl);
+      assert.ok(!res.includes('[CVV_REDACTADO]'), `Falso positivo detectado en control negativo: "${ctrl}"`);
+      assert.strictEqual(res, ctrl, `El texto no sensible debe preservarse intacto: "${ctrl}"`);
+    }
+
+    console.log('✅ BONUS: Privacy redaction masks credit cards, CVVs (all natural Spanish variants), and credentials without false positives');
   }
 
   console.log(`\n🎉 TODAS LAS PRUEBAS COMPLETADAS EXITOSAMENTE: ${passed}/30 tests pasaron.`);
