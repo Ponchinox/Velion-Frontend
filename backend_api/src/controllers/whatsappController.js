@@ -19,7 +19,7 @@ import {
 } from '../services/aiMessageTracker.js';
 import { activateHumanHandoff, isUnknownInfoHandoff } from '../services/humanHandoffService.js';
 import { isHandoffActive } from '../services/humanHandoffGate.js';
-import { syncCommercialOrder, isExplicitOpportunityRejection, handleOpportunityRejection } from '../services/orderCommercialService.js';
+import { syncCommercialOrder, isExplicitOpportunityRejection, handleOpportunityRejection, isPostSaleOrderInquiry } from '../services/orderCommercialService.js';
 import { createOperationalItem } from '../services/operationalItemService.js';
 import { emitOperationalItemCreated } from '../services/operationalItemEventService.js';
 import {
@@ -286,10 +286,11 @@ export function enforceMediaAuthority(text, hasPendingMedia) {
  * C) Sanitización de tiempos:
  *    - Elimina promesas de tiempo exacto o garantizado ("en 5 minutos", "en media hora", "en breve", "en unos minutos", etc.) incluso con handoff activo.
  */
-export function enforceBusinessAuthority(text, { hasPaymentConfig = true, handoffSuccess = false } = {}) {
+export function enforceBusinessAuthority(text, { hasPaymentConfig = true, handoffSuccess = false, operationalTaskCreated = false } = {}) {
   if (!text || typeof text !== 'string') return text || '';
 
   let result = text;
+  const hasHumanRoute = Boolean(handoffSuccess || operationalTaskCreated);
 
   // A) Si NO existe payment config:
   if (!hasPaymentConfig) {
@@ -308,13 +309,17 @@ export function enforceBusinessAuthority(text, { hasPaymentConfig = true, handof
     }
   }
 
-  // B) Si NO se ejecutó request_human_handoff exitoso:
-  if (!handoffSuccess) {
+  // B) Si NO se ejecutó request_human_handoff ni se creó tarea operativa (sin ruta humana real):
+  if (!hasHumanRoute) {
     const unpromptedHandoffPatterns = [
       /(?:(?:(?:un|el)\s+)?asesor\s+(?:se\s+pondr[aá]\s+en\s+contacto|te\s+contactar[aá]|te\s+escribir[aá]|se\s+comunicar[aá]|te\s+atender[aá])(?:\s+contigo)?(?:\s+(?:para\s+[^:.¡!]+))?(?:\s+(?:en\s+breve|en\s+unos\s+minutos|en\s+\d+\s+minutos|en\s+media\s+hora|en\s+una\s+hora))?)(?:\s*[:.¡!,])?/gi,
       /(?:(?:(?:un|el)\s+)?asesor\s+(?:te\s+)?(?:enviar[aá]n?|brindar[aá]n?|pasar[aá]n?|dar[aá]n?|compartir[aá]n?|proporcionar[aá]n?)(?:\s+(?:en\s+breve|en\s+unos\s+minutos|en\s+\d+\s+minutos|en\s+media\s+hora|en\s+una\s+hora))?(?:\s+(?:los|las|la|el|su|sus))?\s+(?:datos|detalles|cuentas?|informaci[oó]n)(?:\s+(?:de\s+pago|para\s+(?:el\s+)?pago|para\s+pagar|del\s+pago))?(?:\s+(?:en\s+breve|en\s+unos\s+minutos|en\s+\d+\s+minutos|en\s+media\s+hora|en\s+una\s+hora))?)(?:\s*[:.¡!,])?/gi,
       /(?:(?:ya\s+)?avis[eé]\s+al\s+equipo(?:\s+(?:en\s+breve|para\s+que\s+te\s+(?:contacten|escriban|atiendan|env[ií]en|pasen|brinden|compartan|den)(?:\s+(?:los|las|la|el))?\s*(?:datos|detalles|cuentas?|informaci[oó]n)?(?:\s+(?:de\s+pago|para\s+pagar))?))?)(?:\s*[:.¡!,])?/gi,
-      /(?:te\s+escribir[aá]n|te\s+contactar[aá]n|te\s+enviar[aá]n\s+(?:los\s+)?datos)(?:\s+(?:en\s+breve|en\s+unos\s+minutos|en\s+\d+\s+minutos|en\s+media\s+hora|en\s+una\s+hora))?(?:\s*[:.¡!,])?/gi
+      /(?:te\s+escribir[aá]n|te\s+contactar[aá]n|te\s+enviar[aá]n\s+(?:los\s+)?datos)(?:\s+(?:en\s+breve|en\s+unos\s+minutos|en\s+\d+\s+minutos|en\s+media\s+hora|en\s+una\s+hora))?(?:\s*[:.¡!,])?/gi,
+      /(?:con\s+ese\s+dato\s+(?:el\s+equipo\s+lo\s+verificar[aá]|lo\s+verificaremos))(?:\s*[:.¡!,])?/gi,
+      /(?:(?:(?:el|nuestro)\s+)?equipo(?:\s+(?:humano|de\s+soporte))?\s+lo\s+(?:verificar[aá]|revisar[aá]|atender[aá]))(?:\s*[:.¡!,])?/gi,
+      /(?:(?:lo\s+)?(?:verificar[eé]|revisar[eé])\s+(?:con\s+el\s+equipo|en\s+breve))(?:\s*[:.¡!,])?/gi,
+      /(?:¿\s*)?(?:podr[ií]as\s+indicarme|ind[ií]came|p[aá]same|env[ií]ame)\s+tu\s+n[uú]mero\s+de\s+(?:orden|pedido)(?:\s+o\s+(?:el\s+)?comprobante(?:\s+de\s+compra)?)?(?:\s+para\s+(?:revisar(?:lo)?|verificar(?:lo)?|buscar(?:lo)?))?\s*\??/gi
     ];
 
     for (const pattern of unpromptedHandoffPatterns) {
@@ -323,6 +328,10 @@ export function enforceBusinessAuthority(text, { hasPaymentConfig = true, handof
       }
     }
   }
+
+  // B.2) Sanitización de capacidades inexistentes de búsqueda automática de órdenes en sistema
+  result = result.replace(/(?:para\s+(?:poder\s+)?(?:buscar(?:lo)?|consultar(?:lo)?|rastrear(?:lo)?)\s+en\s+el\s+sistema)/gi, 'para que el equipo pueda verificarlo');
+  result = result.replace(/(?:ind[ií]came\s+tu\s+n[uú]mero\s+de\s+(?:orden|pedido)\s+para\s+buscarlo\s+en\s+el\s+sistema)/gi, 'si cuentas con un comprobante de compra puedes compartirlo');
 
   // C) En cualquier caso (especialmente tras handoff o respuestas libres): no prometer tiempo exacto o garantizado de respuesta
   result = result.replace(/(?:^|[.!?]\s*)\b[Ee]n\s+\d+\s+minutos,?\s*/g, (match) => {
@@ -3056,6 +3065,66 @@ async function processBufferedMessage(bufferKey) {
       }
     }
 
+    // ─── POST-SALE CAPABILITY GUARD (CASE E) ───
+    let postSaleTaskCreated = false;
+    if (isPostSaleOrderInquiry(userMessageText)) {
+      console.log(`📦 [PostSale Capability Guard] Cliente +${clientNumber} consultó por pedido/envío previo: "${userMessageText.slice(0, 60)}"`);
+      try {
+        const existingOrder = await prisma.order.findFirst({
+          where: {
+            tenantId: tenant.id,
+            customerId: customer.id,
+            status: { not: 'CANCELED' }
+          }
+        });
+
+        // Si no existe orden en el sistema o no tiene datos de despacho/tracking:
+        // verificar si ya existe una tarea de soporte abierta para este cliente (idempotencia y anti-spam)
+        if (!existingOrder || (!existingOrder.shippingCity && !existingOrder.shippingAddress)) {
+          const existingOpenTask = await prisma.operationalItem.findFirst({
+            where: {
+              tenantId: tenant.id,
+              customerId: customer.id,
+              type: 'TASK',
+              category: 'SUPPORT',
+              status: { in: ['PENDING', 'IN_PROGRESS'] }
+            }
+          });
+
+          if (existingOpenTask) {
+            postSaleTaskCreated = true;
+            console.log(`📋 [PostSale Guard] Tarea de soporte activa ya existente (item: ${existingOpenTask.id}) para +${clientNumber}. Reutilizando sin duplicar.`);
+          } else {
+            const taskRes = await createOperationalItem({
+              tenantId: tenant.id,
+              type: 'TASK',
+              category: 'SUPPORT',
+              priority: 'NORMAL',
+              summary: `Consulta de estado de pedido/envío sin orden registrada: "${userMessageText.slice(0, 150)}"`,
+              customerId: customer.id,
+              contactId: contact?.id || null,
+              chatId: chat.id,
+              sourceMessageId: resolvedSourceMessageId,
+              createdByType: 'AI'
+            }, { prismaClient: prisma });
+
+            if (taskRes?.success) {
+              postSaleTaskCreated = true;
+              if (!taskRes.deduplicated && reqIo) {
+                const tenantRoom = tenant?.id ? `tenant:${tenant.id}` : null;
+                if (tenantRoom) {
+                  emitOperationalItemCreated({ io: reqIo, tenantId: tenant.id, item: taskRes.item });
+                }
+              }
+              console.log(`📋 [PostSale Guard] Tarea operativa creada con éxito (item: ${taskRes.item.id}) para +${clientNumber}.`);
+            }
+          }
+        }
+      } catch (psErr) {
+        console.warn('⚠️ [PostSale Capability Guard] Error al evaluar/crear tarea operativa:', psErr.message);
+      }
+    }
+
     await prisma.customer.update({ where: { id: customer.id }, data: { sessionUpdatedAt: now } });
 
     // ─── RECUPERACIÓN DE HISTORIAL DESDE POSTGRESQL ───
@@ -3215,7 +3284,7 @@ Diferencia SIEMPRE entre información no confirmada y solicitud de asesor:
 [ATENCIÓN SEGÚN INTENCIÓN DETECTADA]
 - CASUAL / SALUDO ("Hola", "Profesor buen día"): Responde de forma cordial, corta y atenta. NO menciones precios ni productos. PROHIBIDO crear notas o tareas.
 - COORDINACIÓN OPERACIONAL ("Hoy Gustavito no asiste", "Hoy practiquemos álgebra", "Llegaré tarde"): Registra la nota con 'register_operational_note' o la tarea con 'create_operational_task' si aplica. Muestra empatía y acuse de recibo claro. NO inicies embudo comercial, NO ofrezcas catálogo y NO asumas envíos ni fletes.
-- SOPORTE Y ESTADO ("Mi pedido no llegó", "Tengo problemas con el acceso"): Muestra comprensión, solicita el dato mínimo indispensable para ubicar el caso (ej. número de pedido o comprobante) o deriva a asesor si corresponde. NO vendas.
+- SOPORTE Y ESTADO ("Mi pedido no llegó", "Tengo problemas con el acceso"): Muestra comprensión. Explica con honestidad que no tienes el estado de entrega registrado en el sistema y que la consulta queda registrada para que el equipo humano la revise. Si el cliente tiene un comprobante o referencia de pago, puede enviarlo para que el equipo humano pueda identificar el pedido. PROHIBIDO pedir número de orden para búsqueda automática. NO vendas.
 - INFORMACIÓN GENERAL ("¿Dónde están?", "¿Qué días atienden?"): Brinda el dato exacto de la INFORMACIÓN DE LA EMPRESA de forma directa sin empujar a la compra.
 - SOLICITUD DE AGENDA ("¿Puedo tener clase mañana a las 6?"): Recuerda que no tienes integración de agenda activa; si solicita que lo contacten o llamen, usa create_operational_task; no confirmes citas falsas y explica con amabilidad que el equipo o profesor deberá confirmar la disponibilidad.
 - AMBIGÜEDAD ("Álgebra, por favor" sin contexto previo): Pide una breve aclaración amable sobre a qué se refiere, sin asumir automáticamente una compra o matrícula.
@@ -3491,12 +3560,14 @@ ${catalogIndexCsv}
       }
     }
 
-    const orchestratedMedia = orchestrateProductMedia({
-      userMessageText,
-      availableProducts: tenantAvailableProducts,
-      currentCommercialState,
-      sentMediaProductIds
-    });
+    const orchestratedMedia = (postSaleTaskCreated || isPostSaleOrderInquiry(userMessageText))
+      ? { shouldDispatch: false, reason: 'POST_SALE_INQUIRY' }
+      : orchestrateProductMedia({
+          userMessageText,
+          availableProducts: tenantAvailableProducts,
+          currentCommercialState,
+          sentMediaProductIds
+        });
 
     if (orchestratedMedia?.shouldDispatch && orchestratedMedia?.url) {
       pendingMediaToSend = {
@@ -3519,6 +3590,18 @@ ${catalogIndexCsv}
     const isMainImageAlreadySent = Boolean(activeProductId && sentMediaProductIds.includes(activeProductId));
     if (isMainImageAlreadySent && !pendingMediaToSend && !isExplicitProductMediaIntent(userMessageText)) {
       finalPrompt += `\n\n[MEDIA CONTEXT]:\nLa imagen principal de este producto ya fue mostrada al cliente en esta conversación. No la ofrezcas nuevamente ni preguntes si desea verla, salvo que el cliente solicite explícitamente volver a recibirla.\n`;
+    }
+
+    if (postSaleTaskCreated) {
+      finalPrompt += `\n\n[CAPACIDAD POSTVENTA Y SEGUIMIENTO DE PEDIDOS]:\n` +
+        `- El cliente consulta por el estado o fecha de entrega de un pedido previo o compra realizada.\n` +
+        `- En el sistema NO existe información canónica de despacho, tracking, courier ni fecha estimada de entrega para este cliente.\n` +
+        `- PROHIBIDO inventar empresas de transporte (Olva, Shalom, etc.), códigos de tracking, estados ficticios o fechas estimadas de entrega.\n` +
+        `- PROHIBIDO pedir "número de orden" o "código de compra" como si pudieras consultarlo o buscarlo automáticamente en el sistema (el asistente NO tiene herramienta técnica para consultar órdenes por número).\n` +
+        `- El backend YA creó automáticamente una tarea pendiente para el equipo humano del negocio para revisar este caso.\n` +
+        `- Responde con amabilidad explicando que actualmente no tienes el estado del envío registrado en el sistema y que ya dejaste la consulta anotada para que el equipo humano la verifique.\n` +
+        `- Si el cliente dispone de un comprobante de compra o referencia de pago, indícale amablemente que puede compartirlo por este chat para que el equipo humano lo tenga a la mano al momento de verificarlo.\n` +
+        `- PROHIBIDO ofrecer productos, enviar fotos/videos o reiniciar el flujo de venta.\n`;
     }
 
     const systemPrompt = finalPrompt;
@@ -3886,6 +3969,17 @@ Atributos/Tags: ${Array.isArray(product.tags) ? product.tags.join(', ') : ''}
 
         console.log(`🖼️ [FC] send_product_media — ID: "${productId}", Type: "${requestedMediaType}"`);
 
+        // Guardia Postventa: 0 multimedia comercial automática durante consultas postventa (Case E)
+        if (postSaleTaskCreated || isPostSaleOrderInquiry(userMessageText)) {
+          console.warn(`🛑 [FC] send_product_media rechazado: consulta postventa no admite multimedia comercial.`);
+          return {
+            success: false,
+            hasMedia: false,
+            reason: 'POST_SALE_NO_COMMERCIAL_MEDIA',
+            message: 'El cliente realiza una consulta de soporte/postventa. No se debe enviar material publicitario.'
+          };
+        }
+
         // Guardia de deduplicación: máximo 1 media por turno
         if (mediaSentInSession || pendingMediaToSend) {
           // Coordinación Gemini/Backend: Si la multimedia para este producto ya fue programada por el backend en este turno
@@ -4053,6 +4147,16 @@ Atributos/Tags: ${Array.isArray(product.tags) ? product.tags.join(', ') : ''}
         }
         const fcStart = Date.now();
         console.log(`📝 [FC] update_commercial_state invocado. Actualizando BD...`);
+
+        // Guardia Postventa: No reiniciar embudo de venta a PRODUCT_SELECTED durante soporte (Case E)
+        if ((postSaleTaskCreated || isPostSaleOrderInquiry(userMessageText)) && args?.currentStage === 'PRODUCT_SELECTED') {
+          console.warn(`🛑 [Tool Guard - Commercial] Rechazada mutación a PRODUCT_SELECTED durante consulta postventa.`);
+          return {
+            success: false,
+            error: 'POST_SALE_CANNOT_START_SALES',
+            message: 'El cliente realiza una consulta de postventa/soporte. No se debe reiniciar el embudo de ventas.'
+          };
+        }
         try {
           const result = await syncCommercialOrder({
             tenant: {
@@ -4570,7 +4674,8 @@ Atributos/Tags: ${Array.isArray(product.tags) ? product.tags.join(', ') : ''}
     const hasPaymentConfig = Boolean(tenantDetails?.bankAccounts && tenantDetails.bankAccounts.trim());
     cleanedText = enforceBusinessAuthority(cleanedText, {
       hasPaymentConfig,
-      handoffSuccess: handoffActivatedInSession
+      handoffSuccess: handoffActivatedInSession,
+      operationalTaskCreated: postSaleTaskCreated
     });
 
     if (cleanedText || pendingMediaToSend) {
@@ -4732,7 +4837,8 @@ Atributos/Tags: ${Array.isArray(product.tags) ? product.tags.join(', ') : ''}
             }
             outgoingText = enforceBusinessAuthority(outgoingText, {
               hasPaymentConfig,
-              handoffSuccess: handoffActivatedInSession
+              handoffSuccess: handoffActivatedInSession,
+              operationalTaskCreated: postSaleTaskCreated
             });
 
             // Si tras sanitizar el texto quedó vacío, no enviarlo
@@ -4831,7 +4937,7 @@ Atributos/Tags: ${Array.isArray(product.tags) ? product.tags.join(', ') : ''}
               if (item.caption && typeof item.caption === 'string' && item.caption.trim()) {
                 const fallbackText = enforceBusinessAuthority(
                   enforceMediaAuthority(item.caption, false),
-                  { hasPaymentConfig, handoffSuccess: handoffActivatedInSession }
+                  { hasPaymentConfig, handoffSuccess: handoffActivatedInSession, operationalTaskCreated: postSaleTaskCreated }
                 );
                 if (fallbackText.trim()) {
                   try {
@@ -4937,7 +5043,7 @@ Atributos/Tags: ${Array.isArray(product.tags) ? product.tags.join(', ') : ''}
             if (item.caption && typeof item.caption === 'string' && item.caption.trim()) {
               const fallbackText = enforceBusinessAuthority(
                 enforceMediaAuthority(item.caption, false),
-                { hasPaymentConfig, handoffSuccess: handoffActivatedInSession }
+                { hasPaymentConfig, handoffSuccess: handoffActivatedInSession, operationalTaskCreated: postSaleTaskCreated }
               );
               if (fallbackText.trim()) {
                 try {

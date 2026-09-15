@@ -1,7 +1,7 @@
 import defaultPrisma from '../db.js';
-import { isHandoffActive } from './humanHandoffGate.js';
 import { evaluateFollowUpDecision, shouldRunGateA } from './followUpDecisionService.js';
-import { isExplicitOpportunityRejection, cleanCommercialDraft } from './orderCommercialService.js';
+import { isExplicitOpportunityRejection, isPostSaleOrderInquiry, cleanCommercialDraft } from './orderCommercialService.js';
+import { isHandoffActive } from './humanHandoffGate.js';
 
 /**
  * followUpService.js — Núcleo de Lógica Comercial y Schedulig para Follow-ups V1
@@ -370,6 +370,11 @@ export function shouldCreateOrRefreshFollowUp({
     if (activeOrder.status === 'CANCELED') {
       return { eligible: false, reason: 'ORDER_ALREADY_CANCELED' };
     }
+  }
+
+  // 7. Detección de consultas postventa / soporte de pedidos (no reactivan recuperación comercial)
+  if (isPostSaleOrderInquiry(lastInboundMessage?.content)) {
+    return { eligible: false, reason: 'POST_SALE_INQUIRY' };
   }
 
   return { eligible: true };

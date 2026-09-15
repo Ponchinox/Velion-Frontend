@@ -90,6 +90,28 @@ export function isExplicitOpportunityRejection(text) {
 }
 
 /**
+ * Detecta si el mensaje del usuario es una consulta de soporte postventa o estado de entrega/pedido.
+ * Ejemplos:
+ * - "Ya compré el JBL hace unos días. ¿Puedes decirme cuándo llega mi pedido?"
+ * - "¿Dónde está mi paquete?"
+ * - "¿Cuándo llega mi pedido?"
+ * - "Estado de mi envío"
+ * - "Ya pagué, ¿cuándo me lo envían?"
+ */
+export function isPostSaleOrderInquiry(text) {
+  if (!text || typeof text !== 'string') return false;
+  const normalized = text
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .trim();
+
+  const POST_SALE_PATTERN = /\b(?:ya\s+(?:compre|pague|cancele|hice\s+(?:el\s+|mi\s+)?(?:pago|pedido|compra)|deposite|transferi)|(?:ya\s+)?(?:pudieron|pudo|pudiste)\s+(?:revisar|ver|chequear|confirmar)|(?:donde\s+esta|cuando\s+(?:me\s+)?(?:llega|entregan|envian)|estado\s+de(?:l)?|seguimiento\s+de(?:l)?|tracking\s+de(?:l)?|que\s+fue\s+de(?:l)?)\s+(?:mi\s+)?(?:pedido|paquete|compra|envio|orden|despacho)|(?:numero|codigo)\s+de\s+(?:seguimiento|tracking|guia|envio)|informacion\s+de(?:l)?\s+(?:mi\s+)?(?:envio|pedido|despacho))\b/i;
+
+  return POST_SALE_PATTERN.test(normalized);
+}
+
+/**
  * Detecta pseudo-métodos de pago que intentan evadir la configuración real del tenant.
  * Ej: "asesor", "por coordinar con asesor", "coordinar con asesor", etc.
  */
