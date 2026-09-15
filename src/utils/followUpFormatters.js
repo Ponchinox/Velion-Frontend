@@ -44,6 +44,7 @@ export const CANCEL_REASON_LABELS = {
   PROVIDER_PERMANENT_ERROR: 'Error permanente del proveedor',
   TENANT_FOLLOW_UP_DISABLED: 'Seguimientos desactivados',
   FAILED_CLOSED_CONFIG: 'Configuración de horario no disponible',
+  SEMANTIC_NOT_ELIGIBLE: 'No elegible (semántico)',
   INBOUND_INTERACTION: 'Interacción del cliente recibida',
   OTHER: 'Otro motivo'
 };
@@ -273,6 +274,11 @@ export const STATUS_BADGES = {
     label: 'Cliente respondió',
     shortLabel: 'Respondió',
     color: 'bg-purple-50 text-purple-700 border-purple-200 dark:bg-purple-950/40 dark:text-purple-300 dark:border-purple-800/50'
+  },
+  SEMANTIC_NOT_ELIGIBLE: {
+    label: 'No elegible',
+    shortLabel: 'No elegible',
+    color: 'bg-slate-100 text-slate-700 border-slate-200 dark:bg-slate-800 dark:text-slate-300 dark:border-slate-700'
   }
 };
 

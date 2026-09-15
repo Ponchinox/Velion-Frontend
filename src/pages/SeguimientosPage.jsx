@@ -177,19 +177,19 @@ export default function SeguimientosPage() {
   };
 
   return (
-    <div className="space-y-6 max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6">
+    <div className="space-y-6 max-w-7xl mx-auto px-3.5 sm:px-6 lg:px-8 py-4 sm:py-6">
       {/* 1. Header Operativo */}
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 pb-2 border-b border-slate-200 dark:border-slate-800">
         <div>
-          <div className="flex items-center gap-3">
-            <h1 className="text-2xl font-bold text-slate-900 dark:text-white tracking-tight">
+          <div className="flex items-center gap-2.5 sm:gap-3 flex-wrap">
+            <h1 className="text-xl sm:text-2xl font-bold text-slate-900 dark:text-white tracking-tight">
               Seguimientos Automáticos
             </h1>
             <span
               className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-semibold border ${
                 summary.followUpEnabled
                   ? 'bg-emerald-50 text-emerald-700 border-emerald-200 dark:bg-emerald-950/40 dark:text-emerald-300 dark:border-emerald-800/50'
-                  : 'bg-slate-100 text-slate-600 border-slate-200 dark:bg-slate-800 dark:text-slate-400 dark:border-slate-700'
+                  : 'bg-slate-100 text-slate-700 border-slate-200 dark:bg-slate-800 dark:text-slate-400 dark:border-slate-700'
               }`}
             >
               <span
@@ -200,19 +200,19 @@ export default function SeguimientosPage() {
               {summary.followUpEnabled ? 'Activos' : 'Desactivados'}
             </span>
           </div>
-          <p className="text-sm text-slate-500 dark:text-slate-400 mt-1">
+          <p className="text-xs sm:text-sm text-slate-600 dark:text-slate-400 mt-1">
             Velion recupera automáticamente oportunidades que dejan de responder.
           </p>
         </div>
 
-        <div className="flex items-center gap-2.5">
+        <div className="flex items-center gap-2 sm:gap-2.5 self-start sm:self-auto">
           <button
             onClick={handleRefresh}
             disabled={refreshing || loading}
-            className="inline-flex items-center gap-2 px-3 py-2 text-sm font-medium rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-750 transition shadow-sm disabled:opacity-50"
+            className="inline-flex items-center gap-2 px-3 py-2 text-sm font-medium rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-700 transition shadow-xs disabled:opacity-50 cursor-pointer"
             title="Actualizar datos"
           >
-            <RefreshCw className={`w-4 h-4 text-slate-500 ${refreshing ? 'animate-spin text-indigo-600' : ''}`} />
+            <RefreshCw className={`w-4 h-4 text-slate-500 dark:text-slate-400 ${refreshing ? 'animate-spin text-indigo-600 dark:text-indigo-400' : ''}`} />
             <span className="hidden sm:inline">Actualizar</span>
           </button>
 
@@ -224,7 +224,7 @@ export default function SeguimientosPage() {
               setSettingsSuccess(false);
               setIsSettingsOpen(true);
             }}
-            className="inline-flex items-center gap-2 px-3.5 py-2 text-sm font-medium rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-750 transition shadow-sm"
+            className="inline-flex items-center gap-2 px-3 sm:px-3.5 py-2 text-sm font-medium rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-700 transition shadow-xs cursor-pointer"
           >
             <Sliders className="w-4 h-4 text-indigo-600 dark:text-indigo-400" />
             <span>Configuración</span>
@@ -233,19 +233,19 @@ export default function SeguimientosPage() {
       </div>
 
       {/* 2. KPIs en Lenguaje Comercial */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4">
         {/* Card 1: En Seguimiento */}
-        <div className="p-4 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200/80 dark:border-slate-800 shadow-sm transition hover:shadow-md">
-          <div className="flex items-center justify-between">
-            <span className="text-xs font-semibold uppercase tracking-wider text-slate-400 dark:text-slate-500">
+        <div className="p-4 sm:p-4.5 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200/90 dark:border-slate-800 shadow-xs transition hover:shadow-md">
+          <div className="flex items-center justify-between gap-2">
+            <span className="text-xs font-semibold uppercase tracking-wider text-slate-600 dark:text-slate-400">
               Clientes en seguimiento
             </span>
-            <div className="w-8 h-8 rounded-xl bg-indigo-50 dark:bg-indigo-950/50 text-indigo-600 dark:text-indigo-400 flex items-center justify-center">
+            <div className="w-8 h-8 rounded-xl bg-indigo-50 dark:bg-indigo-950/50 text-indigo-600 dark:text-indigo-400 flex items-center justify-center shrink-0">
               <Users className="w-4 h-4" />
             </div>
           </div>
           <div className="mt-2 flex items-baseline gap-2">
-            <span className="text-2xl sm:text-3xl font-bold text-slate-900 dark:text-white">
+            <span className="text-2xl sm:text-3xl font-bold text-slate-900 dark:text-white truncate">
               {summary.activeCount}
             </span>
           </div>
@@ -255,17 +255,17 @@ export default function SeguimientosPage() {
         </div>
 
         {/* Card 2: Recuperados */}
-        <div className="p-4 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200/80 dark:border-slate-800 shadow-sm transition hover:shadow-md">
-          <div className="flex items-center justify-between">
-            <span className="text-xs font-semibold uppercase tracking-wider text-slate-400 dark:text-slate-500">
+        <div className="p-4 sm:p-4.5 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200/90 dark:border-slate-800 shadow-xs transition hover:shadow-md">
+          <div className="flex items-center justify-between gap-2">
+            <span className="text-xs font-semibold uppercase tracking-wider text-slate-600 dark:text-slate-400">
               Clientes recuperados
             </span>
-            <div className="w-8 h-8 rounded-xl bg-emerald-50 dark:bg-emerald-950/50 text-emerald-600 dark:text-emerald-400 flex items-center justify-center">
+            <div className="w-8 h-8 rounded-xl bg-emerald-50 dark:bg-emerald-950/50 text-emerald-600 dark:text-emerald-400 flex items-center justify-center shrink-0">
               <CheckCircle2 className="w-4 h-4" />
             </div>
           </div>
           <div className="mt-2 flex items-baseline gap-2">
-            <span className="text-2xl sm:text-3xl font-bold text-slate-900 dark:text-white">
+            <span className="text-2xl sm:text-3xl font-bold text-slate-900 dark:text-white truncate">
               {summary.recoveredCount}
             </span>
           </div>
@@ -275,17 +275,17 @@ export default function SeguimientosPage() {
         </div>
 
         {/* Card 3: Ventas Recuperadas */}
-        <div className="p-4 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200/80 dark:border-slate-800 shadow-sm transition hover:shadow-md">
-          <div className="flex items-center justify-between">
-            <span className="text-xs font-semibold uppercase tracking-wider text-slate-400 dark:text-slate-500">
+        <div className="p-4 sm:p-4.5 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200/90 dark:border-slate-800 shadow-xs transition hover:shadow-md">
+          <div className="flex items-center justify-between gap-2">
+            <span className="text-xs font-semibold uppercase tracking-wider text-slate-600 dark:text-slate-400">
               Ventas recuperadas
             </span>
-            <div className="w-8 h-8 rounded-xl bg-emerald-50 dark:bg-emerald-950/50 text-emerald-600 dark:text-emerald-400 flex items-center justify-center">
+            <div className="w-8 h-8 rounded-xl bg-emerald-50 dark:bg-emerald-950/50 text-emerald-600 dark:text-emerald-400 flex items-center justify-center shrink-0">
               <DollarSign className="w-4 h-4" />
             </div>
           </div>
           <div className="mt-2 flex items-baseline gap-2">
-            <span className="text-2xl sm:text-3xl font-bold text-slate-900 dark:text-white">
+            <span className="text-2xl sm:text-3xl font-bold text-slate-900 dark:text-white truncate">
               {summary.attributedSalesTotal > 0
                 ? `S/ ${summary.attributedSalesTotal.toLocaleString('es-PE')}`
                 : (summary.attributedSalesCount > 0 ? `${summary.attributedSalesCount} ventas` : 'S/ 0')}
@@ -299,17 +299,17 @@ export default function SeguimientosPage() {
         </div>
 
         {/* Card 4: Tasa de Recuperación */}
-        <div className="p-4 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200/80 dark:border-slate-800 shadow-sm transition hover:shadow-md">
-          <div className="flex items-center justify-between">
-            <span className="text-xs font-semibold uppercase tracking-wider text-slate-400 dark:text-slate-500">
+        <div className="p-4 sm:p-4.5 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200/90 dark:border-slate-800 shadow-xs transition hover:shadow-md">
+          <div className="flex items-center justify-between gap-2">
+            <span className="text-xs font-semibold uppercase tracking-wider text-slate-600 dark:text-slate-400">
               Tasa de recuperación
             </span>
-            <div className="w-8 h-8 rounded-xl bg-blue-50 dark:bg-blue-950/50 text-blue-600 dark:text-blue-400 flex items-center justify-center">
+            <div className="w-8 h-8 rounded-xl bg-blue-50 dark:bg-blue-950/50 text-blue-600 dark:text-blue-400 flex items-center justify-center shrink-0">
               <TrendingUp className="w-4 h-4" />
             </div>
           </div>
           <div className="mt-2 flex items-baseline gap-2">
-            <span className="text-2xl sm:text-3xl font-bold text-slate-900 dark:text-white">
+            <span className="text-2xl sm:text-3xl font-bold text-slate-900 dark:text-white truncate">
               {summary.recoveryRatePercent}%
             </span>
           </div>
@@ -319,22 +319,25 @@ export default function SeguimientosPage() {
         </div>
       </div>
 
-      {/* 3. Navegación Operativa (3 Tabs) */}
-      <div className="border-b border-slate-200 dark:border-slate-800">
-        <nav className="flex space-x-6 sm:space-x-8" aria-label="Tabs">
+      {/* 3. Navegación Operativa (3 Tabs) — Scrollable y accesible en móvil */}
+      <div className="border-b border-slate-200 dark:border-slate-800 -mx-3.5 sm:mx-0 px-3.5 sm:px-0">
+        <nav
+          className="flex space-x-4 sm:space-x-8 overflow-x-auto overflow-y-hidden whitespace-nowrap scrollbar-none scroll-smooth pb-px -mb-px"
+          aria-label="Tabs de Seguimientos"
+        >
           {/* Tab 1: En seguimiento */}
           <button
             onClick={() => setActiveTab('activos')}
-            className={`pb-3.5 px-1 inline-flex items-center gap-2 border-b-2 font-semibold text-sm transition ${
+            className={`pb-3 px-1 inline-flex items-center gap-2 border-b-2 font-semibold text-sm transition flex-shrink-0 cursor-pointer ${
               activeTab === 'activos'
                 ? 'border-indigo-600 text-indigo-600 dark:border-indigo-400 dark:text-indigo-400'
-                : 'border-transparent text-slate-500 hover:text-slate-700 hover:border-slate-300 dark:text-slate-400 dark:hover:text-slate-300'
+                : 'border-transparent text-slate-600 hover:text-slate-900 hover:border-slate-300 dark:text-slate-400 dark:hover:text-slate-200'
             }`}
           >
-            <Clock className="w-4 h-4" />
+            <Clock className="w-4 h-4 flex-shrink-0" />
             <span>En seguimiento</span>
             {summary.activeCount > 0 && (
-              <span className="ml-1 px-2 py-0.5 text-xs font-bold rounded-full bg-indigo-100 text-indigo-700 dark:bg-indigo-900/60 dark:text-indigo-300">
+              <span className="ml-0.5 px-2 py-0.5 text-xs font-bold rounded-full bg-indigo-100 text-indigo-700 dark:bg-indigo-900/60 dark:text-indigo-300">
                 {summary.activeCount}
               </span>
             )}
@@ -343,16 +346,16 @@ export default function SeguimientosPage() {
           {/* Tab 2: Recuperados */}
           <button
             onClick={() => setActiveTab('recuperados')}
-            className={`pb-3.5 px-1 inline-flex items-center gap-2 border-b-2 font-semibold text-sm transition ${
+            className={`pb-3 px-1 inline-flex items-center gap-2 border-b-2 font-semibold text-sm transition flex-shrink-0 cursor-pointer ${
               activeTab === 'recuperados'
                 ? 'border-emerald-600 text-emerald-600 dark:border-emerald-400 dark:text-emerald-400'
-                : 'border-transparent text-slate-500 hover:text-slate-700 hover:border-slate-300 dark:text-slate-400 dark:hover:text-slate-300'
+                : 'border-transparent text-slate-600 hover:text-slate-900 hover:border-slate-300 dark:text-slate-400 dark:hover:text-slate-200'
             }`}
           >
-            <CheckCircle2 className="w-4 h-4" />
+            <CheckCircle2 className="w-4 h-4 flex-shrink-0" />
             <span>Recuperados</span>
             {summary.recoveredCount > 0 && (
-              <span className="ml-1 px-2 py-0.5 text-xs font-bold rounded-full bg-emerald-100 text-emerald-700 dark:bg-emerald-900/60 dark:text-emerald-300">
+              <span className="ml-0.5 px-2 py-0.5 text-xs font-bold rounded-full bg-emerald-100 text-emerald-700 dark:bg-emerald-900/60 dark:text-emerald-300">
                 {summary.recoveredCount}
               </span>
             )}
@@ -361,28 +364,28 @@ export default function SeguimientosPage() {
           {/* Tab 3: Historial */}
           <button
             onClick={() => setActiveTab('historial')}
-            className={`pb-3.5 px-1 inline-flex items-center gap-2 border-b-2 font-semibold text-sm transition ${
+            className={`pb-3 px-1 inline-flex items-center gap-2 border-b-2 font-semibold text-sm transition flex-shrink-0 cursor-pointer ${
               activeTab === 'historial'
                 ? 'border-indigo-600 text-indigo-600 dark:border-indigo-400 dark:text-indigo-400'
-                : 'border-transparent text-slate-500 hover:text-slate-700 hover:border-slate-300 dark:text-slate-400 dark:hover:text-slate-300'
+                : 'border-transparent text-slate-600 hover:text-slate-900 hover:border-slate-300 dark:text-slate-400 dark:hover:text-slate-200'
             }`}
           >
-            <Calendar className="w-4 h-4" />
+            <Calendar className="w-4 h-4 flex-shrink-0" />
             <span>Historial</span>
           </button>
         </nav>
       </div>
 
       {/* 4. Tab Content: Container de Listas / Tablas */}
-      <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl overflow-hidden shadow-sm">
+      <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl overflow-hidden shadow-xs">
         {loading ? (
-          <div className="p-16 flex flex-col items-center justify-center text-slate-400">
+          <div className="p-12 sm:p-16 flex flex-col items-center justify-center text-slate-500 dark:text-slate-400">
             <Loader2 className="w-8 h-8 animate-spin mb-3 text-indigo-600 dark:text-indigo-400" />
             <p className="text-sm font-medium">Cargando oportunidades...</p>
           </div>
         ) : sequences.length === 0 ? (
           /* Empty States según pestaña */
-          <div className="p-16 text-center">
+          <div className="p-10 sm:p-16 text-center">
             {activeTab === 'activos' && (
               <>
                 <div className="w-14 h-14 rounded-2xl bg-emerald-50 dark:bg-emerald-950/50 text-emerald-600 dark:text-emerald-400 mx-auto mb-3.5 flex items-center justify-center">
@@ -391,7 +394,7 @@ export default function SeguimientosPage() {
                 <h3 className="text-lg font-bold text-slate-900 dark:text-slate-100">
                   Todo al día
                 </h3>
-                <p className="text-sm text-slate-500 dark:text-slate-400 mt-1 max-w-md mx-auto">
+                <p className="text-sm text-slate-600 dark:text-slate-400 mt-1 max-w-md mx-auto">
                   No hay clientes esperando seguimiento. Cuando un cliente deje de responder durante una compra, aparecerá automáticamente aquí.
                 </p>
               </>
@@ -404,20 +407,20 @@ export default function SeguimientosPage() {
                 <h3 className="text-lg font-bold text-slate-900 dark:text-slate-100">
                   Aún no hay clientes recuperados.
                 </h3>
-                <p className="text-sm text-slate-500 dark:text-slate-400 mt-1 max-w-md mx-auto">
+                <p className="text-sm text-slate-600 dark:text-slate-400 mt-1 max-w-md mx-auto">
                   Cuando alguien responda a un seguimiento, aparecerá aquí.
                 </p>
               </>
             )}
             {activeTab === 'historial' && (
               <>
-                <div className="w-14 h-14 rounded-2xl bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400 mx-auto mb-3.5 flex items-center justify-center">
+                <div className="w-14 h-14 rounded-2xl bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400 mx-auto mb-3.5 flex items-center justify-center">
                   <Calendar className="w-7 h-7" />
                 </div>
                 <h3 className="text-lg font-bold text-slate-900 dark:text-slate-100">
                   Aún no hay actividad de seguimientos.
                 </h3>
-                <p className="text-sm text-slate-500 dark:text-slate-400 mt-1 max-w-md mx-auto">
+                <p className="text-sm text-slate-600 dark:text-slate-400 mt-1 max-w-md mx-auto">
                   El historial de seguimientos completados o detenidos se mostrará aquí.
                 </p>
               </>
@@ -428,7 +431,7 @@ export default function SeguimientosPage() {
             {/* Desktop Table (>= 768px) */}
             <div className="hidden md:block overflow-x-auto">
               <table className="min-w-full divide-y divide-slate-200 dark:divide-slate-800 text-left text-sm">
-                <thead className="bg-slate-50/80 dark:bg-slate-800/40 text-slate-600 dark:text-slate-300 font-semibold text-xs uppercase tracking-wider">
+                <thead className="bg-slate-50 dark:bg-slate-800/60 text-slate-700 dark:text-slate-300 font-semibold text-xs uppercase tracking-wider">
                   {activeTab === 'activos' && (
                     <tr>
                       <th scope="col" className="px-6 py-3.5">Cliente</th>
@@ -464,7 +467,7 @@ export default function SeguimientosPage() {
                   {sequences.map((seq) => {
                     const statusCfg = STATUS_BADGES[seq.status] || {
                       label: seq.status,
-                      color: 'bg-slate-100 text-slate-700'
+                      color: 'bg-slate-100 text-slate-700 border-slate-200 dark:bg-slate-800 dark:text-slate-300 dark:border-slate-700'
                     };
                     const { displayName, displayPhone, initials } = formatCustomerDisplay(seq.customer);
                     const canCancel = ['SCHEDULED', 'WAITING_NEXT'].includes(seq.status);
@@ -545,14 +548,14 @@ export default function SeguimientosPage() {
                             <div className="flex items-center justify-end gap-2">
                               <button
                                 onClick={() => setDetailModalItem(seq)}
-                                className="px-3 py-1.5 rounded-lg text-slate-700 bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:text-slate-200 dark:hover:bg-slate-700 transition font-medium"
+                                className="px-3 py-1.5 rounded-lg text-slate-700 bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:text-slate-200 dark:hover:bg-slate-700 transition font-medium cursor-pointer"
                               >
                                 Ver
                               </button>
                               {canCancel && (
                                 <button
                                   onClick={() => setCancelModalItem(seq)}
-                                  className="px-3 py-1.5 rounded-lg text-rose-600 bg-rose-50 hover:bg-rose-100 dark:bg-rose-950/40 dark:text-rose-300 dark:hover:bg-rose-900/50 transition font-medium"
+                                  className="px-3 py-1.5 rounded-lg text-rose-600 bg-rose-50 hover:bg-rose-100 dark:bg-rose-950/40 dark:text-rose-300 dark:hover:bg-rose-900/50 transition font-medium cursor-pointer"
                                 >
                                   Detener
                                 </button>
@@ -619,7 +622,7 @@ export default function SeguimientosPage() {
                           <td className="px-6 py-4 whitespace-nowrap text-right text-xs">
                             <button
                               onClick={() => setDetailModalItem(seq)}
-                              className="px-3 py-1.5 rounded-lg text-slate-700 bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:text-slate-200 dark:hover:bg-slate-700 transition font-medium"
+                              className="px-3 py-1.5 rounded-lg text-slate-700 bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:text-slate-200 dark:hover:bg-slate-700 transition font-medium cursor-pointer"
                             >
                               Ver
                             </button>
@@ -642,7 +645,7 @@ export default function SeguimientosPage() {
                             </span>
                           ) : (
                             <span className={`inline-flex items-center px-2.5 py-1 rounded-full text-xs font-medium border ${statusCfg.color}`}>
-                              {statusCfg.label}
+                              {formatCancelReason(seq.cancelReason) || statusCfg.label}
                             </span>
                           )}
                         </td>
@@ -671,14 +674,14 @@ export default function SeguimientosPage() {
                           </div>
                         </td>
 
-                        <td className="px-6 py-4 whitespace-nowrap text-xs text-slate-500">
+                        <td className="px-6 py-4 whitespace-nowrap text-xs text-slate-500 dark:text-slate-400">
                           {seq.currentAttempt} de {seq.maxAttempts || 3}
                         </td>
 
                         <td className="px-6 py-4 whitespace-nowrap text-right text-xs">
                           <button
                             onClick={() => setDetailModalItem(seq)}
-                            className="px-3 py-1.5 rounded-lg text-slate-700 bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:text-slate-200 dark:hover:bg-slate-700 transition font-medium"
+                            className="px-3 py-1.5 rounded-lg text-slate-700 bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:text-slate-200 dark:hover:bg-slate-700 transition font-medium cursor-pointer"
                           >
                             Ver
                           </button>
@@ -690,59 +693,75 @@ export default function SeguimientosPage() {
               </table>
             </div>
 
-            {/* Mobile Cards View (< 768px) */}
+            {/* Mobile Cards View (< 768px) — Totalmente responsive y accesible */}
             <div className="md:hidden divide-y divide-slate-200 dark:divide-slate-800">
               {sequences.map((seq) => {
-                const statusCfg = STATUS_BADGES[seq.status] || { label: seq.status, color: 'bg-slate-100 text-slate-700' };
+                const statusCfg = STATUS_BADGES[seq.status] || {
+                  label: seq.status,
+                  color: 'bg-slate-100 text-slate-700 border-slate-200 dark:bg-slate-800 dark:text-slate-300 dark:border-slate-700'
+                };
                 const { displayName, displayPhone, initials } = formatCustomerDisplay(seq.customer);
                 const canCancel = ['SCHEDULED', 'WAITING_NEXT'].includes(seq.status);
 
                 return (
-                  <div key={seq.id} className="p-4 space-y-3">
-                    {/* Header fila móvil */}
-                    <div className="flex items-start justify-between gap-3">
-                      <div className="flex items-center gap-2.5">
-                        <div className="w-9 h-9 rounded-full bg-indigo-50 dark:bg-indigo-950/60 text-indigo-700 dark:text-indigo-300 font-bold text-xs flex items-center justify-center ring-1 ring-indigo-200 dark:ring-indigo-800/60">
+                  <div key={seq.id} className="p-3.5 sm:p-4 space-y-3">
+                    {/* Header fila móvil: avatar + nombre + badge */}
+                    <div className="flex items-start justify-between gap-2.5">
+                      <div className="flex items-center gap-2.5 min-w-0 flex-1">
+                        <div className="w-9 h-9 rounded-full bg-indigo-50 dark:bg-indigo-950/60 text-indigo-700 dark:text-indigo-300 font-bold text-xs flex items-center justify-center ring-1 ring-indigo-200 dark:ring-indigo-800/60 shrink-0">
                           {initials}
                         </div>
-                        <div>
-                          <div className="font-semibold text-slate-900 dark:text-white text-sm">
+                        <div className="min-w-0 flex-1">
+                          <div className="font-semibold text-slate-900 dark:text-white text-sm truncate">
                             {displayName}
                           </div>
-                          <div className="text-xs text-slate-500 dark:text-slate-400 font-mono">
+                          <div className="text-xs text-slate-500 dark:text-slate-400 font-mono truncate">
                             {displayPhone}
                           </div>
                         </div>
                       </div>
 
-                      {activeTab === 'activos' ? (
-                        <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium border ${statusCfg.color}`}>
-                          {statusCfg.label}
-                        </span>
-                      ) : activeTab === 'recuperados' ? (
-                        <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold bg-emerald-50 text-emerald-700 border border-emerald-200 dark:bg-emerald-950/40 dark:text-emerald-300">
-                          Recuperado
-                        </span>
-                      ) : (
-                        <span className="text-xs font-medium text-slate-600 dark:text-slate-300">
-                          {formatCancelReason(seq.cancelReason) || statusCfg.label}
-                        </span>
-                      )}
+                      <div className="shrink-0 max-w-[48%] flex justify-end">
+                        {activeTab === 'activos' ? (
+                          <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium border text-center break-words ${statusCfg.color}`}>
+                            {statusCfg.label}
+                          </span>
+                        ) : activeTab === 'recuperados' ? (
+                          <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold bg-emerald-50 text-emerald-700 border border-emerald-200 dark:bg-emerald-950/40 dark:text-emerald-300 dark:border-emerald-800/50">
+                            Recuperado
+                          </span>
+                        ) : (
+                          /* Historial: badges con manejo de textos largos como Semantic Not Eligible */
+                          seq.status === 'RECOVERED' ? (
+                            <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold bg-emerald-50 text-emerald-700 border border-emerald-200 dark:bg-emerald-950/40 dark:text-emerald-300 dark:border-emerald-800/50">
+                              Recuperado
+                            </span>
+                          ) : seq.status === 'CANCELLED' ? (
+                            <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-rose-50 text-rose-700 border border-rose-200 dark:bg-rose-950/40 dark:text-rose-300 dark:border-rose-800/50 text-right leading-tight">
+                              {formatCancelReason(seq.cancelReason)}
+                            </span>
+                          ) : (
+                            <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium border text-right leading-tight ${statusCfg.color}`}>
+                              {formatCancelReason(seq.cancelReason) || statusCfg.label}
+                            </span>
+                          )
+                        )}
+                      </div>
                     </div>
 
                     {/* Oportunidad / Producto */}
-                    <div className="bg-slate-50 dark:bg-slate-800/40 p-2.5 rounded-xl text-xs space-y-1">
-                      <div className="font-medium text-slate-900 dark:text-slate-100 flex items-center gap-1.5">
-                        <ShoppingBag className="w-3.5 h-3.5 text-slate-400" />
-                        <span>{seq.productName || 'Interés general'}</span>
+                    <div className="bg-slate-50 dark:bg-slate-800/50 p-2.5 rounded-xl text-xs space-y-1.5 border border-slate-100 dark:border-slate-800/80">
+                      <div className="font-medium text-slate-900 dark:text-slate-100 flex items-center gap-1.5 min-w-0">
+                        <ShoppingBag className="w-3.5 h-3.5 text-slate-500 dark:text-slate-400 shrink-0" />
+                        <span className="truncate">{seq.productName || 'Interés general'}</span>
                       </div>
-                      <div className="text-slate-500 dark:text-slate-400">
+                      <div className="text-slate-600 dark:text-slate-400">
                         Etapa: {STAGE_LABELS[seq.stageAtCreation] || seq.stageAtCreation}
                       </div>
 
                       {activeTab === 'activos' && seq.nextRunAt && (
-                        <div className="pt-1 border-t border-slate-200/60 dark:border-slate-700/50 flex justify-between items-center text-slate-700 dark:text-slate-300">
-                          <span>Próximo envío:</span>
+                        <div className="pt-1.5 border-t border-slate-200/80 dark:border-slate-700/60 flex flex-col min-[380px]:flex-row min-[380px]:justify-between min-[380px]:items-center gap-0.5 text-slate-700 dark:text-slate-300">
+                          <span className="text-slate-500 dark:text-slate-400">Próximo envío:</span>
                           <span className="font-semibold text-indigo-600 dark:text-indigo-400">
                             {formatRelativeTime(seq.nextRunAt)} ({formatShortDateTime(seq.nextRunAt, summary.timezone)})
                           </span>
@@ -750,31 +769,40 @@ export default function SeguimientosPage() {
                       )}
 
                       {activeTab === 'recuperados' && (
-                        <div className="pt-1 border-t border-slate-200/60 dark:border-slate-700/50 flex justify-between items-center text-slate-700 dark:text-slate-300">
-                          <span>Recuperado:</span>
+                        <div className="pt-1.5 border-t border-slate-200/80 dark:border-slate-700/60 flex flex-col min-[380px]:flex-row min-[380px]:justify-between min-[380px]:items-center gap-0.5 text-slate-700 dark:text-slate-300">
+                          <span className="text-slate-500 dark:text-slate-400">Recuperado:</span>
                           <span className="font-semibold text-emerald-600 dark:text-emerald-400">
                             {getRecoveryAttemptLabel(seq)} · {formatShortDateTime(seq.recoveredAt, summary.timezone)}
+                          </span>
+                        </div>
+                      )}
+
+                      {activeTab === 'historial' && (
+                        <div className="pt-1.5 border-t border-slate-200/80 dark:border-slate-700/60 flex justify-between items-center text-slate-600 dark:text-slate-400">
+                          <span>Fecha:</span>
+                          <span className="font-medium text-slate-800 dark:text-slate-200">
+                            {formatShortDateTime(seq.updatedAt || seq.recoveredAt, summary.timezone)}
                           </span>
                         </div>
                       )}
                     </div>
 
                     {/* Acciones móvil */}
-                    <div className="flex items-center justify-between pt-1">
-                      <div className="text-xs text-slate-500">
-                        Progreso: <span className="font-semibold">{seq.currentAttempt} de {seq.maxAttempts || 3}</span>
+                    <div className="flex items-center justify-between pt-0.5">
+                      <div className="text-xs text-slate-600 dark:text-slate-400">
+                        Progreso: <span className="font-semibold text-slate-800 dark:text-slate-200">{seq.currentAttempt} de {seq.maxAttempts || 3}</span>
                       </div>
                       <div className="flex items-center gap-2">
                         <button
                           onClick={() => setDetailModalItem(seq)}
-                          className="px-3 py-1.5 text-xs font-semibold rounded-lg bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-200 hover:bg-slate-200 transition"
+                          className="px-3 py-1.5 text-xs font-semibold rounded-lg bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:text-slate-200 dark:hover:bg-slate-700 text-slate-700 transition cursor-pointer"
                         >
                           Ver
                         </button>
                         {activeTab === 'activos' && canCancel && (
                           <button
                             onClick={() => setCancelModalItem(seq)}
-                            className="px-3 py-1.5 text-xs font-semibold rounded-lg bg-rose-50 dark:bg-rose-950/40 text-rose-600 dark:text-rose-300 hover:bg-rose-100 transition"
+                            className="px-3 py-1.5 text-xs font-semibold rounded-lg bg-rose-50 dark:bg-rose-950/40 text-rose-600 dark:text-rose-300 hover:bg-rose-100 dark:hover:bg-rose-900/50 transition cursor-pointer"
                           >
                             Detener
                           </button>
@@ -788,25 +816,25 @@ export default function SeguimientosPage() {
           </>
         )}
 
-        {/* Pagination */}
+        {/* Pagination — Responsive y accesible */}
         {pagination.pages > 1 && (
-          <div className="px-6 py-3.5 border-t border-slate-200 dark:border-slate-800 flex items-center justify-between text-xs text-slate-500">
+          <div className="px-4 sm:px-6 py-3.5 border-t border-slate-200 dark:border-slate-800 flex flex-col sm:flex-row items-center justify-between gap-3 text-xs text-slate-600 dark:text-slate-400">
             <span>
               Página <strong className="text-slate-900 dark:text-white">{pagination.page}</strong> de{' '}
               <strong className="text-slate-900 dark:text-white">{pagination.pages}</strong> ({pagination.total} en total)
             </span>
-            <div className="flex gap-2">
+            <div className="flex gap-2 w-full sm:w-auto justify-end">
               <button
                 disabled={pagination.page <= 1}
                 onClick={() => loadSequences(activeTab, pagination.page - 1)}
-                className="px-3 py-1.5 border border-slate-200 dark:border-slate-700 rounded-lg hover:bg-slate-50 dark:hover:bg-slate-800 disabled:opacity-40 disabled:cursor-not-allowed font-medium"
+                className="px-3 py-1.5 border border-slate-200 dark:border-slate-700 rounded-lg hover:bg-slate-50 dark:hover:bg-slate-800 disabled:opacity-40 disabled:cursor-not-allowed font-medium text-slate-700 dark:text-slate-300 cursor-pointer"
               >
                 Anterior
               </button>
               <button
                 disabled={pagination.page >= pagination.pages}
                 onClick={() => loadSequences(activeTab, pagination.page + 1)}
-                className="px-3 py-1.5 border border-slate-200 dark:border-slate-700 rounded-lg hover:bg-slate-50 dark:hover:bg-slate-800 disabled:opacity-40 disabled:cursor-not-allowed font-medium"
+                className="px-3 py-1.5 border border-slate-200 dark:border-slate-700 rounded-lg hover:bg-slate-50 dark:hover:bg-slate-800 disabled:opacity-40 disabled:cursor-not-allowed font-medium text-slate-700 dark:text-slate-300 cursor-pointer"
               >
                 Siguiente
               </button>
@@ -829,14 +857,14 @@ export default function SeguimientosPage() {
             {/* Header del Cliente y Producto */}
             <div className="p-4 rounded-xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200/80 dark:border-slate-700 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
               <div className="flex items-center gap-3">
-                <div className="w-10 h-10 rounded-full bg-indigo-100 dark:bg-indigo-900/60 text-indigo-700 dark:text-indigo-300 font-bold text-sm flex items-center justify-center">
+                <div className="w-10 h-10 rounded-full bg-indigo-100 dark:bg-indigo-900/60 text-indigo-700 dark:text-indigo-300 font-bold text-sm flex items-center justify-center shrink-0">
                   {formatCustomerDisplay(detailModalItem.customer).initials}
                 </div>
-                <div>
-                  <h3 className="font-bold text-slate-900 dark:text-white text-base">
+                <div className="min-w-0">
+                  <h3 className="font-bold text-slate-900 dark:text-white text-base truncate">
                     {formatCustomerDisplay(detailModalItem.customer).displayName}
                   </h3>
-                  <p className="text-xs text-slate-500 font-mono">
+                  <p className="text-xs text-slate-500 dark:text-slate-400 font-mono truncate">
                     {formatCustomerDisplay(detailModalItem.customer).displayPhone}
                   </p>
                 </div>
@@ -844,11 +872,11 @@ export default function SeguimientosPage() {
 
               <div className="flex flex-wrap items-center gap-2">
                 <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-semibold bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-200">
-                  <ShoppingBag className="w-3.5 h-3.5 text-slate-400" />
+                  <ShoppingBag className="w-3.5 h-3.5 text-slate-500 dark:text-slate-400" />
                   {detailModalItem.productName || 'Interés general'}
                 </span>
                 <span className={`inline-flex items-center px-2.5 py-1 rounded-lg text-xs font-semibold border ${
-                  STATUS_BADGES[detailModalItem.status]?.color || 'bg-slate-100 text-slate-700'
+                  STATUS_BADGES[detailModalItem.status]?.color || 'bg-slate-100 text-slate-700 border-slate-200 dark:bg-slate-800 dark:text-slate-300 dark:border-slate-700'
                 }`}>
                   {STATUS_BADGES[detailModalItem.status]?.label || detailModalItem.status}
                 </span>
@@ -857,7 +885,7 @@ export default function SeguimientosPage() {
 
             {/* Visual Activity Timeline */}
             <div>
-              <h4 className="text-xs font-bold uppercase tracking-wider text-slate-400 dark:text-slate-500 mb-4">
+              <h4 className="text-xs font-bold uppercase tracking-wider text-slate-600 dark:text-slate-400 mb-4">
                 Actividad Cronológica
               </h4>
 
@@ -865,7 +893,7 @@ export default function SeguimientosPage() {
                 const timeline = buildFollowUpTimeline(detailModalItem, summary.timezone);
                 if (timeline.length === 0) {
                   return (
-                    <p className="text-sm text-slate-400 italic">
+                    <p className="text-sm text-slate-500 dark:text-slate-400 italic">
                       No hay eventos registrados para esta oportunidad.
                     </p>
                   );
@@ -900,7 +928,7 @@ export default function SeguimientosPage() {
                               <span className="font-semibold text-sm text-slate-900 dark:text-white">
                                 {event.title}
                               </span>
-                              <span className="text-xs text-slate-400 font-medium whitespace-nowrap">
+                              <span className="text-xs text-slate-500 dark:text-slate-400 font-medium whitespace-nowrap">
                                 {event.timeFormatted}
                               </span>
                             </div>
@@ -936,14 +964,14 @@ export default function SeguimientosPage() {
               <button
                 type="button"
                 onClick={() => setShowTechnicalDetails(!showTechnicalDetails)}
-                className="w-full flex items-center justify-between text-xs font-semibold text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 py-1 transition"
+                className="w-full flex items-center justify-between text-xs font-semibold text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200 py-1 transition cursor-pointer"
               >
                 <span>Información técnica para soporte</span>
                 {showTechnicalDetails ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
               </button>
 
               {showTechnicalDetails && (
-                <div className="mt-3 p-3 rounded-lg bg-slate-50 dark:bg-slate-850 text-xs font-mono text-slate-600 dark:text-slate-400 space-y-1.5">
+                <div className="mt-3 p-3 rounded-lg bg-slate-50 dark:bg-slate-800 text-xs font-mono text-slate-600 dark:text-slate-400 space-y-1.5 border border-slate-200/80 dark:border-slate-700">
                   <div>ID Secuencia: <span className="text-slate-900 dark:text-slate-200">{detailModalItem.id}</span></div>
                   <div>Etapa original: <span className="text-slate-900 dark:text-slate-200">{detailModalItem.stageAtCreation}</span></div>
                   <div>Fecha ancla (UTC): <span className="text-slate-900 dark:text-slate-200">{detailModalItem.anchorAt || '—'}</span></div>
@@ -961,7 +989,7 @@ export default function SeguimientosPage() {
                   setDetailModalItem(null);
                   setShowTechnicalDetails(false);
                 }}
-                className="px-4 py-2 text-sm font-semibold rounded-xl bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:text-slate-200 dark:hover:bg-slate-700 transition"
+                className="px-4 py-2 text-sm font-semibold rounded-xl bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:text-slate-200 dark:hover:bg-slate-700 transition cursor-pointer"
               >
                 Cerrar
               </button>
@@ -1006,7 +1034,7 @@ export default function SeguimientosPage() {
               <button
                 type="button"
                 onClick={() => setCancelModalItem(null)}
-                className="px-4 py-2 text-sm rounded-xl text-slate-600 bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:text-slate-300 font-medium"
+                className="px-4 py-2 text-sm rounded-xl text-slate-600 bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:text-slate-300 font-medium cursor-pointer"
               >
                 Volver
               </button>
@@ -1014,7 +1042,7 @@ export default function SeguimientosPage() {
                 type="button"
                 disabled={cancelling}
                 onClick={handleCancelSequence}
-                className="inline-flex items-center gap-2 px-4 py-2 text-sm font-semibold rounded-xl text-white bg-rose-600 hover:bg-rose-700 disabled:opacity-50 shadow-sm"
+                className="inline-flex items-center gap-2 px-4 py-2 text-sm font-semibold rounded-xl text-white bg-rose-600 hover:bg-rose-700 disabled:opacity-50 shadow-sm cursor-pointer"
               >
                 {cancelling ? <Loader2 className="w-4 h-4 animate-spin" /> : <X className="w-4 h-4" />}
                 Confirmar y Detener
@@ -1052,7 +1080,7 @@ export default function SeguimientosPage() {
                 <div className="font-semibold text-slate-900 dark:text-white text-sm">
                   Seguimientos automáticos
                 </div>
-                <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5 max-w-sm">
+                <p className="text-xs text-slate-600 dark:text-slate-400 mt-0.5 max-w-sm">
                   Velion enviará mensajes a clientes que dejen de responder durante el proceso de compra.
                 </p>
               </div>
@@ -1075,7 +1103,7 @@ export default function SeguimientosPage() {
             </div>
 
             {/* Horario de envío (Fijo V1) */}
-            <div className="p-4 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-850 space-y-1">
+            <div className="p-4 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-800 space-y-1">
               <div className="flex items-center justify-between">
                 <span className="text-sm font-semibold text-slate-900 dark:text-white">
                   Horario de envío
@@ -1084,7 +1112,7 @@ export default function SeguimientosPage() {
                   09:00 – 20:00 (Protegido)
                 </span>
               </div>
-              <p className="text-xs text-slate-500 dark:text-slate-400">
+              <p className="text-xs text-slate-600 dark:text-slate-400">
                 Los mensajes solo se enviarán dentro de este horario. Si un seguimiento coincide fuera de esta ventana, se pospone automáticamente a las 09:00 del día siguiente.
               </p>
             </div>
@@ -1113,21 +1141,21 @@ export default function SeguimientosPage() {
 
             {/* Secuencia fija V1 */}
             <div className="p-4 rounded-xl bg-slate-50 dark:bg-slate-800/40 border border-slate-200/80 dark:border-slate-700/80 space-y-2">
-              <div className="text-xs font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400">
+              <div className="text-xs font-bold uppercase tracking-wider text-slate-600 dark:text-slate-400">
                 Secuencia Automática de Mensajes
               </div>
               <div className="grid grid-cols-3 gap-2 text-center text-xs">
                 <div className="p-2 rounded-lg bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700">
                   <div className="font-bold text-indigo-600 dark:text-indigo-400">1.º Envío</div>
-                  <div className="text-slate-500 dark:text-slate-400 text-[11px] mt-0.5">después de 6 h</div>
+                  <div className="text-slate-600 dark:text-slate-400 text-[11px] mt-0.5">después de 6 h</div>
                 </div>
                 <div className="p-2 rounded-lg bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700">
                   <div className="font-bold text-indigo-600 dark:text-indigo-400">2.º Envío</div>
-                  <div className="text-slate-500 dark:text-slate-400 text-[11px] mt-0.5">después de 24 h</div>
+                  <div className="text-slate-600 dark:text-slate-400 text-[11px] mt-0.5">después de 24 h</div>
                 </div>
                 <div className="p-2 rounded-lg bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700">
                   <div className="font-bold text-indigo-600 dark:text-indigo-400">3.º Envío</div>
-                  <div className="text-slate-500 dark:text-slate-400 text-[11px] mt-0.5">después de 48 h</div>
+                  <div className="text-slate-600 dark:text-slate-400 text-[11px] mt-0.5">después de 48 h</div>
                 </div>
               </div>
             </div>
@@ -1145,14 +1173,14 @@ export default function SeguimientosPage() {
               <button
                 type="button"
                 onClick={() => setIsSettingsOpen(false)}
-                className="px-4 py-2 text-sm font-medium rounded-xl text-slate-600 bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:text-slate-300"
+                className="px-4 py-2 text-sm font-medium rounded-xl text-slate-600 bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:text-slate-300 cursor-pointer"
               >
                 Cancelar
               </button>
               <button
                 type="submit"
                 disabled={savingSettings}
-                className="inline-flex items-center gap-2 px-5 py-2 text-sm font-semibold rounded-xl text-white bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 shadow-sm transition"
+                className="inline-flex items-center gap-2 px-5 py-2 text-sm font-semibold rounded-xl text-white bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 shadow-sm transition cursor-pointer"
               >
                 {savingSettings && <Loader2 className="w-4 h-4 animate-spin" />}
                 Guardar cambios
