@@ -1942,72 +1942,90 @@ export function getIngestionKey(body, isMeta) {
  * Detecta automáticamente si el origen es Meta Cloud API o Evolution API,
  * normaliza el payload a un objeto estándar y lo procesa de forma unificada.
  */
-export async function receiveWebhook(req, res) {
-  // ── 1. DETECCIÓN DE PROVEEDOR ──────────────────────────────────────────────
-  const isMeta = req.body?.object === 'whatsapp_business_account';
-  const provider = isMeta ? 'META' : 'EVOLUTION';
-
-  // ── 2. VALIDACIÓN DE SEGURIDAD (Solo Evolution requiere API Key por Header) ──
-  if (!isMeta) {
-    const requestApiKey = (req.headers?.apikey || req.headers?.['x-api-key'] || '').trim();
-    const systemApiKey = (process.env.EVOLUTION_API_KEY || '').trim();
-    if (!systemApiKey || !requestApiKey || requestApiKey !== systemApiKey) {
-      console.error('🚨 [Seguridad Webhook] Petición bloqueada por ApiKey ausente o inválida en encabezados.');
-      return res.status(401).json({ error: 'Unauthorized' });
-    }
+/**
+ * ─── GATEWAY: Webhook de Evolution API ───
+ * Requiere EVOLUTION_API_KEY obligatorio. No permite conmutación por body.
+ */
+export async function receiveEvolutionWebhook(req, res) {
+  const requestApiKey = (req.headers?.apikey || req.headers?.['x-api-key'] || req.query?.apikey || req.body?.apikey || '').trim();
+  const systemApiKey = (process.env.EVOLUTION_API_KEY || '').trim();
+  if (!systemApiKey || !requestApiKey || requestApiKey !== systemApiKey) {
+    console.error('🚨 [Seguridad Webhook Evolution] Petición bloqueada por ApiKey ausente o inválida en encabezados.');
+    return res.status(401).json({ error: 'Unauthorized' });
   }
 
-  // Meta requiere respuesta inmediata 200 antes de procesar
   res.sendStatus(200);
 
-  // 1. OBTENER EVENTOS INDIVIDUALES (Solución de Meta Batching)
-  const events = isMeta ? extractMetaMessageEvents(req.body) : [req.body];
-
-  // 2. ENCOLAR CADA EVENTO EN SU RESPECTIVO CHAT (Arrival Order)
+  const events = [req.body];
   for (const eventBody of events) {
-    // Deduplicación temprana por evento con scoping estricto (provider:instance:direction:msgId)
-    let msgId = null;
-    let eventInstance = null;
-    let eventDirection = 'in';
+    const msgId = eventBody?.data?.key?.id || null;
+    const eventInstance = eventBody?.instance || 'evolution';
+    const eventDirection = eventBody?.data?.key?.fromMe ? 'out' : 'in';
 
-    if (isMeta) {
-      const value = eventBody?.entry?.[0]?.changes?.[0]?.value;
-      const echoMsg = value?.message_echoes?.[0] || (value?.messages?.[0]?.is_echo ? value?.messages?.[0] : null);
-      msgId = echoMsg ? echoMsg.id : (value?.messages?.[0]?.id || null);
-      eventInstance = value?.metadata?.phone_number_id || 'meta';
-      eventDirection = echoMsg ? 'out' : 'in';
-    } else {
-      msgId = eventBody?.data?.key?.id || null;
-      eventInstance = eventBody?.instance || 'evolution';
-      eventDirection = eventBody?.data?.key?.fromMe ? 'out' : 'in';
-    }
-    
-    const earlyDedupeKey = msgId ? `${provider}:${eventInstance}:${eventDirection}:${msgId}` : null;
+    const earlyDedupeKey = msgId ? `EVOLUTION:${eventInstance}:${eventDirection}:${msgId}` : null;
     if (earlyDedupeKey && processedWebhooksCache.has(earlyDedupeKey)) {
       console.log(`♻️ [Deduplication] Webhook duplicado ignorado de forma temprana (${earlyDedupeKey})`);
-      continue; // Siguiente evento
+      continue;
     }
 
-    const ingestionKey = getIngestionKey(eventBody, isMeta);
-    
-    // Clonamos referencias compartidas del express request original
+    const ingestionKey = getIngestionKey(eventBody, false);
     const reqIo = req.io;
     const reqQuery = req.query;
     const reqHeaders = req.headers;
 
-    if (ingestionKey && (eventBody?.event === 'messages.upsert' || isMeta)) {
-      enqueueIngestionEvent(ingestionKey, () => 
-        _processWebhookEvent(eventBody, isMeta, provider, reqIo, reqQuery, reqHeaders)
+    if (ingestionKey && eventBody?.event === 'messages.upsert') {
+      enqueueIngestionEvent(ingestionKey, () =>
+        _processWebhookEvent(eventBody, false, 'EVOLUTION', reqIo, reqQuery, reqHeaders)
       );
     } else {
-      // Si no es encolable (ej. status o informativo sin message), se dispara independiente sin esperar en queue
-      // Pero no debe bloquear el loop
-      _processWebhookEvent(eventBody, isMeta, provider, reqIo, reqQuery, reqHeaders).catch(err => {
-         console.error('❌ Error en evento no encolable:', err.message);
+      _processWebhookEvent(eventBody, false, 'EVOLUTION', reqIo, reqQuery, reqHeaders).catch(err => {
+        console.error('❌ Error en evento no encolable:', err.message);
       });
     }
   }
 }
+
+/**
+ * ─── GATEWAY: Webhook de Meta Cloud API ───
+ * Pre-autenticado criptográficamente por verifyMetaSignature (X-Hub-Signature-256).
+ */
+export async function receiveMetaWebhook(req, res) {
+  // Meta requiere respuesta inmediata 200 antes de procesar
+  res.sendStatus(200);
+
+  const events = extractMetaMessageEvents(req.body);
+  for (const eventBody of events) {
+    const value = eventBody?.entry?.[0]?.changes?.[0]?.value;
+    const echoMsg = value?.message_echoes?.[0] || (value?.messages?.[0]?.is_echo ? value?.messages?.[0] : null);
+    const msgId = echoMsg ? echoMsg.id : (value?.messages?.[0]?.id || null);
+    const eventInstance = value?.metadata?.phone_number_id || 'meta';
+    const eventDirection = echoMsg ? 'out' : 'in';
+
+    const earlyDedupeKey = msgId ? `META:${eventInstance}:${eventDirection}:${msgId}` : null;
+    if (earlyDedupeKey && processedWebhooksCache.has(earlyDedupeKey)) {
+      console.log(`♻️ [Deduplication] Webhook duplicado ignorado de forma temprana (${earlyDedupeKey})`);
+      continue;
+    }
+
+    const ingestionKey = getIngestionKey(eventBody, true);
+    const reqIo = req.io;
+    const reqQuery = req.query;
+    const reqHeaders = req.headers;
+
+    if (ingestionKey) {
+      enqueueIngestionEvent(ingestionKey, () =>
+        _processWebhookEvent(eventBody, true, 'META', reqIo, reqQuery, reqHeaders)
+      );
+    } else {
+      _processWebhookEvent(eventBody, true, 'META', reqIo, reqQuery, reqHeaders).catch(err => {
+        console.error('❌ Error en evento no encolable:', err.message);
+      });
+    }
+  }
+}
+
+// Alias de retrocompatibilidad: receiveWebhook apunta estrictamente a receiveEvolutionWebhook
+export const receiveWebhook = receiveEvolutionWebhook;
 
 /**
  * Función interna que procesa el payload asíncronamente
@@ -2039,28 +2057,110 @@ async function _processWebhookEvent(body, isMeta, provider, io, query, headers) 
       console.log(`📊 [Meta Status] Mensaje ${statusId} -> ${statusName} (Para: +${recipientPhone})`);
 
       try {
-        const existingMsg = await prisma.message.findFirst({
-          where: { externalId: statusId },
-          include: { chat: true }
+        // 1. Pre-resolución de cuenta Meta y Tenant antes de cualquier búsqueda de Message
+        const incomingPhoneNumberId = normalized.metaPhoneNumberId;
+        if (!incomingPhoneNumberId) {
+          console.warn('⚠️ [Meta Status] Webhook ignorado: metaPhoneNumberId ausente en payload.');
+          return;
+        }
+
+        const metaAccount = await prisma.registeredWhatsAppNumber.findFirst({
+          where: {
+            provider: 'META',
+            metaPhoneNumberId: String(incomingPhoneNumberId)
+          }
         });
 
-        if (existingMsg) {
-          await prisma.message.update({
-            where: { id: existingMsg.id },
-            data: { status: statusName }
-          });
+        if (!metaAccount || !metaAccount.tenantId) {
+          console.warn(`⚠️ [Meta Status] Webhook ignorado: no existe RegisteredWhatsAppNumber activo para provider=META y metaPhoneNumberId=${incomingPhoneNumberId}`);
+          return;
+        }
 
-          const ioInstance = req.io || global.io;
-          const statusTenantId = existingMsg.tenantId || existingMsg.chat?.tenantId;
-          if (ioInstance && statusTenantId) {
-            ioInstance.to(`tenant:${statusTenantId}`).emit('message_status_updated', {
-              messageId: existingMsg.id,
-              chatId: existingMsg.chatId,
-              externalId: statusId,
-              status: statusName,
-              timestamp: new Date()
+        const resolvedTenantId = metaAccount.tenantId;
+
+        // 2. Aislamiento de proveedor: los IDs de Meta Cloud API deben cumplir con el formato canónico 'wamid'
+        if (!statusId || typeof statusId !== 'string' || !statusId.startsWith('wamid')) {
+          console.warn(`⚠️ [Meta Status] Webhook ignorado: statusId no cumple con formato canónico de Meta (wamid): "${statusId}"`);
+          return;
+        }
+
+        // 3. Si existe FollowUpAttempt asociado al externalId, debe pertenecer a provider META
+        const linkedAttempt = await prisma.followUpAttempt.findFirst({
+          where: { providerMessageId: statusId }
+        });
+        if (linkedAttempt && linkedAttempt.provider !== 'META') {
+          console.warn(`⚠️ [Meta Status] Webhook ignorado: FollowUpAttempt asociado pertenece a provider ${linkedAttempt.provider}, no META.`);
+          return;
+        }
+
+        // 4. Lookup de Message estrictamente scoped por Tenant y externalId (PROHIBIDO findFirst sin tenantId)
+        const existingMsg = await prisma.message.findFirst({
+          where: {
+            externalId: statusId,
+            tenantId: resolvedTenantId
+          },
+          include: { chat: { include: { contact: true } } }
+        });
+
+        if (!existingMsg) {
+          console.log(`ℹ️ [Meta Status] Mensaje ${statusId} no encontrado en tenant ${resolvedTenantId}`);
+          return;
+        }
+
+        // 5. Validar que el mensaje en BD también posea externalId canónico de Meta
+        if (!existingMsg.externalId || !existingMsg.externalId.startsWith('wamid')) {
+          console.warn(`⚠️ [Meta Status] Webhook ignorado: el mensaje en BD no tiene prefijo canónico de Meta.`);
+          return;
+        }
+
+        // 6. Validación cruzada de número de destinatario si está disponible
+        if (recipientPhone && existingMsg.chat?.contact?.phone) {
+          const cleanRecipient = String(recipientPhone).replace(/\D/g, '');
+          const cleanContact = String(existingMsg.chat.contact.phone).replace(/\D/g, '');
+          if (cleanRecipient && cleanContact && !cleanContact.endsWith(cleanRecipient) && !cleanRecipient.endsWith(cleanContact)) {
+            console.warn(`⚠️ [Meta Status] Webhook ignorado: recipientPhone (${cleanRecipient}) no coincide con teléfono del chat (${cleanContact})`);
+            return;
+          }
+        }
+
+        // 7. Mapeo y mutación de estado segura
+        const META_STATUS_MAP = {
+          'sent': 'sent',
+          'delivered': 'delivered',
+          'read': 'read',
+          'failed': 'failed'
+        };
+        const newStatus = META_STATUS_MAP[statusName] || statusName;
+
+        await prisma.message.update({
+          where: { id: existingMsg.id },
+          data: { status: newStatus }
+        });
+
+        if (linkedAttempt && linkedAttempt.status !== 'READ') {
+          const DELIVERY_MAP = { 'sent': 'SERVER_ACK', 'delivered': 'DELIVERY_ACK', 'read': 'READ', 'failed': 'ERROR' };
+          const deliv = DELIVERY_MAP[newStatus];
+          if (deliv) {
+            await prisma.followUpAttempt.update({
+              where: { id: linkedAttempt.id },
+              data: {
+                deliveryStatus: deliv,
+                ...(deliv === 'DELIVERY_ACK' ? { deliveredAt: new Date() } : {}),
+                ...(deliv === 'READ' ? { readAt: new Date() } : {})
+              }
             });
           }
+        }
+
+        const ioInstance = req.io || global.io;
+        if (ioInstance && resolvedTenantId) {
+          ioInstance.to(`tenant:${resolvedTenantId}`).emit('message_status_updated', {
+            messageId: existingMsg.id,
+            chatId: existingMsg.chatId,
+            externalId: statusId,
+            status: newStatus,
+            timestamp: new Date()
+          });
         }
       } catch (statusErr) {
         console.error('❌ [Meta Status] Error actualizando estado de mensaje:', statusErr.message);

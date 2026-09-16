@@ -1,16 +1,30 @@
 import express from 'express';
-import { getStatus, connectDevice, disconnectDevice, sendMessage, receiveWebhook, receiveMetaVerification } from '../controllers/whatsappController.js';
+import {
+  getStatus,
+  connectDevice,
+  disconnectDevice,
+  sendMessage,
+  receiveEvolutionWebhook,
+  receiveMetaWebhook,
+  receiveWebhook,
+  receiveMetaVerification
+} from '../controllers/whatsappController.js';
 import authMiddleware from '../middlewares/authMiddleware.js';
+import { verifyMetaSignature } from '../middlewares/metaWebhookAuth.js';
 
 const router = express.Router();
 
-// ─── GATEWAY: Webhook unificado (Evolution API POST + Meta Cloud API POST) ───
-router.post('/webhook', receiveWebhook);
-router.post('/meta/webhook', receiveWebhook); // Alias por compatibilidad
+// ─── GATEWAY: Webhooks separados por Proveedor ───
 
-// ─── GATEWAY: Verificación de webhook de Meta Cloud API (GET handshake) ───
-router.get('/webhook', receiveMetaVerification);
-router.get('/meta/webhook', receiveMetaVerification); // Alias por compatibilidad
+// Evolution API: Autenticación obligatoria por API Key (EVOLUTION_API_KEY)
+router.post('/webhook', receiveEvolutionWebhook);
+
+// Meta Cloud API: Autenticación obligatoria por firma HMAC-SHA256 (X-Hub-Signature-256)
+router.post('/meta/webhook', verifyMetaSignature, receiveMetaWebhook);
+
+// Handshake de verificación de Meta Cloud API (GET)
+router.get('/meta/webhook', receiveMetaVerification);
+router.get('/webhook', receiveMetaVerification); // Alias por compatibilidad
 
 
 // Proteger todas las rutas de WhatsApp

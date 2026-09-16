@@ -47,7 +47,10 @@ app.get('/ping', (req, res) => res.status(200).send('pong'));
 app.use(express.json({
   limit: '50mb',
   verify: (req, res, buf) => {
-    if (req.originalUrl && req.originalUrl.includes('/stripe/webhook')) {
+    if (req.originalUrl && (
+      req.originalUrl.includes('/stripe/webhook') ||
+      req.originalUrl.includes('/api/whatsapp/meta/webhook')
+    )) {
       req.rawBody = buf;
     }
   }
