@@ -44,8 +44,14 @@ async function runTest(testId, description, fn) {
   }
 }
 
-const controllerCode = fs.readFileSync('./backend_api/src/controllers/whatsappController.js', 'utf8').replace(/\r\n/g, '\n');
-const aiServiceCode = fs.readFileSync('./backend_api/src/services/aiService.js', 'utf8').replace(/\r\n/g, '\n');
+const controllerPath = fs.existsSync('./src/controllers/whatsappController.js')
+  ? './src/controllers/whatsappController.js'
+  : './backend_api/src/controllers/whatsappController.js';
+const aiServicePath = fs.existsSync('./src/services/aiService.js')
+  ? './src/services/aiService.js'
+  : './backend_api/src/services/aiService.js';
+const controllerCode = fs.readFileSync(controllerPath, 'utf8').replace(/\r\n/g, '\n');
+const aiServiceCode = fs.readFileSync(aiServicePath, 'utf8').replace(/\r\n/g, '\n');
 
 async function runSuite() {
   _resetProcessingStateForTesting();

@@ -3513,14 +3513,15 @@ ${catalogIndexCsv}
     finalPrompt += `${globalGuardrails}\n\n${systemCommands}`;
 
     // Directiva de máxima prioridad para solicitudes explícitas de fotos/imágenes o videos
+    const activeConsultedId = currentCommercialState?.lastConsultedProductId || currentCommercialState?.productId;
     const rawMediaIntent = detectProductMediaIntent(userMessageText);
-    const isAmbiguousAVerPrompt = isStandaloneAVer(userMessageText) && !currentCommercialState?.productId;
+    const isAmbiguousAVerPrompt = isStandaloneAVer(userMessageText) && !activeConsultedId;
     const detectedMediaIntent = isAmbiguousAVerPrompt ? null : rawMediaIntent;
-    if (isExplicitProductMediaIntent(userMessageText) && currentCommercialState?.productId) {
+    if ((isExplicitProductMediaIntent(userMessageText) && currentCommercialState?.productId) || (isExplicitProductMediaIntent(userMessageText) && activeConsultedId)) {
       if (detectedMediaIntent === 'video') {
-        finalPrompt += `\n\n[INSTRUCCIÓN PRIORITARIA DE VIDEO]:\nEl usuario solicita explícitamente ver un video del producto en consulta (ID: "${currentCommercialState.productId}"). DEBES llamar INMEDIATAMENTE a la herramienta 'send_product_media' con productId: "${currentCommercialState.productId}" y mediaType: "video". Si el producto tiene video registrado, envíalo. NUNCA digas que no tienes o no envías videos si el producto sí tiene video registrado.\n`;
+        finalPrompt += `\n\n[INSTRUCCIÓN PRIORITARIA DE VIDEO]:\nEl usuario solicita explícitamente ver un video del producto en consulta (ID: "${activeConsultedId}"). DEBES llamar INMEDIATAMENTE a la herramienta 'send_product_media' con productId: "${activeConsultedId}" y mediaType: "video". Si el producto tiene video registrado, envíalo. NUNCA digas que no tienes o no envías videos si el producto sí tiene video registrado.\n`;
       } else {
-        finalPrompt += `\n\n[INSTRUCCIÓN PRIORITARIA DE FOTO/IMAGEN]:\nEl usuario solicita explícitamente ver una foto o imagen del producto en consulta (ID: "${currentCommercialState.productId}"). DEBES llamar INMEDIATAMENTE a la herramienta 'send_product_media' con productId: "${currentCommercialState.productId}" y mediaType: "image". NUNCA uses 'get_product_details' como sustituto de 'send_product_media' cuando el usuario pide ver fotos o imágenes.\n`;
+        finalPrompt += `\n\n[INSTRUCCIÓN PRIORITARIA DE FOTO/IMAGEN]:\nEl usuario solicita explícitamente ver una foto o imagen del producto en consulta (ID: "${activeConsultedId}"). DEBES llamar INMEDIATAMENTE a la herramienta 'send_product_media' con productId: "${activeConsultedId}" y mediaType: "image". NUNCA uses 'get_product_details' como sustituto de 'send_product_media' cuando el usuario pide ver fotos o imágenes.\n`;
       }
     }
 
@@ -3604,7 +3605,8 @@ ${catalogIndexCsv}
         productId: orchestratedMedia.targetProduct.id,
         productName: orchestratedMedia.targetProduct.name,
         url: orchestratedMedia.url,
-        mediaType: orchestratedMedia.mediaType
+        mediaType: orchestratedMedia.mediaType,
+        source: 'auto_orchestrator'
       };
       mediaSentInSession = true;
       console.log(`🖼️ [Auto-Media Orchestrator] ${orchestratedMedia.mediaType} preparado para "${orchestratedMedia.targetProduct.name}" (${orchestratedMedia.reason})`);
@@ -3616,7 +3618,7 @@ ${catalogIndexCsv}
     }
 
     // Directiva dinámica de turno si la imagen principal de este producto ya fue mostrada previamente (Case B)
-    const activeProductId = currentCommercialState?.productId || orchestratedMedia?.targetProduct?.id;
+    const activeProductId = currentCommercialState?.lastConsultedProductId || currentCommercialState?.productId || orchestratedMedia?.targetProduct?.id;
     const isMainImageAlreadySent = Boolean(activeProductId && sentMediaProductIds.includes(activeProductId));
     if (isMainImageAlreadySent && !pendingMediaToSend && !isExplicitProductMediaIntent(userMessageText)) {
       finalPrompt += `\n\n[MEDIA CONTEXT]:\nLa imagen principal de este producto ya fue mostrada al cliente en esta conversación. No la ofrezcas nuevamente ni preguntes si desea verla, salvo que el cliente solicite explícitamente volver a recibirla.\n`;
@@ -3700,6 +3702,34 @@ ${catalogIndexCsv}
         }
       ]
     }];
+
+    // ─── HELPER CONTEXTUAL: Actualizar lastConsultedProductId sin alterar estado comercial de compra ───
+    const updateLastConsultedProduct = async (prodId, prodName) => {
+      if (!prodId) return;
+      currentCommercialState.lastConsultedProductId = prodId;
+      if (prodName) currentCommercialState.lastConsultedProductName = prodName;
+      if (customer?.id) {
+        try {
+          const refreshedCustomer = await prisma.customer.findUnique({
+            where: { id: customer.id },
+            select: { commercialState: true }
+          });
+          const cState = (typeof refreshedCustomer?.commercialState === 'object' && refreshedCustomer?.commercialState !== null)
+            ? { ...refreshedCustomer.commercialState }
+            : { ...currentCommercialState };
+          cState.lastConsultedProductId = prodId;
+          if (prodName) cState.lastConsultedProductName = prodName;
+          await prisma.customer.update({
+            where: { id: customer.id },
+            data: { commercialState: cState }
+          });
+          currentCommercialState = cState;
+          console.log(`💾 [Product Context] lastConsultedProductId actualizado a "${prodId}" (${prodName || ''}) en commercialState.`);
+        } catch (persistErr) {
+          console.warn('⚠️ [Product Context] Error persistiendo lastConsultedProductId:', persistErr.message);
+        }
+      }
+    };
 
     // ─── MANEJADOR DE HERRAMIENTAS (CALLBACK) ────────────────────────────────
     const toolsHandler = async (funcName, args) => {
@@ -3888,6 +3918,7 @@ ${catalogIndexCsv}
           }
 
           consultedProduct = { id: productId, name: product.name };
+          await updateLastConsultedProduct(productId, product.name);
 
           if (product.user?.tenantId && product.user.tenantId !== tenant.id) {
              // Basic security to avoid cross-tenant leaks if ID is guessed
@@ -3947,7 +3978,8 @@ Atributos/Tags: ${Array.isArray(product.tags) ? product.tags.join(', ') : ''}
                   productId: productId,
                   productName: product.name,
                   url: product.videoUrl.trim(),
-                  mediaType: 'video'
+                  mediaType: 'video',
+                  source: 'explicit_tool'
                 };
                 mediaSentInSession = true;
                 console.log(`🎥 [FC - get_product_details Auto-Media] Video canónico encolado para producto "${productId}" (${product.name})`);
@@ -3965,7 +3997,8 @@ Atributos/Tags: ${Array.isArray(product.tags) ? product.tags.join(', ') : ''}
                   productId: productId,
                   productName: product.name,
                   url: canonicalUrl,
-                  mediaType: 'image'
+                  mediaType: 'image',
+                  source: 'explicit_tool'
                 };
                 mediaSentInSession = true;
                 console.log(`🖼️ [FC - get_product_details Auto-Media] Imagen canónica encolada para producto "${productId}" (${product.name})`);
@@ -4012,29 +4045,6 @@ Atributos/Tags: ${Array.isArray(product.tags) ? product.tags.join(', ') : ''}
           };
         }
 
-        // Guardia de deduplicación: máximo 1 media por turno
-        if (mediaSentInSession || pendingMediaToSend) {
-          // Coordinación Gemini/Backend: Si la multimedia para este producto ya fue programada por el backend en este turno
-          if (pendingMediaToSend && pendingMediaToSend.productId === productId) {
-            console.log(`🤝 [FC - Coordination] send_product_media: Media para "${productId}" ya programada por el backend. Retornando éxito sin duplicar.`);
-            return {
-              success: true,
-              hasMedia: true,
-              alreadyQueued: true,
-              mediaType: pendingMediaToSend.mediaType,
-              productName: pendingMediaToSend.productName,
-              message: `La multimedia oficial de "${pendingMediaToSend.productName}" ya está programada y se entregará al cliente con esta respuesta.`
-            };
-          }
-          console.warn(`⚠️ [FC] send_product_media rechazado: ya se encoló multimedia para este turno (productId: "${productId}").`);
-          return {
-            success: false,
-            hasMedia: false,
-            reason: 'MEDIA_ALREADY_QUEUED',
-            message: 'Ya se preparó un elemento multimedia para este turno. No se permiten envíos duplicados.'
-          };
-        }
-
         if (!productId) {
           return {
             success: false,
@@ -4071,15 +4081,13 @@ Atributos/Tags: ${Array.isArray(product.tags) ? product.tags.join(', ') : ''}
             };
           }
 
-          consultedProduct = { id: productId, name: product.name };
-
+          let targetMediaUrl = null;
           if (requestedMediaType === 'video') {
-            let canonicalVideoUrl = null;
             if (product.videoUrl && typeof product.videoUrl === 'string' && product.videoUrl.trim() !== '' && product.videoUrl.trim() !== 'Sin video') {
-              canonicalVideoUrl = product.videoUrl.trim();
+              targetMediaUrl = product.videoUrl.trim();
             }
 
-            if (!canonicalVideoUrl) {
+            if (!targetMediaUrl) {
               console.log(`ℹ️ [FC] send_product_media: Producto "${product.name}" (${product.id}) no tiene video registrado.`);
               return {
                 success: false,
@@ -4088,54 +4096,25 @@ Atributos/Tags: ${Array.isArray(product.tags) ? product.tags.join(', ') : ''}
                 message: `El producto o servicio "${product.name}" no cuenta con un video registrado en el catálogo digital en este momento. Informa esto al cliente con honestidad y amabilidad sin inventar enlaces ni decir que no se envían videos.`
               };
             }
-
-            if (isGenerationSuperseded()) {
-              wasSuperseded = true;
-              pendingMediaToSend = null;
-              return { success: false, error: 'GENERATION_SUPERSEDED', message: 'El usuario envió un mensaje más reciente.' };
+          } else {
+            if (product.imageUrl && typeof product.imageUrl === 'string' && product.imageUrl.trim() !== '' && product.imageUrl.trim() !== 'Sin imagen') {
+              targetMediaUrl = product.imageUrl.trim();
+            } else if (Array.isArray(product.images) && product.images.length > 0) {
+              const firstImg = product.images[0];
+              if (firstImg && typeof firstImg === 'string' && firstImg.trim() !== '' && firstImg.trim() !== 'Sin imagen') {
+                targetMediaUrl = firstImg.trim();
+              }
             }
 
-            pendingMediaToSend = {
-              productId: product.id,
-              productName: product.name,
-              url: canonicalVideoUrl,
-              mediaType: 'video'
-            };
-            mediaSentInSession = true;
-
-            const fcMs = Date.now() - fcStart;
-            console.log(`✅ [FC] send_product_media completado en ${fcMs}ms. Video preparado: ${product.name}`);
-            return {
-              success: true,
-              hasMedia: true,
-              mediaType: 'video',
-              productName: product.name,
-              message: `El video oficial de "${product.name}" ha sido preparado y se enviará al cliente por WhatsApp. Acompaña el video con un mensaje breve y amigable.`
-            };
-          }
-
-          // Precedencia canónica segura para imagen:
-          // 1. imageUrl
-          // 2. images[0] (si imageUrl está vacío y images[0] es válido)
-          // 3. sin media
-          let canonicalUrl = null;
-          if (product.imageUrl && typeof product.imageUrl === 'string' && product.imageUrl.trim() !== '' && product.imageUrl.trim() !== 'Sin imagen') {
-            canonicalUrl = product.imageUrl.trim();
-          } else if (Array.isArray(product.images) && product.images.length > 0) {
-            const firstImg = product.images[0];
-            if (firstImg && typeof firstImg === 'string' && firstImg.trim() !== '' && firstImg.trim() !== 'Sin imagen') {
-              canonicalUrl = firstImg.trim();
+            if (!targetMediaUrl) {
+              console.log(`ℹ️ [FC] send_product_media: Producto "${product.name}" (${product.id}) no tiene imagen registrada.`);
+              return {
+                success: false,
+                hasMedia: false,
+                reason: 'NO_IMAGE_REGISTERED',
+                message: `El producto o servicio "${product.name}" no cuenta con una imagen o foto registrada en el catálogo digital en este momento. Informa esto al cliente con honestidad y amabilidad sin inventar enlaces.`
+              };
             }
-          }
-
-          if (!canonicalUrl) {
-            console.log(`ℹ️ [FC] send_product_media: Producto "${product.name}" (${product.id}) no tiene imagen registrada.`);
-            return {
-              success: false,
-              hasMedia: false,
-              reason: 'NO_IMAGE_REGISTERED',
-              message: `El producto o servicio "${product.name}" no cuenta con una imagen o foto registrada en el catálogo digital en este momento. Informa esto al cliente con honestidad y amabilidad sin inventar enlaces.`
-            };
           }
 
           if (isGenerationSuperseded()) {
@@ -4145,22 +4124,91 @@ Atributos/Tags: ${Array.isArray(product.tags) ? product.tags.join(', ') : ''}
             return { success: false, error: 'GENERATION_SUPERSEDED', message: 'El usuario envió un mensaje más reciente.' };
           }
 
+          // Guardia de deduplicación y corrección explícita de pendingMediaToSend
+          if (mediaSentInSession && !pendingMediaToSend) {
+            console.warn(`⚠️ [FC] send_product_media rechazado: multimedia ya despachada físicamente en este turno.`);
+            return {
+              success: false,
+              hasMedia: false,
+              reason: 'MEDIA_ALREADY_QUEUED',
+              message: 'Ya se preparó y despachó un elemento multimedia para este turno. No se permiten envíos duplicados.'
+            };
+          }
+
+          if (pendingMediaToSend) {
+            // Caso 1: Mismo producto ya programado en este turno
+            if (pendingMediaToSend.productId === product.id) {
+              console.log(`🤝 [FC - Coordination] send_product_media: Media para "${productId}" ya programada. Retornando éxito sin duplicar.`);
+              return {
+                success: true,
+                hasMedia: true,
+                alreadyQueued: true,
+                mediaType: pendingMediaToSend.mediaType,
+                productName: pendingMediaToSend.productName,
+                message: `La multimedia oficial de "${pendingMediaToSend.productName}" ya está programada y se entregará al cliente con esta respuesta.`
+              };
+            }
+
+            // Caso 2: Producto DISTINTO y el previo fue programado por auto_orchestrator
+            // La llamada explícita del LLM superseda la preparación automática previa
+            if (pendingMediaToSend.source === 'auto_orchestrator') {
+              console.log(`🔄 [FC - Media Supersede] Reemplazando media automática de "${pendingMediaToSend.productName}" (${pendingMediaToSend.productId}) con media explícita de "${product.name}" (${product.id}).`);
+              pendingMediaToSend = {
+                productId: product.id,
+                productName: product.name,
+                url: targetMediaUrl,
+                mediaType: requestedMediaType,
+                source: 'explicit_tool'
+              };
+              mediaSentInSession = true;
+              consultedProduct = { id: product.id, name: product.name };
+              await updateLastConsultedProduct(product.id, product.name);
+
+              const fcMs = Date.now() - fcStart;
+              console.log(`✅ [FC] send_product_media completado (superseded) en ${fcMs}ms. ${requestedMediaType} preparado: ${product.name}`);
+              return {
+                success: true,
+                hasMedia: true,
+                mediaType: requestedMediaType,
+                productName: product.name,
+                message: requestedMediaType === 'video'
+                  ? `El video oficial de "${product.name}" ha sido preparado y se enviará al cliente por WhatsApp. Acompaña el video con un mensaje breve y amigable.`
+                  : `La imagen oficial de "${product.name}" ha sido preparada y se enviará al cliente. Acompaña la imagen con un mensaje breve y amigable.`
+              };
+            }
+
+            // Caso 3: Producto DISTINTO pero ya fue programado explícitamente en este mismo turno
+            console.warn(`⚠️ [FC] send_product_media rechazado: ya se encoló multimedia explícita para este turno (productId: "${productId}").`);
+            return {
+              success: false,
+              hasMedia: false,
+              reason: 'MEDIA_ALREADY_QUEUED',
+              message: 'Ya se preparó un elemento multimedia para este turno. No se permiten envíos duplicados.'
+            };
+          }
+
+          // Caso 4: No había media previa encolada
           pendingMediaToSend = {
             productId: product.id,
             productName: product.name,
-            url: canonicalUrl,
-            mediaType: 'image'
+            url: targetMediaUrl,
+            mediaType: requestedMediaType,
+            source: 'explicit_tool'
           };
           mediaSentInSession = true;
+          consultedProduct = { id: product.id, name: product.name };
+          await updateLastConsultedProduct(product.id, product.name);
 
           const fcMs = Date.now() - fcStart;
-          console.log(`✅ [FC] send_product_media completado en ${fcMs}ms. Imagen preparada: ${product.name}`);
+          console.log(`✅ [FC] send_product_media completado en ${fcMs}ms. ${requestedMediaType} preparado: ${product.name}`);
           return {
             success: true,
             hasMedia: true,
-            mediaType: 'image',
+            mediaType: requestedMediaType,
             productName: product.name,
-            message: `La imagen oficial de "${product.name}" ha sido preparada y se enviará al cliente. Acompaña la imagen con un mensaje breve y amigable.`
+            message: requestedMediaType === 'video'
+              ? `El video oficial de "${product.name}" ha sido preparado y se enviará al cliente por WhatsApp. Acompaña el video con un mensaje breve y amigable.`
+              : `La imagen oficial de "${product.name}" ha sido preparada y se enviará al cliente. Acompaña la imagen con un mensaje breve y amigable.`
           };
         } catch (mediaErr) {
           console.error('❌ Error en send_product_media:', mediaErr.message);
@@ -4304,6 +4352,7 @@ Atributos/Tags: ${Array.isArray(product.tags) ? product.tags.join(', ') : ''}
     );
 
     const activeProduct = orchestratedMedia?.targetProduct ||
+      (currentCommercialState?.lastConsultedProductId ? tenantAvailableProducts?.find(p => p.id === currentCommercialState.lastConsultedProductId) : null) ||
       (currentCommercialState?.productId ? tenantAvailableProducts?.find(p => p.id === currentCommercialState.productId) : null);
 
     const fallbackContextOptions = {

@@ -290,6 +290,12 @@ export async function syncCommercialOrder({
   }
 
   let updatedState = { ...currentCommercialState, ...args };
+  if (args.productId) {
+    updatedState.lastConsultedProductId = args.productId;
+  }
+  if (args.productName) {
+    updatedState.lastConsultedProductName = args.productName;
+  }
 
   // ── SHIPPING AUTHORITY GUARD ──
   // Si el cliente o el modelo indican currentStage='SHIPPING_COORDINATED' pero la tienda NO tiene configuración/políticas de envío:

@@ -72,7 +72,7 @@ export function resolveTargetProduct(
   userMessageText,
   availableProducts = [],
   currentProductId = null,
-  { isExplicitMedia = false } = {}
+  { isExplicitMedia = false, lastConsultedProductId = null } = {}
 ) {
   if (!Array.isArray(availableProducts) || availableProducts.length === 0) {
     return null;
@@ -156,13 +156,24 @@ export function resolveTargetProduct(
   }
 
   // ── CASO C: Ningún producto mencionado en el texto actual ──
-  // REGLA DE LATEST INTENT: Solo recurrir a currentProductId si el usuario solicitó explícitamente multimedia
-  // para el producto en contexto (ej. "¿Tienes foto?", "Muéstrame video").
+  // REGLA DE LATEST INTENT: Solo recurrir a contexto previo si el usuario solicitó explícitamente multimedia
+  // para el producto en contexto (ej. "¿Tienes foto?", "Muéstrame video", "Fotos").
   // NUNCA auto-disparar imagen para un producto de turnos previos si el usuario no lo mencionó ni pidió foto.
-  if (currentProductId && isExplicitMedia) {
-    const existing = availableProducts.find(p => p.id === currentProductId);
-    if (existing) {
-      return existing;
+  if (isExplicitMedia) {
+    // 1. Preferir lastConsultedProductId válido/canónico del tenant
+    if (lastConsultedProductId) {
+      const consulted = availableProducts.find(p => p.id === lastConsultedProductId);
+      if (consulted) {
+        return consulted;
+      }
+    }
+
+    // 2. Fallback a currentProductId (producto seleccionado/confirmado en commercialState)
+    if (currentProductId) {
+      const existing = availableProducts.find(p => p.id === currentProductId);
+      if (existing) {
+        return existing;
+      }
     }
   }
 
@@ -219,11 +230,15 @@ export function orchestrateProductMedia({
   sentMediaProductIds = []
 }) {
   const currentProductId = currentCommercialState?.productId || null;
+  const lastConsultedProductId = currentCommercialState?.lastConsultedProductId || null;
   const isExplicitVideo = isExplicitProductVideoIntent(userMessageText);
   const isExplicitPhoto = isExplicitProductPhotoIntent(userMessageText);
   const isExplicitMedia = isExplicitVideo || isExplicitPhoto;
 
-  const targetProduct = resolveTargetProduct(userMessageText, availableProducts, currentProductId, { isExplicitMedia });
+  const targetProduct = resolveTargetProduct(userMessageText, availableProducts, currentProductId, {
+    isExplicitMedia,
+    lastConsultedProductId
+  });
 
   if (!targetProduct) {
     return {
