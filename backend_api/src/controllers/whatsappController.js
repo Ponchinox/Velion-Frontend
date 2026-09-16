@@ -3706,7 +3706,9 @@ ${catalogIndexCsv}
     // ─── HELPER CONTEXTUAL: Actualizar lastConsultedProductId sin alterar estado comercial de compra ───
     const updateLastConsultedProduct = async (prodId, prodName) => {
       if (!prodId) return;
+      const consultedAt = new Date().toISOString();
       currentCommercialState.lastConsultedProductId = prodId;
+      currentCommercialState.lastConsultedProductAt = consultedAt;
       if (prodName) currentCommercialState.lastConsultedProductName = prodName;
       if (customer?.id) {
         try {
@@ -3718,6 +3720,7 @@ ${catalogIndexCsv}
             ? { ...refreshedCustomer.commercialState }
             : { ...currentCommercialState };
           cState.lastConsultedProductId = prodId;
+          cState.lastConsultedProductAt = consultedAt;
           if (prodName) cState.lastConsultedProductName = prodName;
           await prisma.customer.update({
             where: { id: customer.id },
@@ -5171,8 +5174,17 @@ Atributos/Tags: ${Array.isArray(product.tags) ? product.tags.join(', ') : ''}
         const cState = (typeof refreshedCustomer?.commercialState === 'object' && refreshedCustomer?.commercialState !== null)
           ? refreshedCustomer.commercialState
           : currentCommercialState;
+
+        // ── DETECCIÓN DE CAMBIO DE PRODUCTO / FRESH CONSULTATION ──
+        const lastConsultedId = cState?.lastConsultedProductId;
+        const consultedProd = (lastConsultedId && Array.isArray(tenantAvailableProducts))
+          ? tenantAvailableProducts.find(p => p.id === lastConsultedId)
+          : null;
+
+        const isSwitchedToConsulted = consultedProd && (!cState?.productId || consultedProd.id !== cState.productId);
         const stage = cState?.currentStage;
-        if (stage && ['PRODUCT_SELECTED', 'DETAILS_PROVIDED', 'SHIPPING_COORDINATED', 'PAYMENT_PENDING'].includes(stage)) {
+
+        if (stage && ['PRODUCT_SELECTED', 'DETAILS_PROVIDED', 'SHIPPING_COORDINATED', 'PAYMENT_PENDING'].includes(stage) && !isSwitchedToConsulted) {
           const lastInbound = await prisma.message.findFirst({
             where: { chatId: chat.id, senderRole: { in: ['contact', 'user'] } },
             orderBy: { createdAt: 'desc' }
@@ -5200,15 +5212,17 @@ Atributos/Tags: ${Array.isArray(product.tags) ? product.tags.join(', ') : ''}
           }
         } else {
           // ── EVALUACIÓN TEMPRANA: PRODUCT_INTERESTED ──
-          // Si el cliente no avanzó aún a PRODUCT_SELECTED ni etapa posterior, pero se identificó
-          // un producto canónico concreto en la conversación o turno y el bot dejó una pregunta comercial:
-          const earlyProdId = cState?.productId ||
+          // Si el cliente no avanzó aún a PRODUCT_SELECTED ni etapa posterior, o cambió a un nuevo producto consultado,
+          // se identifica el producto canónico más reciente y el bot dejó una pregunta comercial:
+          const earlyProdId = (isSwitchedToConsulted ? consultedProd.id : null) ||
+            cState?.productId ||
             consultedProduct?.id ||
             pendingMediaToSend?.productId ||
             (orchestratedMedia?.targetProduct && !orchestratedMedia.targetProduct._isRejected ? orchestratedMedia.targetProduct.id : null) ||
             (Array.isArray(cState?.sentMediaProductIds) && cState.sentMediaProductIds.length > 0 ? cState.sentMediaProductIds[cState.sentMediaProductIds.length - 1] : null);
 
-          let earlyProdName = cState?.productName ||
+          let earlyProdName = (isSwitchedToConsulted ? consultedProd.name : null) ||
+            cState?.productName ||
             consultedProduct?.name ||
             pendingMediaToSend?.productName ||
             (orchestratedMedia?.targetProduct && !orchestratedMedia.targetProduct._isRejected ? orchestratedMedia.targetProduct.name : null);

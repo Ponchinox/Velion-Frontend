@@ -292,6 +292,7 @@ export async function syncCommercialOrder({
   let updatedState = { ...currentCommercialState, ...args };
   if (args.productId) {
     updatedState.lastConsultedProductId = args.productId;
+    updatedState.lastConsultedProductAt = new Date().toISOString();
   }
   if (args.productName) {
     updatedState.lastConsultedProductName = args.productName;

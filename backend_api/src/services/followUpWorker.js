@@ -357,19 +357,82 @@ export async function processFollowUpSequence(sequenceRecord, prismaClient = def
       }
     }
 
+    // ─── DETERMINISTIC PRE-DISPATCH GUARD: STALE PRODUCT CONTEXT (FAIL-CLOSED) ───
+    // Se ejecuta de forma determinista SIEMPRE, incluso si followUpDecisionMode === 'OFF'.
+    // Compara sequence.productId con el producto canónico más recientemente consultado por el cliente.
+    const liveCustomer = await db.customer.findUnique({
+      where: { id: seq.customerId },
+      select: { commercialState: true, followUpSuppressed: true }
+    });
+
+    const liveCommercialState = (liveCustomer?.commercialState && typeof liveCustomer.commercialState === 'object')
+      ? liveCustomer.commercialState
+      : (seq.contextSnapshot || {});
+
+    const lastConsultedId = liveCommercialState?.lastConsultedProductId;
+    const lastConsultedAt = liveCommercialState?.lastConsultedProductAt
+      ? new Date(liveCommercialState.lastConsultedProductAt).getTime()
+      : null;
+
+    if (lastConsultedId && seq.productId && lastConsultedId !== seq.productId) {
+      // Criterio temporal: la consulta del nuevo producto debe ser posterior al contexto vigente de la secuencia (anchorAt)
+      const seqContextTime = seq.anchorAt
+        ? new Date(seq.anchorAt).getTime()
+        : (seq.createdAt ? new Date(seq.createdAt).getTime() : 0);
+      const isFresherConsultation = lastConsultedAt ? (lastConsultedAt > seqContextTime) : false;
+
+      if (isFresherConsultation) {
+        // 1. Verificar pertenencia canónica al mismo tenant (aislamiento cross-tenant)
+        const canonicalTenantProduct = await db.product.findFirst({
+          where: { id: lastConsultedId, user: { tenantId: seq.tenantId }, isAvailable: true },
+          select: { id: true, name: true }
+        });
+
+        if (canonicalTenantProduct) {
+          console.log(`🛑 [FollowUp Pre-Dispatch Hard Guard] Producto de secuencia (${seq.productName || seq.productId}) difiere del último producto consultado fresco (${canonicalTenantProduct.name} - ${lastConsultedId}). Cancelando por STALE_PRODUCT_CONTEXT.`);
+
+          const targetAttemptNum = seq.currentAttempt + 1;
+          await db.followUpAttempt.upsert({
+            where: { sequenceId_attemptNumber: { sequenceId: seq.id, attemptNumber: targetAttemptNum } },
+            create: {
+              sequenceId: seq.id,
+              attemptNumber: targetAttemptNum,
+              status: 'SKIPPED_POLICY',
+              provider: gatewayCtx?.provider || 'EVOLUTION',
+              scheduledAt: seq.nextRunAt || now,
+              errorMessage: `STALE_PRODUCT_CONTEXT: sequence product (${seq.productName || seq.productId}) differs from fresh consulted product (${canonicalTenantProduct.name})`
+            },
+            update: {
+              status: 'SKIPPED_POLICY',
+              errorMessage: `STALE_PRODUCT_CONTEXT: sequence product (${seq.productName || seq.productId}) differs from fresh consulted product (${canonicalTenantProduct.name})`
+            }
+          });
+
+          await db.followUpSequence.update({
+            where: { id: seqId },
+            data: {
+              status: 'CANCELLED',
+              cancelReason: 'STALE_PRODUCT_CONTEXT',
+              claimedAt: null
+            }
+          });
+
+          return {
+            success: false,
+            status: 'CANCELLED',
+            reason: 'STALE_PRODUCT_CONTEXT',
+            sequenceProduct: seq.productId,
+            lastConsultedProduct: lastConsultedId
+          };
+        }
+      }
+    }
+
     // ─── SEMANTIC DECISION ENGINE — GATE B (OBLIGATORIO ANTES DEL DISPATCH) ───
     const decisionMode = seq.tenant?.followUpDecisionMode || 'OFF';
     let semanticDecision = null;
 
     if (decisionMode !== 'OFF') {
-      const liveCustomer = await db.customer.findUnique({
-        where: { id: seq.customerId },
-        select: { commercialState: true, followUpSuppressed: true }
-      });
-
-      const liveCommercialState = (liveCustomer?.commercialState && typeof liveCustomer.commercialState === 'object')
-        ? liveCustomer.commercialState
-        : (seq.contextSnapshot || {});
 
       semanticDecision = await evaluateFollowUpDecision({
         tenant: seq.tenant,

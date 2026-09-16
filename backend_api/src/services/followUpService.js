@@ -478,10 +478,44 @@ export async function evaluateAndScheduleFollowUp({
     }
   }
 
-  const resolvedStage = currentStage || currentCommercialState?.currentStage;
-  const resolvedProductId = productId || currentCommercialState?.productId;
-  const resolvedProductName = productName || currentCommercialState?.productName;
+  let resolvedStage = currentStage || currentCommercialState?.currentStage;
+  let resolvedProductId = productId || currentCommercialState?.productId;
+  let resolvedProductName = productName || currentCommercialState?.productName;
   const resolvedOrderId = orderId || currentCommercialState?.orderId || activeOrder?.id;
+
+  // ─── DETERMINISTIC ACTIVE PRODUCT RESOLUTION WITH TEMPORAL FRESHNESS ───
+  // Diferenciar commercialState.productId (histórico/confirmado) de lastConsultedProductId (conversación actual).
+  const lastConsultedId = currentCommercialState?.lastConsultedProductId;
+  const lastConsultedAt = currentCommercialState?.lastConsultedProductAt
+    ? new Date(currentCommercialState.lastConsultedProductAt).getTime()
+    : null;
+  const historicProductId = currentCommercialState?.productId;
+
+  // Si existe lastConsultedProductId y difiere de commercialState.productId:
+  if (lastConsultedId && (!historicProductId || lastConsultedId !== historicProductId)) {
+    const canonicalConsulted = await db.product.findFirst({
+      where: {
+        id: lastConsultedId,
+        user: { tenantId: tenant?.id || tenantId },
+        isAvailable: true
+      },
+      select: { id: true, name: true }
+    });
+
+    const hasClosedOrder = activeOrder && ['PAID', 'VERIFYING', 'COMPLETED'].includes(activeOrder.paymentStatus || activeOrder.status);
+
+    if (canonicalConsulted && !hasClosedOrder) {
+      const isConfirmedForConsulted = currentCommercialState?.customerConfirmed && historicProductId === canonicalConsulted.id;
+      resolvedProductId = canonicalConsulted.id;
+      resolvedProductName = canonicalConsulted.name;
+
+      // Si el cliente no ha confirmado selección de este nuevo producto, la etapa es PRODUCT_INTERESTED
+      // (no hereda etapas avanzadas de sesiones o productos anteriores como SHIPPING_COORDINATED)
+      if (!isConfirmedForConsulted) {
+        resolvedStage = 'PRODUCT_INTERESTED';
+      }
+    }
+  }
 
   const normalizedCommercialState = {
     ...currentCommercialState,
@@ -731,11 +765,51 @@ export async function evaluateAndScheduleFollowUp({
     if (existingSequence.currentAttempt === 0) {
       // El bot todavía no envió ningún seguimiento proactivo; el cliente continúa conversando.
       // REFRESH: actualizamos anchorAt y recalculamos nextRunAt sin crear otra secuencia.
-      const isUpgraded = existingSequence.stageAtCreation === 'PRODUCT_INTERESTED' &&
-        normalizedCommercialState.currentStage !== 'PRODUCT_INTERESTED';
-      const updatedMaxAttempts = isUpgraded
-        ? 3
-        : (normalizedCommercialState.currentStage === 'PRODUCT_INTERESTED' ? 1 : (existingSequence.maxAttempts || 3));
+      const isProductSwitch = Boolean(
+        normalizedCommercialState.productId &&
+        existingSequence.productId &&
+        normalizedCommercialState.productId !== existingSequence.productId
+      );
+
+      // Si hay cambio de producto A -> B, validar freshness temporal:
+      // Si B tiene lastConsultedProductAt y es ANTERIOR al anclaje de la secuencia A, B no debe sobrescribir A (Test I).
+      const seqContextTime = existingSequence.anchorAt
+        ? new Date(existingSequence.anchorAt).getTime()
+        : (existingSequence.createdAt ? new Date(existingSequence.createdAt).getTime() : 0);
+      const isOldConsultation = Boolean(lastConsultedAt && (lastConsultedAt < seqContextTime));
+      const shouldSupersedeProduct = isProductSwitch && !isOldConsultation;
+
+      let targetStage = normalizedCommercialState.currentStage;
+      let updatedMaxAttempts;
+
+      if (shouldSupersedeProduct) {
+        // A -> B antes de enviar Attempt #1: la MISMA secuencia se supersede a B
+        targetStage = 'PRODUCT_INTERESTED';
+        updatedMaxAttempts = 1;
+      } else if (isProductSwitch && isOldConsultation) {
+        // B es una consulta vieja anterior a sequence A; preservar A
+        targetStage = existingSequence.stageAtCreation;
+        updatedMaxAttempts = existingSequence.maxAttempts || 3;
+      } else {
+        const isUpgraded = existingSequence.stageAtCreation === 'PRODUCT_INTERESTED' &&
+          normalizedCommercialState.currentStage !== 'PRODUCT_INTERESTED';
+        updatedMaxAttempts = isUpgraded
+          ? 3
+          : (normalizedCommercialState.currentStage === 'PRODUCT_INTERESTED' ? 1 : (existingSequence.maxAttempts || 3));
+      }
+
+      const targetProductId = shouldSupersedeProduct
+        ? normalizedCommercialState.productId
+        : (isOldConsultation ? existingSequence.productId : (normalizedCommercialState.productId || existingSequence.productId));
+
+      const targetProductName = shouldSupersedeProduct
+        ? normalizedCommercialState.productName
+        : (isOldConsultation ? existingSequence.productName : (normalizedCommercialState.productName || existingSequence.productName));
+
+      // Asegurar que finalContextSnapshot refleje el producto y etapa target
+      finalContextSnapshot.productId = targetProductId;
+      finalContextSnapshot.productName = targetProductName;
+      finalContextSnapshot.currentStage = targetStage;
 
       const updatedSeq = await db.followUpSequence.update({
         where: { id: existingSequence.id },
@@ -743,10 +817,10 @@ export async function evaluateAndScheduleFollowUp({
           anchorAt,
           nextRunAt: scheduledNextRunAt,
           status: 'SCHEDULED',
-          stageAtCreation: normalizedCommercialState.currentStage,
+          stageAtCreation: targetStage,
           maxAttempts: updatedMaxAttempts,
-          productId: normalizedCommercialState.productId || existingSequence.productId,
-          productName: normalizedCommercialState.productName || existingSequence.productName,
+          productId: targetProductId,
+          productName: targetProductName,
           contextSnapshot: finalContextSnapshot,
           explicitTimingIso: resolvedTimingIso || existingSequence.explicitTimingIso,
           orderId: activeOrder?.id || normalizedCommercialState.orderId || existingSequence.orderId,
