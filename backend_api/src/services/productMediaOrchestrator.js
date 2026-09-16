@@ -257,17 +257,66 @@ export function resolveProductMediaState(commercialState = {}, targetProductId) 
 }
 
 /**
- * Selecciona la siguiente imagen no enviada de un producto dado el estado de galería.
+ * Clasifica el tipo de solicitud de foto según el texto del usuario y el contexto previo:
+ * - 'SINGLE_PHOTO': Petición inicial o solicitud de exactamente una foto (ej. "foto", "¿tienes foto?", "muéstrame una foto")
+ * - 'NEXT_PHOTO': Solicitud de la siguiente foto individual (ej. "otra foto", "muéstrame otra", "una más")
+ * - 'MORE_PHOTOS': Solicitud de fotos adicionales o de toda la galería restante (ej. "más fotos", "¿tienes más fotos?", "todas las fotos")
+ *
+ * @param {string} text - Texto del usuario
+ * @param {object} [options]
+ * @param {boolean} [options.hasAlreadySentPhoto=false] - Si ya se ha enviado al menos una foto de este producto
+ * @returns {'SINGLE_PHOTO' | 'NEXT_PHOTO' | 'MORE_PHOTOS'}
+ */
+export function classifyPhotoRequestType(text, { hasAlreadySentPhoto = false } = {}) {
+  if (!text || typeof text !== 'string') return 'SINGLE_PHOTO';
+  const normalized = text
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .trim();
+
+  // 1. NEXT_PHOTO: Solicitudes explícitas de "otra" (singular / siguiente foto individual)
+  const nextPhotoPattern = /\b(otra\s+fotos?|otra\s+imagen(?:es)?|otra\s+vista|una\s+mas|siguiente\s+fotos?|siguiente\s+imagen)\b/i;
+  const nextPhotoActionPattern = /\b(muestrame|mandame|enviame|pasame|ensename|ver|tienes?|hay)\s+otra\b/i;
+  const isNextPhotoExact = /^(?:otra|una\s+mas)[\s?.!]*$/i.test(normalized);
+
+  if (nextPhotoPattern.test(normalized) || nextPhotoActionPattern.test(normalized) || isNextPhotoExact) {
+    return 'NEXT_PHOTO';
+  }
+
+  // 2. MORE_PHOTOS: Solicitudes explícitas de "más fotos", "todas las fotos", "demás fotos"
+  const morePhotosExplicitPattern = /\b(mas\s+fotos?|mas\s+imagenes?|todas\s+las\s+fotos?|todas\s+las\s+imagenes?|demas\s+fotos?|resto\s+de\s+fotos?|otras\s+fotos?|otras\s+imagenes?|ver\s+mas\s+fotos?|ver\s+mas\s+imagenes?)\b/i;
+  if (morePhotosExplicitPattern.test(normalized)) {
+    return 'MORE_PHOTOS';
+  }
+
+  // 3. Si ya se envió previamente una foto del producto:
+  // Frases como "¿tienes más?", "mándame más", "ver más", o simplemente "fotos" / "las fotos" en plural
+  // se interpretan naturalmente como solicitud de ver las fotos restantes
+  if (hasAlreadySentPhoto) {
+    if (/\b(tienes?|hay|mandame|enviame|pasame|comparte(?:me)?|quiero|ver)\s+mas\b/i.test(normalized)) {
+      return 'MORE_PHOTOS';
+    }
+    if (/^(?:la\s+|las\s+)?fotos?(?:\s+(?:por\s+favor|pf|plz|favor))?[\s?.!]*$/i.test(normalized)) {
+      return 'MORE_PHOTOS';
+    }
+  }
+
+  return 'SINGLE_PHOTO';
+}
+
+/**
+ * Obtiene la lista de imágenes restantes no enviadas de un producto dado el estado de galería.
  *
  * @param {object} product
  * @param {object} productMediaState - { productId, sentImageUrls }
- * @returns {object} { nextImageUrl, isExhausted, totalImages, sentCount, canonicalImages }
+ * @returns {object} { remainingImages, isExhausted, totalImages, sentCount, canonicalImages }
  */
-export function getNextUnseenProductImage(product, productMediaState = {}) {
+export function getRemainingProductImages(product, productMediaState = {}) {
   const canonicalImages = getCanonicalProductImages(product);
   if (canonicalImages.length === 0) {
     return {
-      nextImageUrl: null,
+      remainingImages: [],
       isExhausted: false,
       totalImages: 0,
       sentCount: 0,
@@ -276,14 +325,35 @@ export function getNextUnseenProductImage(product, productMediaState = {}) {
   }
 
   const sentUrls = new Set(Array.isArray(productMediaState?.sentImageUrls) ? productMediaState.sentImageUrls : []);
-  const nextImageUrl = canonicalImages.find(url => !sentUrls.has(url)) || null;
-  const isExhausted = canonicalImages.length > 0 && nextImageUrl === null;
+  const remainingImages = canonicalImages.filter(url => !sentUrls.has(url));
+  const isExhausted = canonicalImages.length > 0 && remainingImages.length === 0;
 
   return {
-    nextImageUrl,
+    remainingImages,
     isExhausted,
     totalImages: canonicalImages.length,
     sentCount: sentUrls.size,
+    canonicalImages
+  };
+}
+
+/**
+ * Selecciona la siguiente imagen no enviada de un producto dado el estado de galería.
+ * Preserva compatibilidad hacia atrás retornando nextImageUrl además de remainingImages.
+ *
+ * @param {object} product
+ * @param {object} productMediaState - { productId, sentImageUrls }
+ * @returns {object} { nextImageUrl, remainingImages, isExhausted, totalImages, sentCount, canonicalImages }
+ */
+export function getNextUnseenProductImage(product, productMediaState = {}) {
+  const { remainingImages, isExhausted, totalImages, sentCount, canonicalImages } = getRemainingProductImages(product, productMediaState);
+
+  return {
+    nextImageUrl: remainingImages.length > 0 ? remainingImages[0] : null,
+    remainingImages,
+    isExhausted,
+    totalImages,
+    sentCount,
     canonicalImages
   };
 }
@@ -404,7 +474,7 @@ export function orchestrateProductMedia({
   }
 
   const mediaState = resolveProductMediaState(currentCommercialState, targetProduct.id);
-  const { nextImageUrl, isExhausted } = getNextUnseenProductImage(targetProduct, mediaState);
+  const { nextImageUrl, remainingImages, isExhausted } = getNextUnseenProductImage(targetProduct, mediaState);
 
   const alreadySent = Array.isArray(sentMediaProductIds) && sentMediaProductIds.includes(targetProduct.id);
 
@@ -419,17 +489,42 @@ export function orchestrateProductMedia({
           targetProduct,
           mediaType: 'image',
           url: null,
+          urls: [],
           isExplicit: true,
           isExhausted: true,
+          totalImages: canonicalImages.length,
+          isSingleImage: canonicalImages.length === 1,
           reason: 'ALL_PRODUCT_IMAGES_ALREADY_SENT'
         };
       }
+
+      const requestType = classifyPhotoRequestType(userMessageText, {
+        hasAlreadySentPhoto: (mediaState.sentImageUrls.length > 0)
+      });
+
+      if (requestType === 'MORE_PHOTOS') {
+        return {
+          shouldDispatch: true,
+          targetProduct,
+          mediaType: 'image',
+          url: remainingImages[0],
+          urls: remainingImages,
+          isExplicit: true,
+          requestType: 'MORE_PHOTOS',
+          totalImages: canonicalImages.length,
+          reason: 'MORE_PHOTOS_REQUESTED'
+        };
+      }
+
       return {
         shouldDispatch: true,
         targetProduct,
         mediaType: 'image',
         url: nextImageUrl,
+        urls: [nextImageUrl],
         isExplicit: true,
+        requestType: 'NEXT_PHOTO',
+        totalImages: canonicalImages.length,
         reason: 'EXPLICIT_PHOTO_RE_REQUESTED'
       };
     }
@@ -438,7 +533,9 @@ export function orchestrateProductMedia({
       targetProduct,
       mediaType: 'image',
       url: canonicalImages[0],
+      urls: [canonicalImages[0]],
       isExplicit: false,
+      totalImages: canonicalImages.length,
       reason: 'ALREADY_SENT_DEDUP'
     };
   }
@@ -448,8 +545,11 @@ export function orchestrateProductMedia({
     shouldDispatch: true,
     targetProduct,
     mediaType: 'image',
-    url: nextImageUrl || canonicalImages[0],
+    url: canonicalImages[0],
+    urls: [canonicalImages[0]],
     isExplicit: isExplicitPhoto,
+    requestType: 'SINGLE_PHOTO',
+    totalImages: canonicalImages.length,
     reason: isExplicitPhoto ? 'EXPLICIT_PHOTO_FIRST_REQUEST' : 'AUTO_IMAGE_ON_PRODUCT_INQUIRY'
   };
 }

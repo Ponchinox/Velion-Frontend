@@ -39,7 +39,8 @@ import {
   orchestrateProductMedia,
   getCanonicalProductImages,
   resolveProductMediaState,
-  getNextUnseenProductImage
+  getNextUnseenProductImage,
+  classifyPhotoRequestType
 } from '../services/productMediaOrchestrator.js';
 
 // ── HUMAN HANDOFF: ventana de pausa manual (30 minutos) ──────────────────────
@@ -3610,6 +3611,7 @@ ${catalogIndexCsv}
         productId: orchestratedMedia.targetProduct.id,
         productName: orchestratedMedia.targetProduct.name,
         url: orchestratedMedia.url,
+        urls: orchestratedMedia.urls || [orchestratedMedia.url],
         mediaType: orchestratedMedia.mediaType,
         source: 'auto_orchestrator'
       };
@@ -3619,12 +3621,21 @@ ${catalogIndexCsv}
 
     // Directiva dinámica de turno si hay multimedia automática programada (Authority Model: QUEUED != DELIVERED)
     if (pendingMediaToSend && pendingMediaToSend.mediaType === 'image') {
-      finalPrompt += `\n\n[MULTIMEDIA PROGRAMADA]:\nEl sistema intentará adjuntar automáticamente la imagen principal del producto "${pendingMediaToSend.productName}" en este turno.\nNo preguntes al cliente si desea verla.\nNo invoques send_product_media para la misma imagen.\nNo afirmes que la imagen ya fue entregada o enviada.\nResponde normalmente a la consulta actual.\n`;
+      const isMulti = Array.isArray(pendingMediaToSend.urls) && pendingMediaToSend.urls.length > 1;
+      if (isMulti) {
+        finalPrompt += `\n\n[MULTIMEDIA PROGRAMADA - MÚLTIPLES FOTOS]:\nEl sistema adjuntará automáticamente ${pendingMediaToSend.urls.length} fotos restantes de la galería del producto "${pendingMediaToSend.productName}" en este turno.\nAcompaña las fotos con una respuesta natural indicando que le compartes las demás fotos disponibles del modelo (ejemplo: "Claro, te comparto las demás fotos que tenemos de este modelo."). NO digas que solo cuentas con una foto ni que no hay más vistas.\nNo afirmes que las fotos ya fueron entregadas previamente ni invoques send_product_media nuevamente.\nResponde normalmente a la consulta actual.\n`;
+      } else {
+        finalPrompt += `\n\n[MULTIMEDIA PROGRAMADA]:\nEl sistema intentará adjuntar automáticamente la imagen principal del producto "${pendingMediaToSend.productName}" en este turno.\nNo preguntes al cliente si desea verla.\nNo invoques send_product_media para la misma imagen.\nNo afirmes que la imagen ya fue entregada o enviada.\nResponde normalmente a la consulta actual.\n`;
+      }
     }
 
     // Directiva dinámica de turno si la galería completa ya fue entregada
     if (orchestratedMedia?.isExhausted) {
-      finalPrompt += `\n\n[MEDIA CONTEXT - GALERÍA COMPLETA ENTREGADA]:\nYa se han enviado todas las fotos oficiales disponibles en el catálogo para el producto "${orchestratedMedia.targetProduct?.name}". Si el usuario solicita ver más fotos, explícale amablemente que ya compartiste todas las vistas registradas de este modelo. NO afirmes que vas a enviar más fotos ni inventes enlaces.\n`;
+      if (orchestratedMedia.isSingleImage || orchestratedMedia.totalImages === 1) {
+        finalPrompt += `\n\n[MEDIA CONTEXT - FOTO ÚNICA YA COMPARTIDA]:\nPor el momento solo contamos con esta foto del producto "${orchestratedMedia.targetProduct?.name}". Si el usuario solicita más fotos o vistas, explícale con amabilidad que por el momento solo cuentas con esa foto de este producto. NO afirmes que vas a enviar más fotos ni inventes enlaces.\n`;
+      } else {
+        finalPrompt += `\n\n[MEDIA CONTEXT - GALERÍA COMPLETA ENTREGADA]:\nYa se han enviado todas las fotos oficiales disponibles en el catálogo para el producto "${orchestratedMedia.targetProduct?.name}". Si el usuario solicita ver más fotos, explícale amablemente que ya compartiste todas las fotos disponibles de este producto. NO afirmes que vas a enviar más fotos ni inventes enlaces.\n`;
+      }
     }
 
     // Directiva dinámica de turno si la imagen principal de este producto ya fue mostrada previamente (Case B)
@@ -4094,13 +4105,13 @@ Atributos/Tags: ${Array.isArray(product.tags) ? product.tags.join(', ') : ''}
             };
           }
 
-          let targetMediaUrl = null;
+          let targetMediaUrls = [];
           if (requestedMediaType === 'video') {
             if (product.videoUrl && typeof product.videoUrl === 'string' && product.videoUrl.trim() !== '' && product.videoUrl.trim() !== 'Sin video') {
-              targetMediaUrl = product.videoUrl.trim();
+              targetMediaUrls = [product.videoUrl.trim()];
             }
 
-            if (!targetMediaUrl) {
+            if (targetMediaUrls.length === 0) {
               console.log(`ℹ️ [FC] send_product_media: Producto "${product.name}" (${product.id}) no tiene video registrado.`);
               return {
                 success: false,
@@ -4122,21 +4133,38 @@ Atributos/Tags: ${Array.isArray(product.tags) ? product.tags.join(', ') : ''}
             }
 
             const mediaState = resolveProductMediaState(currentCommercialState, product.id);
-            const { nextImageUrl, isExhausted } = getNextUnseenProductImage(product, mediaState);
+            const { nextImageUrl, remainingImages, isExhausted } = getNextUnseenProductImage(product, mediaState);
 
             if (isExhausted) {
               console.log(`ℹ️ [FC] send_product_media: Todas las fotos de "${product.name}" (${canonicalImages.length}) ya fueron enviadas.`);
+              const isSingleImageProduct = canonicalImages.length === 1;
+              const exhaustionMessage = isSingleImageProduct
+                ? `Por el momento solo contamos con esta foto de "${product.name}". Explica amablemente al cliente que es la única foto disponible de este producto en el catálogo digital. NO prometas nuevas fotos ni afirmes que vas a enviar otra vista.`
+                : `Ya se compartieron todas las fotos disponibles de "${product.name}" en el catálogo digital (${canonicalImages.length} de ${canonicalImages.length}). Explica amablemente al cliente que ya le mostraste todas las fotos registradas de este producto. NO afirmes que vas a enviar otra foto ni que adjuntas una nueva vista.`;
+
               return {
                 success: false,
                 hasMedia: false,
                 allImagesSent: true,
+                totalImages: canonicalImages.length,
+                isSingleImage: isSingleImageProduct,
                 reason: 'ALL_PRODUCT_IMAGES_ALREADY_SENT',
-                message: `Ya se compartieron todas las fotos disponibles de "${product.name}" en el catálogo digital (${canonicalImages.length} de ${canonicalImages.length}). Explica amablemente al cliente que ya le mostraste todas las fotos registradas de este producto. NO afirmes que vas a enviar otra foto ni que adjuntas una nueva vista.`
+                message: exhaustionMessage
               };
             }
 
-            targetMediaUrl = nextImageUrl;
+            const requestType = classifyPhotoRequestType(userMessageText, {
+              hasAlreadySentPhoto: (mediaState.sentImageUrls.length > 0)
+            });
+
+            if (requestType === 'MORE_PHOTOS') {
+              targetMediaUrls = remainingImages;
+            } else {
+              targetMediaUrls = [nextImageUrl];
+            }
           }
+
+          targetMediaUrl = targetMediaUrls[0] || null;
 
           if (isGenerationSuperseded()) {
             wasSuperseded = true;
@@ -4166,6 +4194,7 @@ Atributos/Tags: ${Array.isArray(product.tags) ? product.tags.join(', ') : ''}
                 alreadyQueued: true,
                 mediaType: pendingMediaToSend.mediaType,
                 productName: pendingMediaToSend.productName,
+                urls: pendingMediaToSend.urls || (pendingMediaToSend.url ? [pendingMediaToSend.url] : []),
                 message: `La multimedia oficial de "${pendingMediaToSend.productName}" ya está programada y se entregará al cliente con esta respuesta.`
               };
             }
@@ -4178,6 +4207,7 @@ Atributos/Tags: ${Array.isArray(product.tags) ? product.tags.join(', ') : ''}
                 productId: product.id,
                 productName: product.name,
                 url: targetMediaUrl,
+                urls: targetMediaUrls,
                 mediaType: requestedMediaType,
                 source: 'explicit_tool'
               };
@@ -4186,15 +4216,19 @@ Atributos/Tags: ${Array.isArray(product.tags) ? product.tags.join(', ') : ''}
               await updateLastConsultedProduct(product.id, product.name);
 
               const fcMs = Date.now() - fcStart;
-              console.log(`✅ [FC] send_product_media completado (superseded) en ${fcMs}ms. ${requestedMediaType} preparado: ${product.name}`);
+              console.log(`✅ [FC] send_product_media completado (superseded) en ${fcMs}ms. ${requestedMediaType} (${targetMediaUrls.length} items) preparado: ${product.name}`);
               return {
                 success: true,
                 hasMedia: true,
                 mediaType: requestedMediaType,
                 productName: product.name,
+                urls: targetMediaUrls,
+                itemCount: targetMediaUrls.length,
                 message: requestedMediaType === 'video'
                   ? `El video oficial de "${product.name}" ha sido preparado y se enviará al cliente por WhatsApp. Acompaña el video con un mensaje breve y amigable.`
-                  : `La imagen oficial de "${product.name}" ha sido preparada y se enviará al cliente. Acompaña la imagen con un mensaje breve y amigable.`
+                  : targetMediaUrls.length > 1
+                    ? `Se han preparado ${targetMediaUrls.length} fotos de la galería de "${product.name}" y se enviarán al cliente por WhatsApp. Acompaña las fotos con una respuesta natural explicando: "Claro, te comparto las demás fotos que tenemos de este modelo." NO digas que solo cuentas con esta foto ni que no hay más vistas.`
+                    : `La imagen oficial de "${product.name}" ha sido preparada y se enviará al cliente. Acompaña la imagen con un mensaje breve y amigable.`
               };
             }
 
@@ -4213,6 +4247,7 @@ Atributos/Tags: ${Array.isArray(product.tags) ? product.tags.join(', ') : ''}
             productId: product.id,
             productName: product.name,
             url: targetMediaUrl,
+            urls: targetMediaUrls,
             mediaType: requestedMediaType,
             source: 'explicit_tool'
           };
@@ -4221,15 +4256,19 @@ Atributos/Tags: ${Array.isArray(product.tags) ? product.tags.join(', ') : ''}
           await updateLastConsultedProduct(product.id, product.name);
 
           const fcMs = Date.now() - fcStart;
-          console.log(`✅ [FC] send_product_media completado en ${fcMs}ms. ${requestedMediaType} preparado: ${product.name}`);
+          console.log(`✅ [FC] send_product_media completado en ${fcMs}ms. ${requestedMediaType} (${targetMediaUrls.length} items) preparado: ${product.name}`);
           return {
             success: true,
             hasMedia: true,
             mediaType: requestedMediaType,
             productName: product.name,
+            urls: targetMediaUrls,
+            itemCount: targetMediaUrls.length,
             message: requestedMediaType === 'video'
               ? `El video oficial de "${product.name}" ha sido preparado y se enviará al cliente por WhatsApp. Acompaña el video con un mensaje breve y amigable.`
-              : `La imagen oficial de "${product.name}" ha sido preparada y se enviará al cliente. Acompaña la imagen con un mensaje breve y amigable.`
+              : targetMediaUrls.length > 1
+                ? `Se han preparado ${targetMediaUrls.length} fotos de la galería de "${product.name}" y se enviarán al cliente por WhatsApp. Acompaña las fotos con una respuesta natural explicando: "Claro, te comparto las demás fotos que tenemos de este modelo." NO digas que solo cuentas con esta foto ni que no hay más vistas.`
+                : `La imagen oficial de "${product.name}" ha sido preparada y se enviará al cliente. Acompaña la imagen con un mensaje breve y amigable.`
           };
         } catch (mediaErr) {
           console.error('❌ Error en send_product_media:', mediaErr.message);
@@ -4507,113 +4546,129 @@ Atributos/Tags: ${Array.isArray(product.tags) ? product.tags.join(', ') : ''}
         console.log(`🛡️ [Deterministic Media Rescue] LLM falló totalmente, pero mediaIntentAuthorized && canonicalAssetValidated son TRUE para "${pendingMediaToSend.productName}". Procediendo con entrega determinista.`);
 
         const isVideo = pendingMediaToSend.mediaType === 'video';
+        const mediaUrls = (Array.isArray(pendingMediaToSend.urls) && pendingMediaToSend.urls.length > 0)
+          ? pendingMediaToSend.urls
+          : (pendingMediaToSend.url ? [pendingMediaToSend.url] : []);
+        const isMulti = mediaUrls.length > 1;
+
         const factualCaption = isVideo
           ? `Aquí tienes el video de ${pendingMediaToSend.productName}.`
-          : `Aquí tienes la imagen de ${pendingMediaToSend.productName}.`;
+          : isMulti
+            ? `Aquí tienes las fotos de ${pendingMediaToSend.productName}.`
+            : `Aquí tienes la imagen de ${pendingMediaToSend.productName}.`;
 
         try {
           const mediaType = pendingMediaToSend.mediaType || 'image';
-          markMessageAsSentByAi(factualCaption);
+          let anyMediaDelivered = false;
 
-          const mediaMsgId = await sendWhatsAppMedia({
-            ...gatewayCtx,
-            to: finalCleanNumber,
-            url: pendingMediaToSend.url,
-            mediaType,
-            caption: factualCaption,
-            isAutomated: true,
-            origin: 'ai'
-          });
+          for (let mIdx = 0; mIdx < mediaUrls.length; mIdx++) {
+            const currentUrl = mediaUrls[mIdx];
+            const itemCaption = mIdx === 0 ? factualCaption : undefined;
+            if (mIdx === 0) markMessageAsSentByAi(factualCaption);
 
-          if (mediaMsgId) {
-            markMessageAsSentByAi(mediaMsgId);
-            console.log(`✅ [Deterministic Media Rescue] Media entregada físicamente a +${finalCleanNumber} (msgId: ${mediaMsgId})`);
+            const mediaMsgId = await sendWhatsAppMedia({
+              ...gatewayCtx,
+              to: finalCleanNumber,
+              url: currentUrl,
+              mediaType,
+              caption: itemCaption,
+              isAutomated: true,
+              origin: 'ai'
+            });
 
-            const rescuedNow = new Date();
-            const [savedMediaMsg] = await prisma.$transaction([
-              prisma.message.create({
-                data: {
-                  content: factualCaption,
+            if (mediaMsgId) {
+              anyMediaDelivered = true;
+              markMessageAsSentByAi(mediaMsgId);
+              console.log(`✅ [Deterministic Media Rescue] Media [${mIdx + 1}/${mediaUrls.length}] entregada físicamente a +${finalCleanNumber} (msgId: ${mediaMsgId})`);
+
+              const rescuedNow = new Date();
+              const [savedMediaMsg] = await prisma.$transaction([
+                prisma.message.create({
+                  data: {
+                    content: itemCaption || `[Imagen]: ${currentUrl}`,
+                    senderRole: 'agent',
+                    status: 'sent',
+                    externalId: mediaMsgId,
+                    mediaUrl: currentUrl,
+                    mediaType,
+                    chatId: chat.id,
+                    tenantId: tenant.id
+                  }
+                }),
+                prisma.chat.update({ where: { id: chat.id }, data: { updatedAt: rescuedNow } })
+              ]);
+
+              // Persistir entrega real de media en el estado comercial del cliente (Authority Model: QUEUED != DELIVERED)
+              if (pendingMediaToSend.mediaType === 'image' && pendingMediaToSend.productId && customer?.id) {
+                try {
+                  const refreshedCustomer = await prisma.customer.findUnique({
+                    where: { id: customer.id },
+                    select: { commercialState: true }
+                  });
+                  const cState = (typeof refreshedCustomer?.commercialState === 'object' && refreshedCustomer?.commercialState !== null)
+                    ? { ...refreshedCustomer.commercialState }
+                    : { ...currentCommercialState };
+                  const curSent = Array.isArray(cState.sentMediaProductIds) ? [...cState.sentMediaProductIds] : [];
+                  let stateModified = false;
+                  if (!curSent.includes(pendingMediaToSend.productId)) {
+                    curSent.push(pendingMediaToSend.productId);
+                    cState.sentMediaProductIds = curSent;
+                    stateModified = true;
+                  }
+
+                  // ── PRODUCT MEDIA STATE (GALLERY ROTATION) ──
+                  let pMediaState = (cState.productMediaState && cState.productMediaState.productId === pendingMediaToSend.productId && Array.isArray(cState.productMediaState.sentImageUrls))
+                    ? { ...cState.productMediaState, sentImageUrls: [...cState.productMediaState.sentImageUrls] }
+                    : { productId: pendingMediaToSend.productId, sentImageUrls: [], updatedAt: new Date().toISOString() };
+
+                  if (currentUrl && !pMediaState.sentImageUrls.includes(currentUrl)) {
+                    pMediaState.sentImageUrls.push(currentUrl);
+                    pMediaState.updatedAt = new Date().toISOString();
+                    cState.productMediaState = pMediaState;
+                    stateModified = true;
+                  }
+
+                  if (stateModified) {
+                    await prisma.customer.update({
+                      where: { id: customer.id },
+                      data: { commercialState: cState }
+                    });
+                    currentCommercialState.sentMediaProductIds = curSent;
+                    currentCommercialState.productMediaState = pMediaState;
+                    if (!sentMediaProductIds.includes(pendingMediaToSend.productId)) {
+                      sentMediaProductIds.push(pendingMediaToSend.productId);
+                    }
+                    console.log(`💾 [Deterministic Media Rescue] Producto "${pendingMediaToSend.productId}" guardado en sentMediaProductIds y productMediaState (${pMediaState.sentImageUrls.length} imágenes).`);
+                  }
+                } catch (persistMediaErr) {
+                  console.warn('⚠️ [Deterministic Media Rescue] Error persistiendo sentMediaProductIds / productMediaState:', persistMediaErr.message);
+                }
+              }
+
+              const rescuedRoom = tenant?.id ? `tenant:${tenant.id}` : null;
+              if (reqIo && rescuedRoom) {
+                reqIo.to(rescuedRoom).emit('new_whatsapp_message', {
+                  id: savedMediaMsg.id,
+                  chatId: chat.id,
+                  remoteJid: cleanJid,
+                  text: itemCaption || `[Imagen]: ${currentUrl}`,
+                  type: 'outgoing',
+                  from: 'business',
                   senderRole: 'agent',
                   status: 'sent',
                   externalId: mediaMsgId,
-                  mediaUrl: pendingMediaToSend.url,
+                  mediaUrl: currentUrl,
                   mediaType,
-                  chatId: chat.id,
-                  tenantId: tenant.id
-                }
-              }),
-              prisma.chat.update({ where: { id: chat.id }, data: { updatedAt: rescuedNow } })
-            ]);
-
-            // Persistir entrega real de media en el estado comercial del cliente (Authority Model: QUEUED != DELIVERED)
-            if (pendingMediaToSend.mediaType === 'image' && pendingMediaToSend.productId && customer?.id) {
-              try {
-                const refreshedCustomer = await prisma.customer.findUnique({
-                  where: { id: customer.id },
-                  select: { commercialState: true }
+                  messageId: savedMediaMsg.id,
+                  createdAt: savedMediaMsg.createdAt.toISOString(),
+                  lastMessageAt: savedMediaMsg.createdAt.toISOString(),
+                  timestamp: savedMediaMsg.createdAt
                 });
-                const cState = (typeof refreshedCustomer?.commercialState === 'object' && refreshedCustomer?.commercialState !== null)
-                  ? { ...refreshedCustomer.commercialState }
-                  : { ...currentCommercialState };
-                const curSent = Array.isArray(cState.sentMediaProductIds) ? [...cState.sentMediaProductIds] : [];
-                let stateModified = false;
-                if (!curSent.includes(pendingMediaToSend.productId)) {
-                  curSent.push(pendingMediaToSend.productId);
-                  cState.sentMediaProductIds = curSent;
-                  stateModified = true;
-                }
-
-                // ── PRODUCT MEDIA STATE (GALLERY ROTATION) ──
-                let pMediaState = (cState.productMediaState && cState.productMediaState.productId === pendingMediaToSend.productId && Array.isArray(cState.productMediaState.sentImageUrls))
-                  ? { ...cState.productMediaState, sentImageUrls: [...cState.productMediaState.sentImageUrls] }
-                  : { productId: pendingMediaToSend.productId, sentImageUrls: [], updatedAt: new Date().toISOString() };
-
-                if (pendingMediaToSend.url && !pMediaState.sentImageUrls.includes(pendingMediaToSend.url)) {
-                  pMediaState.sentImageUrls.push(pendingMediaToSend.url);
-                  pMediaState.updatedAt = new Date().toISOString();
-                  cState.productMediaState = pMediaState;
-                  stateModified = true;
-                }
-
-                if (stateModified) {
-                  await prisma.customer.update({
-                    where: { id: customer.id },
-                    data: { commercialState: cState }
-                  });
-                  currentCommercialState.sentMediaProductIds = curSent;
-                  currentCommercialState.productMediaState = pMediaState;
-                  if (!sentMediaProductIds.includes(pendingMediaToSend.productId)) {
-                    sentMediaProductIds.push(pendingMediaToSend.productId);
-                  }
-                  console.log(`💾 [Deterministic Media Rescue] Producto "${pendingMediaToSend.productId}" guardado en sentMediaProductIds y productMediaState (${pMediaState.sentImageUrls.length} imágenes).`);
-                }
-              } catch (persistMediaErr) {
-                console.warn('⚠️ [Deterministic Media Rescue] Error persistiendo sentMediaProductIds / productMediaState:', persistMediaErr.message);
               }
             }
+          }
 
-            const rescuedRoom = tenant?.id ? `tenant:${tenant.id}` : null;
-            if (reqIo && rescuedRoom) {
-              reqIo.to(rescuedRoom).emit('new_whatsapp_message', {
-                id: savedMediaMsg.id,
-                chatId: chat.id,
-                remoteJid: cleanJid,
-                text: factualCaption,
-                type: 'outgoing',
-                from: 'business',
-                senderRole: 'agent',
-                status: 'sent',
-                externalId: mediaMsgId,
-                mediaUrl: pendingMediaToSend.url,
-                mediaType,
-                messageId: savedMediaMsg.id,
-                createdAt: savedMediaMsg.createdAt.toISOString(),
-                lastMessageAt: savedMediaMsg.createdAt.toISOString(),
-                timestamp: savedMediaMsg.createdAt
-              });
-            }
-
+          if (anyMediaDelivered) {
             // Éxito confirmado de media: 0 mensaje genérico de demora (GENERIC_DELAY_AFTER_MEDIA_SUCCESS = NO)
             return;
           } else {
@@ -4811,48 +4866,55 @@ Atributos/Tags: ${Array.isArray(product.tags) ? product.tags.join(', ') : ''}
       let textBuffer = "";
 
       const hasSplit = tokens.some(t => t.trim().toUpperCase() === '[SPLIT]');
+      const mediaUrls = pendingMediaToSend
+        ? ((Array.isArray(pendingMediaToSend.urls) && pendingMediaToSend.urls.length > 0)
+            ? pendingMediaToSend.urls
+            : (pendingMediaToSend.url ? [pendingMediaToSend.url] : []))
+        : [];
 
-      if (pendingMediaToSend && !hasSplit && cleanedText.length <= 1000) {
-        // Preferencia arquitectural: Si hay multimedia y el texto es conciso sin splits,
-        // integramos el texto como caption de la multimedia para una experiencia fluida
-        // sin esperas artificiales ni duplicación de mensajes.
+      if (pendingMediaToSend && mediaUrls.length === 1 && !hasSplit && cleanedText.length <= 1000) {
+        // Un solo medio y texto conciso sin splits: caption integrado en el medio
         dispatchSequence.push({
           type: pendingMediaToSend.mediaType || 'image',
-          url: pendingMediaToSend.url,
+          url: mediaUrls[0],
           productId: pendingMediaToSend.productId || null,
           caption: cleanedText || undefined
         });
       } else {
-        // Si hay multimedia pero el texto tiene splits o es largo, enviamos la multimedia primero y luego los textos
-        if (pendingMediaToSend) {
+        // Múltiples medios o texto con splits / extenso:
+        for (let mIdx = 0; mIdx < mediaUrls.length; mIdx++) {
           dispatchSequence.push({
             type: pendingMediaToSend.mediaType || 'image',
-            url: pendingMediaToSend.url,
-            productId: pendingMediaToSend.productId || null
+            url: mediaUrls[mIdx],
+            productId: pendingMediaToSend.productId || null,
+            caption: (mIdx === 0 && !hasSplit && cleanedText.length <= 1000) ? cleanedText : undefined
           });
         }
 
-        for (const fragment of tokens) {
-          if (!fragment) continue;
-          
-          const token = fragment.trim();
-          const upperToken = token.toUpperCase();
-          
-          if (upperToken === '[SPLIT]') {
-            if (isMultiMsg && textBuffer.trim()) {
-              dispatchSequence.push({ type: 'text', content: textBuffer.trim() });
-              textBuffer = "";
-            } else if (!isMultiMsg) {
-              textBuffer += " "; // Si el modo humano está desactivado, el SPLIT se ignora como espacio
-            }
-          } else {
-            // Texto normal, mantenemos los espacios originales al acumular
-            textBuffer += fragment;
-          }
-        }
+        // Si el texto no fue colocado como caption en el primer medio, enviarlo como fragmentos de texto
+        if (hasSplit || cleanedText.length > 1000 || mediaUrls.length === 0) {
+          for (const fragment of tokens) {
+            if (!fragment) continue;
 
-        if (textBuffer.trim()) {
-          dispatchSequence.push({ type: 'text', content: textBuffer.trim() });
+            const token = fragment.trim();
+            const upperToken = token.toUpperCase();
+
+            if (upperToken === '[SPLIT]') {
+              if (isMultiMsg && textBuffer.trim()) {
+                dispatchSequence.push({ type: 'text', content: textBuffer.trim() });
+                textBuffer = "";
+              } else if (!isMultiMsg) {
+                textBuffer += " "; // Si el modo humano está desactivado, el SPLIT se ignora como espacio
+              }
+            } else {
+              // Texto normal, mantenemos los espacios originales al acumular
+              textBuffer += fragment;
+            }
+          }
+
+          if (textBuffer.trim()) {
+            dispatchSequence.push({ type: 'text', content: textBuffer.trim() });
+          }
         }
       }
 
