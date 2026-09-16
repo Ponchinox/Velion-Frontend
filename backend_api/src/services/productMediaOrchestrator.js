@@ -48,6 +48,18 @@ export function isNegativeProductIntent(text) {
 }
 
 /**
+ * Tokens de acciones o términos genéricos que NO identifican un producto específico
+ */
+const MEDIA_ACTION_TOKENS = new Set([
+  'foto', 'fotos', 'imagen', 'imagenes', 'video', 'videos',
+  'vista', 'vistas', 'ver', 'muestrame', 'mandame', 'enviame',
+  'pasame', 'ensename', 'comparteme', 'comparte', 'catalogo',
+  'opciones', 'modelos', 'variedades', 'tienes', 'tienen', 'hay',
+  'vendes', 'venden', 'quiero', 'quisiera', 'mas', 'otra', 'unas', 'unos',
+  'aver', 'haber', 'buenas', 'hola', 'favor', 'porfavor'
+]);
+
+/**
  * Extrae tokens significativos descartando palabras vacías y tokens de 1 letra
  */
 export function extractSignificantTokens(text) {
@@ -56,6 +68,112 @@ export function extractSignificantTokens(text) {
   return normalized
     .split(' ')
     .filter(token => token.length > 1 && !STOP_WORDS.has(token));
+}
+
+/**
+ * Detecta si el mensaje actual del cliente corresponde a una consulta de categoría o grupo
+ * con múltiples candidatos posibles en el catálogo, sin haber especificado un modelo unívoco.
+ *
+ * @param {string} userMessageText
+ * @param {Array<object>} availableProducts
+ * @returns {{ isAmbiguous: boolean, candidateProducts: Array<object>, candidateCount: number, reason?: string, distinguishedProduct?: object }}
+ */
+export function detectCategoryOrMultiProductQuery(userMessageText, availableProducts = []) {
+  if (!userMessageText || typeof userMessageText !== 'string' || !Array.isArray(availableProducts) || availableProducts.length === 0) {
+    return { isAmbiguous: false, candidateProducts: [], candidateCount: 0 };
+  }
+
+  const normalizedUserText = normalizeText(userMessageText);
+  const allUserTokens = extractSignificantTokens(userMessageText);
+  // Tokens de búsqueda de producto, excluyendo verbos de multimedia/acciones genéricas
+  const searchTokens = allUserTokens.filter(t => !MEDIA_ACTION_TOKENS.has(t) && !STOP_WORDS.has(t));
+
+  if (searchTokens.length === 0) {
+    return { isAmbiguous: false, candidateProducts: [], candidateCount: 0 };
+  }
+
+  // Buscar productos que coincidan con al menos uno de los searchTokens en nombre, categoría o tags
+  const matchedCandidates = [];
+  for (const product of availableProducts) {
+    if (!product || !product.name) continue;
+    const prodNameNorm = normalizeText(product.name);
+    const prodCatNorm = product.category ? normalizeText(product.category) : '';
+    const prodTagsNorm = Array.isArray(product.tags) ? product.tags.map(t => normalizeText(t)).join(' ') : '';
+    const prodTokens = new Set(extractSignificantTokens(product.name));
+
+    const matchesName = searchTokens.some(st => prodTokens.has(st) || prodNameNorm.includes(st));
+    const matchesCategory = prodCatNorm && searchTokens.some(st => prodCatNorm.includes(st));
+    const matchesTags = prodTagsNorm && searchTokens.some(st => prodTagsNorm.includes(st));
+
+    if (matchesName || matchesCategory || matchesTags) {
+      matchedCandidates.push(product);
+    }
+  }
+
+  if (matchedCandidates.length <= 1) {
+    return { isAmbiguous: false, candidateProducts: matchedCandidates, candidateCount: matchedCandidates.length };
+  }
+
+  // Hay 2 o más candidatos. Verificar si el usuario proporcionó tokens distintivos que individualizan a EXACTAMENTE UNO
+  const uniquelyDistinguished = [];
+  for (const cand of matchedCandidates) {
+    const candTokens = extractSignificantTokens(cand.name);
+    // Tokens que tiene cand pero que NO tienen los demás candidatos
+    const otherTokens = new Set();
+    for (const other of matchedCandidates) {
+      if (other.id !== cand.id) {
+        extractSignificantTokens(other.name).forEach(t => otherTokens.add(t));
+      }
+    }
+    const distinguishingTokens = candTokens.filter(t => !otherTokens.has(t));
+    const hasDistinguishing = distinguishingTokens.some(dt => allUserTokens.includes(dt) || normalizedUserText.includes(dt));
+    if (hasDistinguishing) {
+      uniquelyDistinguished.push(cand);
+    }
+  }
+
+  if (uniquelyDistinguished.length === 1) {
+    // El usuario especificó un token distintivo único (ej. "thinking plus" o "xiaomi")
+    return { isAmbiguous: false, candidateProducts: matchedCandidates, candidateCount: matchedCandidates.length, distinguishedProduct: uniquelyDistinguished[0] };
+  }
+
+  return {
+    isAmbiguous: true,
+    candidateProducts: matchedCandidates,
+    candidateCount: matchedCandidates.length,
+    reason: 'AMBIGUOUS_PRODUCT_SELECTION'
+  };
+}
+
+/**
+ * Comprueba si un producto específico fue unívocamente indicado/elegido por el usuario en el mensaje actual
+ */
+export function isProductExplicitlySpecifiedByUser(userMessageText, product, candidateProducts = []) {
+  if (!product || !userMessageText) return false;
+  const normalizedUserText = normalizeText(userMessageText);
+  const normalizedProdName = normalizeText(product.name);
+
+  if (normalizedUserText.includes(normalizedProdName)) {
+    return true;
+  }
+
+  const userTokens = new Set(extractSignificantTokens(userMessageText));
+  const prodTokens = extractSignificantTokens(product.name);
+
+  if (candidateProducts.length <= 1) {
+    // Si no hay ambigüedad de candidatos múltiples, basta con coincidencia de tokens estándar
+    return prodTokens.length > 0 && prodTokens.every(t => userTokens.has(t));
+  }
+
+  // Si hay múltiples candidatos, el usuario debe haber mencionado tokens distintivos de este producto
+  const otherTokens = new Set();
+  for (const other of candidateProducts) {
+    if (other.id !== product.id) {
+      extractSignificantTokens(other.name).forEach(t => otherTokens.add(t));
+    }
+  }
+  const distinguishingTokens = prodTokens.filter(t => !otherTokens.has(t));
+  return distinguishingTokens.some(dt => userTokens.has(dt) || normalizedUserText.includes(dt));
 }
 
 /**
@@ -134,8 +252,12 @@ export function resolveTargetProduct(
       return nonNegatedProducts[0];
     }
 
-    // Si sigue habiendo ambigüedad o es una comparación abierta ("¿cuál recomiendas entre A y B?"): fail-closed
-    return null;
+    // Si sigue habiendo ambigüedad: fail-closed explícito (NUNCA caer a producto viejo)
+    return {
+      isAmbiguous: true,
+      reason: 'AMBIGUOUS_PRODUCT_SELECTION',
+      candidateProducts: nonNegatedProducts.length > 0 ? nonNegatedProducts : matchedProducts
+    };
   }
 
   // ── CASO B: Exactamente un producto coincide en el mensaje ──
@@ -155,10 +277,20 @@ export function resolveTargetProduct(
     return singleProduct;
   }
 
-  // ── CASO C: Ningún producto mencionado en el texto actual ──
+  // ── CASO C: Ningún producto individual alcanzó coincidencia unívoca en el texto actual ──
+  // GUARD DE CATEGORÍA: Si el usuario consultó por una categoría o grupo con múltiples candidatos,
+  // PROHIBIDO hacer fallback a un producto stale previo.
+  const categoryCheck = detectCategoryOrMultiProductQuery(userMessageText, availableProducts);
+  if (categoryCheck.isAmbiguous) {
+    return {
+      isAmbiguous: true,
+      reason: 'AMBIGUOUS_PRODUCT_SELECTION',
+      candidateProducts: categoryCheck.candidateProducts
+    };
+  }
+
   // REGLA DE LATEST INTENT: Solo recurrir a contexto previo si el usuario solicitó explícitamente multimedia
-  // para el producto en contexto (ej. "¿Tienes foto?", "Muéstrame video", "Fotos").
-  // NUNCA auto-disparar imagen para un producto de turnos previos si el usuario no lo mencionó ni pidió foto.
+  // para el producto en contexto (ej. "¿Tienes foto?", "Muéstrame video", "Fotos") y NO hay ambigüedad de categoría.
   if (isExplicitMedia) {
     // 1. Preferir lastConsultedProductId válido/canónico del tenant
     if (lastConsultedProductId) {
@@ -408,6 +540,21 @@ export function orchestrateProductMedia({
       url: null,
       isExplicit: false,
       reason: 'NO_TARGET_PRODUCT_RESOLVED'
+    };
+  }
+
+  // ── FILTRO 0: AMBIGÜEDAD DE CATEGORÍA O MÚLTIPLES PRODUCTOS CANDIDATOS ──
+  if (targetProduct.isAmbiguous || targetProduct._isAmbiguous) {
+    return {
+      shouldDispatch: false,
+      targetProduct: null,
+      mediaType: null,
+      url: null,
+      isExplicit: Boolean(isExplicitMedia),
+      isAmbiguous: true,
+      candidateCount: targetProduct.candidateProducts?.length || 0,
+      candidateProducts: targetProduct.candidateProducts || [],
+      reason: 'AMBIGUOUS_PRODUCT_SELECTION'
     };
   }
 
