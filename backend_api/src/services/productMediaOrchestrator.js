@@ -181,21 +181,111 @@ export function resolveTargetProduct(
 }
 
 /**
- * Obtiene la URL canónica de imagen de un producto según las reglas de precedencia
+ * Construye la lista canónica, deduplicada y ordenada de imágenes de un producto.
+ * Preserva product.imageUrl como índice 0 (portada) si es válida.
+ *
+ * @param {object} product
+ * @returns {Array<string>} URLs válidas y deduplicadas
  */
-export function getCanonicalProductImageUrl(product) {
-  if (!product) return null;
-  if (product.imageUrl && typeof product.imageUrl === 'string') {
-    const trimmed = product.imageUrl.trim();
-    if (trimmed !== '' && trimmed !== 'Sin imagen' && trimmed.startsWith('http')) {
-      return trimmed;
+export function getCanonicalProductImages(product) {
+  if (!product) return [];
+  const rawList = [
+    product.imageUrl,
+    ...(Array.isArray(product.images) ? product.images : [])
+  ];
+
+  const seen = new Set();
+  const canonical = [];
+
+  for (const item of rawList) {
+    if (!item || typeof item !== 'string') continue;
+    const trimmed = item.trim();
+    if (trimmed === '' || trimmed.toLowerCase() === 'sin imagen') continue;
+    if (!trimmed.startsWith('http://') && !trimmed.startsWith('https://')) continue;
+    if (!seen.has(trimmed)) {
+      seen.add(trimmed);
+      canonical.push(trimmed);
     }
   }
-  if (Array.isArray(product.images) && product.images.length > 0) {
-    const first = product.images.find(img => typeof img === 'string' && img.trim() !== '' && img.trim() !== 'Sin imagen' && img.trim().startsWith('http'));
-    if (first) return first.trim();
+
+  return canonical;
+}
+
+/**
+ * Obtiene la URL canónica de portada/imagen principal de un producto según las reglas de precedencia.
+ * Preserva compatibilidad hacia atrás retornando el primer elemento de la galería canónica.
+ *
+ * @param {object} product
+ * @returns {string|null}
+ */
+export function getCanonicalProductImageUrl(product) {
+  const images = getCanonicalProductImages(product);
+  return images.length > 0 ? images[0] : null;
+}
+
+/**
+ * Obtiene o reinicializa el estado acotado de galería para un producto dado.
+ * Si productMediaState.productId !== targetProductId, resetea sentImageUrls a [].
+ *
+ * @param {object} commercialState
+ * @param {string} targetProductId
+ * @returns {object} { productId, sentImageUrls, updatedAt }
+ */
+export function resolveProductMediaState(commercialState = {}, targetProductId) {
+  if (!targetProductId) {
+    return {
+      productId: null,
+      sentImageUrls: [],
+      updatedAt: new Date().toISOString()
+    };
   }
-  return null;
+
+  const existing = commercialState?.productMediaState;
+  if (existing && existing.productId === targetProductId && Array.isArray(existing.sentImageUrls)) {
+    return {
+      productId: targetProductId,
+      sentImageUrls: [...existing.sentImageUrls],
+      updatedAt: existing.updatedAt || new Date().toISOString()
+    };
+  }
+
+  return {
+    productId: targetProductId,
+    sentImageUrls: [],
+    updatedAt: new Date().toISOString()
+  };
+}
+
+/**
+ * Selecciona la siguiente imagen no enviada de un producto dado el estado de galería.
+ *
+ * @param {object} product
+ * @param {object} productMediaState - { productId, sentImageUrls }
+ * @returns {object} { nextImageUrl, isExhausted, totalImages, sentCount, canonicalImages }
+ */
+export function getNextUnseenProductImage(product, productMediaState = {}) {
+  const canonicalImages = getCanonicalProductImages(product);
+  if (canonicalImages.length === 0) {
+    return {
+      nextImageUrl: null,
+      isExhausted: false,
+      totalImages: 0,
+      sentCount: 0,
+      canonicalImages: []
+    };
+  }
+
+  const sentUrls = new Set(Array.isArray(productMediaState?.sentImageUrls) ? productMediaState.sentImageUrls : []);
+  const nextImageUrl = canonicalImages.find(url => !sentUrls.has(url)) || null;
+  const isExhausted = canonicalImages.length > 0 && nextImageUrl === null;
+
+  return {
+    nextImageUrl,
+    isExhausted,
+    totalImages: canonicalImages.length,
+    sentCount: sentUrls.size,
+    canonicalImages
+  };
 }
 
 /**
@@ -300,9 +390,9 @@ export function orchestrateProductMedia({
     };
   }
 
-  // ── CASO 2: IMAGEN (AUTO-IMAGE DETERMINISTA + DEDUPLICACIÓN) ──
-  const imageUrl = getCanonicalProductImageUrl(targetProduct);
-  if (!imageUrl) {
+  // ── CASO 2: IMAGEN (AUTO-IMAGE DETERMINISTA + ROTACIÓN DE GALERÍA) ──
+  const canonicalImages = getCanonicalProductImages(targetProduct);
+  if (canonicalImages.length === 0) {
     return {
       shouldDispatch: false,
       targetProduct,
@@ -313,18 +403,32 @@ export function orchestrateProductMedia({
     };
   }
 
+  const mediaState = resolveProductMediaState(currentCommercialState, targetProduct.id);
+  const { nextImageUrl, isExhausted } = getNextUnseenProductImage(targetProduct, mediaState);
+
   const alreadySent = Array.isArray(sentMediaProductIds) && sentMediaProductIds.includes(targetProduct.id);
 
   // Si ya se envió previamente:
-  // - Solo se permite reenvío si el usuario lo solicita de forma EXPLÍCITA ("¿tienes foto?", "mándame una foto", "mándame otra vez")
+  // - Solo se permite reenvío si el usuario lo solicita de forma EXPLÍCITA ("¿tienes foto?", "mándame una foto", "más fotos", "otra foto")
   // - En caso contrario, se bloquea por deduplicación para no saturar al cliente en cada turno
   if (alreadySent) {
     if (isExplicitPhoto) {
+      if (isExhausted) {
+        return {
+          shouldDispatch: false,
+          targetProduct,
+          mediaType: 'image',
+          url: null,
+          isExplicit: true,
+          isExhausted: true,
+          reason: 'ALL_PRODUCT_IMAGES_ALREADY_SENT'
+        };
+      }
       return {
         shouldDispatch: true,
         targetProduct,
         mediaType: 'image',
-        url: imageUrl,
+        url: nextImageUrl,
         isExplicit: true,
         reason: 'EXPLICIT_PHOTO_RE_REQUESTED'
       };
@@ -333,18 +437,18 @@ export function orchestrateProductMedia({
       shouldDispatch: false,
       targetProduct,
       mediaType: 'image',
-      url: imageUrl,
+      url: canonicalImages[0],
       isExplicit: false,
       reason: 'ALREADY_SENT_DEDUP'
     };
   }
 
-  // Primera vez que se consulta este producto y existe imagen válida -> Auto-dispatch de exactamente 1 imagen
+  // Primera vez que se consulta este producto y existe imagen válida -> Auto-dispatch de exactamente 1 imagen (portada)
   return {
     shouldDispatch: true,
     targetProduct,
     mediaType: 'image',
-    url: imageUrl,
+    url: nextImageUrl || canonicalImages[0],
     isExplicit: isExplicitPhoto,
     reason: isExplicitPhoto ? 'EXPLICIT_PHOTO_FIRST_REQUEST' : 'AUTO_IMAGE_ON_PRODUCT_INQUIRY'
   };

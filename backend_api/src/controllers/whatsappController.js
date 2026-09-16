@@ -35,7 +35,12 @@ import {
   evaluateAndScheduleFollowUp
 } from '../services/followUpService.js';
 import { getGlobalSystemPrompt } from '../services/globalConfigService.js';
-import { orchestrateProductMedia } from '../services/productMediaOrchestrator.js';
+import {
+  orchestrateProductMedia,
+  getCanonicalProductImages,
+  resolveProductMediaState,
+  getNextUnseenProductImage
+} from '../services/productMediaOrchestrator.js';
 
 // ── HUMAN HANDOFF: ventana de pausa manual (30 minutos) ──────────────────────
 export const HUMAN_HANDOFF_MINUTES = 30;
@@ -3617,10 +3622,15 @@ ${catalogIndexCsv}
       finalPrompt += `\n\n[MULTIMEDIA PROGRAMADA]:\nEl sistema intentará adjuntar automáticamente la imagen principal del producto "${pendingMediaToSend.productName}" en este turno.\nNo preguntes al cliente si desea verla.\nNo invoques send_product_media para la misma imagen.\nNo afirmes que la imagen ya fue entregada o enviada.\nResponde normalmente a la consulta actual.\n`;
     }
 
+    // Directiva dinámica de turno si la galería completa ya fue entregada
+    if (orchestratedMedia?.isExhausted) {
+      finalPrompt += `\n\n[MEDIA CONTEXT - GALERÍA COMPLETA ENTREGADA]:\nYa se han enviado todas las fotos oficiales disponibles en el catálogo para el producto "${orchestratedMedia.targetProduct?.name}". Si el usuario solicita ver más fotos, explícale amablemente que ya compartiste todas las vistas registradas de este modelo. NO afirmes que vas a enviar más fotos ni inventes enlaces.\n`;
+    }
+
     // Directiva dinámica de turno si la imagen principal de este producto ya fue mostrada previamente (Case B)
     const activeProductId = currentCommercialState?.lastConsultedProductId || currentCommercialState?.productId || orchestratedMedia?.targetProduct?.id;
     const isMainImageAlreadySent = Boolean(activeProductId && sentMediaProductIds.includes(activeProductId));
-    if (isMainImageAlreadySent && !pendingMediaToSend && !isExplicitProductMediaIntent(userMessageText)) {
+    if (isMainImageAlreadySent && !pendingMediaToSend && !isExplicitProductMediaIntent(userMessageText) && !orchestratedMedia?.isExhausted) {
       finalPrompt += `\n\n[MEDIA CONTEXT]:\nLa imagen principal de este producto ya fue mostrada al cliente en esta conversación. No la ofrezcas nuevamente ni preguntes si desea verla, salvo que el cliente solicite explícitamente volver a recibirla.\n`;
     }
 
@@ -4100,16 +4110,8 @@ Atributos/Tags: ${Array.isArray(product.tags) ? product.tags.join(', ') : ''}
               };
             }
           } else {
-            if (product.imageUrl && typeof product.imageUrl === 'string' && product.imageUrl.trim() !== '' && product.imageUrl.trim() !== 'Sin imagen') {
-              targetMediaUrl = product.imageUrl.trim();
-            } else if (Array.isArray(product.images) && product.images.length > 0) {
-              const firstImg = product.images[0];
-              if (firstImg && typeof firstImg === 'string' && firstImg.trim() !== '' && firstImg.trim() !== 'Sin imagen') {
-                targetMediaUrl = firstImg.trim();
-              }
-            }
-
-            if (!targetMediaUrl) {
+            const canonicalImages = getCanonicalProductImages(product);
+            if (canonicalImages.length === 0) {
               console.log(`ℹ️ [FC] send_product_media: Producto "${product.name}" (${product.id}) no tiene imagen registrada.`);
               return {
                 success: false,
@@ -4118,6 +4120,22 @@ Atributos/Tags: ${Array.isArray(product.tags) ? product.tags.join(', ') : ''}
                 message: `El producto o servicio "${product.name}" no cuenta con una imagen o foto registrada en el catálogo digital en este momento. Informa esto al cliente con honestidad y amabilidad sin inventar enlaces.`
               };
             }
+
+            const mediaState = resolveProductMediaState(currentCommercialState, product.id);
+            const { nextImageUrl, isExhausted } = getNextUnseenProductImage(product, mediaState);
+
+            if (isExhausted) {
+              console.log(`ℹ️ [FC] send_product_media: Todas las fotos de "${product.name}" (${canonicalImages.length}) ya fueron enviadas.`);
+              return {
+                success: false,
+                hasMedia: false,
+                allImagesSent: true,
+                reason: 'ALL_PRODUCT_IMAGES_ALREADY_SENT',
+                message: `Ya se compartieron todas las fotos disponibles de "${product.name}" en el catálogo digital (${canonicalImages.length} de ${canonicalImages.length}). Explica amablemente al cliente que ya le mostraste todas las fotos registradas de este producto. NO afirmes que vas a enviar otra foto ni que adjuntas una nueva vista.`
+              };
+            }
+
+            targetMediaUrl = nextImageUrl;
           }
 
           if (isGenerationSuperseded()) {
@@ -4539,21 +4557,39 @@ Atributos/Tags: ${Array.isArray(product.tags) ? product.tags.join(', ') : ''}
                   ? { ...refreshedCustomer.commercialState }
                   : { ...currentCommercialState };
                 const curSent = Array.isArray(cState.sentMediaProductIds) ? [...cState.sentMediaProductIds] : [];
+                let stateModified = false;
                 if (!curSent.includes(pendingMediaToSend.productId)) {
                   curSent.push(pendingMediaToSend.productId);
                   cState.sentMediaProductIds = curSent;
+                  stateModified = true;
+                }
+
+                // ── PRODUCT MEDIA STATE (GALLERY ROTATION) ──
+                let pMediaState = (cState.productMediaState && cState.productMediaState.productId === pendingMediaToSend.productId && Array.isArray(cState.productMediaState.sentImageUrls))
+                  ? { ...cState.productMediaState, sentImageUrls: [...cState.productMediaState.sentImageUrls] }
+                  : { productId: pendingMediaToSend.productId, sentImageUrls: [], updatedAt: new Date().toISOString() };
+
+                if (pendingMediaToSend.url && !pMediaState.sentImageUrls.includes(pendingMediaToSend.url)) {
+                  pMediaState.sentImageUrls.push(pendingMediaToSend.url);
+                  pMediaState.updatedAt = new Date().toISOString();
+                  cState.productMediaState = pMediaState;
+                  stateModified = true;
+                }
+
+                if (stateModified) {
                   await prisma.customer.update({
                     where: { id: customer.id },
                     data: { commercialState: cState }
                   });
                   currentCommercialState.sentMediaProductIds = curSent;
+                  currentCommercialState.productMediaState = pMediaState;
                   if (!sentMediaProductIds.includes(pendingMediaToSend.productId)) {
                     sentMediaProductIds.push(pendingMediaToSend.productId);
                   }
-                  console.log(`💾 [Deterministic Media Rescue] Producto "${pendingMediaToSend.productId}" guardado en sentMediaProductIds.`);
+                  console.log(`💾 [Deterministic Media Rescue] Producto "${pendingMediaToSend.productId}" guardado en sentMediaProductIds y productMediaState (${pMediaState.sentImageUrls.length} imágenes).`);
                 }
               } catch (persistMediaErr) {
-                console.warn('⚠️ [Deterministic Media Rescue] Error persistiendo sentMediaProductIds:', persistMediaErr.message);
+                console.warn('⚠️ [Deterministic Media Rescue] Error persistiendo sentMediaProductIds / productMediaState:', persistMediaErr.message);
               }
             }
 
@@ -5069,21 +5105,39 @@ Atributos/Tags: ${Array.isArray(product.tags) ? product.tags.join(', ') : ''}
                   ? { ...refreshedCustomer.commercialState }
                   : { ...currentCommercialState };
                 const curSent = Array.isArray(cState.sentMediaProductIds) ? [...cState.sentMediaProductIds] : [];
+                let stateModified = false;
                 if (!curSent.includes(item.productId)) {
                   curSent.push(item.productId);
                   cState.sentMediaProductIds = curSent;
+                  stateModified = true;
+                }
+
+                // ── PRODUCT MEDIA STATE (GALLERY ROTATION) ──
+                let pMediaState = (cState.productMediaState && cState.productMediaState.productId === item.productId && Array.isArray(cState.productMediaState.sentImageUrls))
+                  ? { ...cState.productMediaState, sentImageUrls: [...cState.productMediaState.sentImageUrls] }
+                  : { productId: item.productId, sentImageUrls: [], updatedAt: new Date().toISOString() };
+
+                if (item.url && !pMediaState.sentImageUrls.includes(item.url)) {
+                  pMediaState.sentImageUrls.push(item.url);
+                  pMediaState.updatedAt = new Date().toISOString();
+                  cState.productMediaState = pMediaState;
+                  stateModified = true;
+                }
+
+                if (stateModified) {
                   await prisma.customer.update({
                     where: { id: customer.id },
                     data: { commercialState: cState }
                   });
                   currentCommercialState.sentMediaProductIds = curSent;
+                  currentCommercialState.productMediaState = pMediaState;
                   if (!sentMediaProductIds.includes(item.productId)) {
                     sentMediaProductIds.push(item.productId);
                   }
-                  console.log(`💾 [Media State Persisted] Producto "${item.productId}" guardado en sentMediaProductIds del cliente.`);
+                  console.log(`💾 [Media State Persisted] Producto "${item.productId}" guardado en sentMediaProductIds y productMediaState (${pMediaState.sentImageUrls.length} imágenes).`);
                 }
               } catch (persistMediaErr) {
-                console.warn('⚠️ [Media Persist] Error persistiendo sentMediaProductIds:', persistMediaErr.message);
+                console.warn('⚠️ [Media Persist] Error persistiendo sentMediaProductIds / productMediaState:', persistMediaErr.message);
               }
             }
 
