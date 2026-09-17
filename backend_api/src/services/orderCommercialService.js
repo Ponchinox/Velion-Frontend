@@ -211,6 +211,52 @@ export function isPaymentMethodAuthorized(paymentMethod, bankAccountsConfig) {
   return false;
 }
 
+// In-process concurrency lock map per customer
+const customerOrderLocks = new Map();
+
+async function withCustomerLock(lockKey, fn) {
+  const existing = customerOrderLocks.get(lockKey);
+  const wasConcurrent = Boolean(existing && existing.inFlight);
+
+  let releaseLock;
+  const currentLock = new Promise((resolve) => {
+    releaseLock = resolve;
+  });
+
+  const lockEntry = {
+    promise: currentLock,
+    inFlight: true,
+    lastCreatedOrder: existing?.lastCreatedOrder || null
+  };
+  customerOrderLocks.set(lockKey, lockEntry);
+
+  try {
+    if (existing) {
+      await existing.promise;
+    }
+    return await fn({ wasConcurrent, lockEntry, previousEntry: existing });
+  } finally {
+    lockEntry.inFlight = false;
+    releaseLock();
+    if (customerOrderLocks.get(lockKey) === lockEntry) {
+      setTimeout(() => {
+        if (customerOrderLocks.get(lockKey) === lockEntry) {
+          customerOrderLocks.delete(lockKey);
+        }
+      }, 5000).unref?.();
+    }
+  }
+}
+
+async function executeTransaction(db, callback) {
+  if (typeof db.$transaction === 'function') {
+    return await db.$transaction(async (tx) => {
+      return await callback(tx || db);
+    });
+  }
+  return await callback(db);
+}
+
 /**
  * Sincroniza el estado comercial y la orden (Order / OrderItem) de forma determinista y multi-tenant.
  *
@@ -223,15 +269,25 @@ export function isPaymentMethodAuthorized(paymentMethod, bankAccountsConfig) {
  * @param {function} [params.onNotification] - Callback opcional para enviar notificaciones externas
  * @returns {Promise<object>} { success: boolean, state: object, error?: string }
  */
-export async function syncCommercialOrder({
-  tenant,
-  customer,
-  clientNumber,
-  currentCommercialState = {},
-  args = {},
-  onNotification = null,
-  prismaClient = prisma
-}) {
+export async function syncCommercialOrder(params) {
+  const { tenant, customer } = params || {};
+  if (!customer?.id) {
+    return _syncCommercialOrderInternal(params, {});
+  }
+  const lockKey = `${tenant?.id || 'global'}:${customer.id}`;
+  return withCustomerLock(lockKey, (lockMeta) => _syncCommercialOrderInternal(params, lockMeta));
+}
+
+async function _syncCommercialOrderInternal(params, lockMeta = {}) {
+  const {
+    tenant,
+    customer,
+    clientNumber,
+    currentCommercialState = {},
+    args = {},
+    onNotification = null,
+    prismaClient = prisma
+  } = params || {};
   const db = prismaClient;
   if (!tenant?.id) {
     throw new Error('syncCommercialOrder requiere un tenant con id válido.');
@@ -239,6 +295,9 @@ export async function syncCommercialOrder({
   if (!customer?.id) {
     throw new Error('syncCommercialOrder requiere un customer con id válido.');
   }
+
+  let customerAlreadyPersisted = false;
+  let notificationWarning = null;
 
   // 1. Obtener y validar métodos de pago y políticas de envío reales del tenant
   let tenantBankAccounts = tenant.bankAccounts;
@@ -397,59 +456,140 @@ export async function syncCommercialOrder({
           const quantity = finalQuantity;
           const total = quantity * productPrice;
 
-          const newOrder = await db.order.create({
-            data: {
-              tenantId: tenant.id,
-              customerId: customer.id,
-              status: orderStatus,
-              paymentStatus: payStatus,
-              paymentMethod: updatedState.paymentMethod || null,
-              shippingCity: isService ? null : (updatedState.shippingCity || null),
-              shippingAddress: isService ? null : (updatedState.shippingAddress || null),
-              customerNeeds: updatedState.customerNeeds || null,
-              totalAmount: total,
-              items: {
-                create: [{
-                  productId: verifiedProduct.id,
-                  name: verifiedProduct.name,
-                  quantity: quantity,
-                  price: productPrice,
-                  variant: updatedState.variant || null
-                }]
+          let createdOrder = null;
+
+          try {
+            await executeTransaction(db, async (tx) => {
+              let existingActiveOrderId = updatedState.activeOrderId;
+
+              // 1. Concurrency Guard en memoria (para llamadas concurrentes esperando el lock)
+              const { wasConcurrent, lockEntry, previousEntry } = lockMeta;
+              if (!existingActiveOrderId && wasConcurrent && previousEntry?.lastCreatedOrder?.orderId) {
+                const prev = previousEntry.lastCreatedOrder;
+                if (prev.productId === verifiedProduct?.id && (Date.now() - prev.timestamp) < 5000) {
+                  existingActiveOrderId = prev.orderId;
+                }
               }
-            }
-          });
 
-          updatedState.activeOrderId = newOrder.id;
+              // 2. PostgreSQL Row-level Lock si está disponible (multi-proceso / cluster)
+              if (!existingActiveOrderId && typeof tx.$queryRaw === 'function') {
+                try {
+                  const lockedRows = await tx.$queryRaw`SELECT "id", "commercialState" FROM "Customer" WHERE "id" = ${customer.id} FOR UPDATE`;
+                  if (lockedRows && lockedRows.length > 0) {
+                    const rawState = lockedRows[0].commercialState;
+                    const parsedState = (typeof rawState === 'object' && rawState !== null)
+                      ? rawState
+                      : (typeof rawState === 'string' ? JSON.parse(rawState) : null);
+                    if (parsedState?.activeOrderId && parsedState?.lastOrderCreatedAt && (Date.now() - parsedState.lastOrderCreatedAt) < 5000) {
+                      existingActiveOrderId = parsedState.activeOrderId;
+                    }
+                  }
+                } catch (rawErr) {
+                  // Fallback silencioso para DBs/mocks sin queryRaw FOR UPDATE
+                }
+              }
 
-          let alertMessage = '';
-          if (isService) {
-            const qtyNote = quantity > 1 ? ` (${quantity} personas)` : '';
-            alertMessage = `💼 SERVICIO REGISTRADO | Cliente: +${clientNumber} (${customer.name || 'Sin Nombre'}) | ${verifiedProduct.name}${qtyNote}`;
-          } else {
-            alertMessage = `📦 PEDIDO CREADO | Cliente: +${clientNumber} (${customer.name || 'Sin Nombre'}) | ${verifiedProduct.name} x${quantity}`;
+              if (existingActiveOrderId) {
+                console.log(`🛡️ [Order Concurrency] Orden activa concurrente detectada (${existingActiveOrderId}) para customer ${customer.id}. Evitando duplicación.`);
+                updatedState.activeOrderId = existingActiveOrderId;
+                await tx.customer.update({
+                  where: { id: customer.id },
+                  data: { commercialState: updatedState }
+                });
+                createdOrder = { id: existingActiveOrderId, isExisting: true };
+                customerAlreadyPersisted = true;
+                return;
+              }
+
+              // 3. Creación atómica de Orden con OrderItems
+              const newOrder = await tx.order.create({
+                data: {
+                  tenantId: tenant.id,
+                  customerId: customer.id,
+                  status: orderStatus,
+                  paymentStatus: payStatus,
+                  paymentMethod: updatedState.paymentMethod || null,
+                  shippingCity: isService ? null : (updatedState.shippingCity || null),
+                  shippingAddress: isService ? null : (updatedState.shippingAddress || null),
+                  customerNeeds: updatedState.customerNeeds || null,
+                  totalAmount: total,
+                  items: {
+                    create: [{
+                      productId: verifiedProduct.id,
+                      name: verifiedProduct.name,
+                      quantity: quantity,
+                      price: productPrice,
+                      variant: updatedState.variant || null
+                    }]
+                  }
+                }
+              });
+
+              const nowTime = Date.now();
+              updatedState.activeOrderId = newOrder.id;
+              updatedState.lastOrderCreatedAt = nowTime;
+              if (lockEntry) {
+                lockEntry.lastCreatedOrder = {
+                  orderId: newOrder.id,
+                  productId: verifiedProduct.id,
+                  timestamp: nowTime
+                };
+              }
+
+              // 4. Creación atómica de Alerta transaccional
+              let alertMessage = '';
+              if (isService) {
+                const qtyNote = quantity > 1 ? ` (${quantity} personas)` : '';
+                alertMessage = `💼 SERVICIO REGISTRADO | Cliente: +${clientNumber} (${customer.name || 'Sin Nombre'}) | ${verifiedProduct.name}${qtyNote}`;
+              } else {
+                alertMessage = `📦 PEDIDO CREADO | Cliente: +${clientNumber} (${customer.name || 'Sin Nombre'}) | ${verifiedProduct.name} x${quantity}`;
+              }
+
+              await tx.alert.create({
+                data: {
+                  type: 'NEW_ORDER',
+                  severity: 'INFO',
+                  message: alertMessage,
+                  tenantId: tenant.id
+                }
+              });
+
+              // 5. Persistencia atómica de activeOrderId en customer.commercialState
+              await tx.customer.update({
+                where: { id: customer.id },
+                data: { commercialState: updatedState }
+              });
+
+              createdOrder = newOrder;
+              customerAlreadyPersisted = true;
+            });
+          } catch (txError) {
+            console.error('❌ [Order Commercial] Fallo atómico en creación de orden (rollback garantizado):', txError.message);
+            delete updatedState.activeOrderId;
+            return {
+              error: 'ORDER_CREATION_FAILED',
+              message: 'Error al procesar la creación de la orden en la base de datos.',
+              state: currentCommercialState
+            };
           }
 
-          await db.alert.create({
-            data: {
-              type: 'NEW_ORDER',
-              severity: 'INFO',
-              message: alertMessage,
-              tenantId: tenant.id
+          // 6. Notificaciones externas POST-COMMIT (desacopladas de la transacción)
+          if (createdOrder && !createdOrder.isExisting && typeof onNotification === 'function') {
+            try {
+              await onNotification({
+                type: 'NEW_ORDER',
+                orderId: createdOrder.id,
+                total,
+                quantity,
+                productName: verifiedProduct.name,
+                shippingCity: isService ? null : updatedState.shippingCity,
+                shippingAddress: isService ? null : updatedState.shippingAddress,
+                productType
+              });
+            } catch (notifErr) {
+              console.warn('⚠️ [Order Commercial] Notificación externa post-commit falló (orden preservada):', notifErr.message);
+              notificationWarning = 'ORDER_CREATED_NOTIFICATION_FAILED';
             }
-          });
-
-          if (typeof onNotification === 'function') {
-            await onNotification({
-              type: 'NEW_ORDER',
-              orderId: newOrder.id,
-              total,
-              quantity,
-              productName: verifiedProduct.name,
-              shippingCity: isService ? null : updatedState.shippingCity,
-              shippingAddress: isService ? null : updatedState.shippingAddress,
-              productType
-            });
           }
         } else {
           console.log(`ℹ️ [FC update_commercial_state] Draft comercial en memoria (Tipo: ${productType}, confirmed=${isConfirmed}, qty=${isService ? 1 : isQtyValid}, prod=${hasValidProduct}, pay=${isPaymentValidForOrder}).`);
@@ -607,13 +747,17 @@ export async function syncCommercialOrder({
         });
 
         if (typeof onNotification === 'function') {
-          await onNotification({
-            type: 'PAYMENT_VERIFY',
-            orderId: existingOrder.id,
-            total,
-            quantity,
-            productName: finalProductName
-          });
+          try {
+            await onNotification({
+              type: 'PAYMENT_VERIFY',
+              orderId: existingOrder.id,
+              total,
+              quantity,
+              productName: finalProductName
+            });
+          } catch (notifErr) {
+            console.warn('⚠️ [Order Commercial] Notificación PAYMENT_VERIFY falló:', notifErr.message);
+          }
         }
 
         try {
@@ -687,13 +831,19 @@ export async function syncCommercialOrder({
     }
   }
 
-  // Persistir estado en el Customer
-  await db.customer.update({
-    where: { id: customer.id },
-    data: { commercialState: updatedState }
-  });
+  // Persistir estado en el Customer solo si no fue persistido ya dentro de la transacción
+  if (!customerAlreadyPersisted) {
+    await db.customer.update({
+      where: { id: customer.id },
+      data: { commercialState: updatedState }
+    });
+  }
 
-  return { success: true, state: updatedState };
+  const result = { success: true, state: updatedState };
+  if (notificationWarning) {
+    result.warning = notificationWarning;
+  }
+  return result;
 }
 
 /**

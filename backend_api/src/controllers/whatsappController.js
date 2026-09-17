@@ -4549,6 +4549,9 @@ Atributos/Tags: ${Array.isArray(product.tags) ? product.tags.join(', ') : ''}
           }
 
           currentCommercialState = result.state;
+          if (result.warning) {
+            console.warn(`⚠️ [FC] update_commercial_state con advertencia de notificación:`, result.warning);
+          }
           console.log(`✅ [FC] update_commercial_state completado y sincronizado (Stage: ${result.state?.currentStage}) en ${Date.now() - fcStart}ms.`);
           return result;
         } catch (err) {
