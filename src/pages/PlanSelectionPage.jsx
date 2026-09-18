@@ -1,5 +1,7 @@
 import { useState, useEffect } from 'react';
+import { Navigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
+import { isDemoUser } from '../utils/demoUtils';
 import {
   ShieldCheck,
   Check,
@@ -23,6 +25,10 @@ const WHATSAPP_CONTACT = '51926246740';  // WhatsApp de soporte para confirmar c
 
 export default function PlanSelectionPage() {
   const { user } = useAuth();
+
+  if (isDemoUser(user)) {
+    return <Navigate to="/dashboard" replace />;
+  }
 
   const [plans, setPlans]                 = useState([]);
   const [loading, setLoading]             = useState(true);

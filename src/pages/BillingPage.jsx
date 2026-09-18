@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom';
 import { useAuth } from '../context/AuthContext';
 import { apiClient } from '../services/api';
 import { Cardholder, Check, Sparkle, WarningCircle, CircleNotch, X, Copy, QrCode, ArrowSquareOut } from '@phosphor-icons/react';
+import { isDemoUser } from '../utils/demoUtils';
 
 // Variables estáticas para fácil modificación
 const YAPE_NUMBER = '953789363';
@@ -10,6 +11,7 @@ const SUPPORT_WHATSAPP = '984363997';
 
 export default function BillingPage() {
   const { user } = useAuth();
+  const isDemo = isDemoUser(user);
   const [plans, setPlans] = useState([]);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState('');
@@ -20,6 +22,44 @@ export default function BillingPage() {
 
   // Identificar el plan actual
   const currentPlan = user?.plan || 'Básico';
+
+  if (isDemo) {
+    return (
+      <div className="space-y-8 max-w-4xl mx-auto p-4 sm:p-6 lg:p-8">
+        {/* Header */}
+        <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4 border-b border-line pb-6">
+          <div>
+            <h1 className="text-3xl font-extrabold text-hi tracking-tight">Planes y Facturación</h1>
+            <p className="text-sm text-lo mt-1">Monitorea tu plan de suscripción de Velion Agent.</p>
+          </div>
+          <div className="inline-flex items-center gap-2 px-4 py-2 bg-app border border-line rounded-lg">
+            <Cardholder size={20} className="text-brand" />
+            <span className="text-sm font-semibold text-mid">
+              Plan actual: <strong className="text-hi font-bold capitalize">{currentPlan}</strong>
+            </span>
+          </div>
+        </div>
+
+        {/* Notificación de Demostración Segura */}
+        <div className="bg-card border-2 border-amber-200 dark:border-amber-900/40 rounded-2xl p-8 sm:p-10 text-center space-y-4 shadow-sm">
+          <div className="inline-flex items-center justify-center w-16 h-16 rounded-2xl bg-amber-100 dark:bg-amber-950/50 text-amber-600 dark:text-amber-400 mx-auto">
+            <Cardholder size={36} weight="duotone" />
+          </div>
+          <h2 className="text-2xl font-extrabold text-hi tracking-tight">
+            Facturación deshabilitada en entorno de demostración.
+          </h2>
+          <p className="text-base text-mid max-w-lg mx-auto leading-relaxed">
+            Esta cuenta utiliza un plan de evaluación preconfigurado.
+          </p>
+          <div className="pt-2">
+            <span className="inline-block px-4 py-2 bg-emerald-50 dark:bg-emerald-950/30 border border-emerald-200 dark:border-emerald-800 rounded-lg text-sm text-emerald-700 dark:text-emerald-300 font-semibold">
+              Estado: Plan de Evaluación Activo ({currentPlan})
+            </span>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   // Cargar planes dinámicos desde la base de datos
   const loadPlans = async () => {

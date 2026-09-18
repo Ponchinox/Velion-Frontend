@@ -1,5 +1,6 @@
 import bcrypt from 'bcryptjs';
 import prisma from '../db.js';
+import { isDemoTenant } from '../services/demoGuardService.js';
 
 /**
  * GET /api/users/me
@@ -23,7 +24,8 @@ export async function getProfile(req, res) {
         email: user.email,
         phone: user.phone || '',
         role: user.role,
-        tenantId: user.tenantId
+        tenantId: user.tenantId,
+        isDemo: isDemoTenant(user.tenantId)
       }
     });
   } catch (error) {
@@ -71,7 +73,8 @@ export async function updateProfile(req, res) {
         email: updatedUser.email,
         phone: updatedUser.phone || '',
         role: updatedUser.role,
-        tenantId: updatedUser.tenantId
+        tenantId: updatedUser.tenantId,
+        isDemo: isDemoTenant(updatedUser.tenantId)
       }
     });
   } catch (error) {

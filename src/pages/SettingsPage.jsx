@@ -19,9 +19,11 @@ import * as settingsService from '../services/settingsService';
 import * as userService from '../services/userService';
 import { useUnsavedChanges } from '../context/UnsavedChangesContext';
 import { useAuth } from '../context/AuthContext';
+import { isDemoUser } from '../utils/demoUtils';
 
 export default function SettingsPage() {
   const { user, updateUser } = useAuth();
+  const isDemo = isDemoUser(user);
   const navigate = useNavigate();
   const [activeSection, setActiveSection] = useState(null); // null (grid) | 'admin' | 'bot' | 'security' | 'billing'
   const [activeSubTab, setActiveSubTab] = useState('general'); // 'general' | 'operations'
@@ -294,7 +296,7 @@ export default function SettingsPage() {
         id: 'billing',
         Icon: CreditCard,
         label: 'Facturación & Plan',
-        desc: 'Tu plan activo, pagos y método Yape',
+        desc: isDemo ? 'Plan de evaluación preconfigurado' : 'Tu plan activo, pagos y método Yape',
         bgClass: 'bg-emerald-50',
         iconClass: 'text-emerald-600'
       }
@@ -819,13 +821,19 @@ export default function SettingsPage() {
           <div className="space-y-6">
             <div className="pb-3 border-b border-gray-100">
               <h2 className="text-lg font-bold text-gray-900">Facturación & Plan</h2>
-              <p className="text-sm text-gray-500 mt-0.5">Gestiona tu plan activo y realiza pagos con Yape.</p>
+              <p className="text-sm text-gray-500 mt-0.5">
+                {isDemo
+                  ? 'Plan de evaluación preconfigurado para entorno de demostración.'
+                  : 'Gestiona tu plan activo y realiza pagos con Yape.'}
+              </p>
             </div>
 
             {/* Plan activo */}
             <div className="flex items-center justify-between p-4 rounded-xl bg-emerald-50 border border-emerald-200">
               <div>
-                <p className="text-xs font-semibold text-emerald-600 uppercase tracking-wide">Plan Activo</p>
+                <p className="text-xs font-semibold text-emerald-600 uppercase tracking-wide">
+                  {isDemo ? 'Plan de Evaluación Demo' : 'Plan Activo'}
+                </p>
                 <p className="text-base font-bold text-gray-900 mt-0.5">
                   {user?.planFeatures?.name || user?.plan || 'Sin Plan'}
                 </p>
@@ -840,16 +848,23 @@ export default function SettingsPage() {
               </div>
             </div>
 
-            {/* Botón para ir a la página completa de Facturación */}
-            <div className="flex justify-start pt-2">
-              <button
-                onClick={() => navigate('/billing')}
-                className="inline-flex items-center gap-2 px-5 py-2.5 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-sm font-semibold shadow transition-all cursor-pointer"
-              >
-                <CreditCard size={14} />
-                <span>Ver Planes & Realizar Pago Yape</span>
-              </button>
-            </div>
+            {/* Botón para ir a la página completa de Facturación o Banner Demo */}
+            {isDemo ? (
+              <div className="p-4 rounded-xl bg-amber-50 border border-amber-200 text-amber-800 text-sm space-y-1">
+                <p className="font-semibold">Facturación deshabilitada en entorno de demostración.</p>
+                <p className="text-xs text-amber-700">Esta cuenta utiliza un plan de evaluación preconfigurado.</p>
+              </div>
+            ) : (
+              <div className="flex justify-start pt-2">
+                <button
+                  onClick={() => navigate('/billing')}
+                  className="inline-flex items-center gap-2 px-5 py-2.5 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-sm font-semibold shadow transition-all cursor-pointer"
+                >
+                  <CreditCard size={14} />
+                  <span>Ver Planes & Realizar Pago Yape</span>
+                </button>
+              </div>
+            )}
           </div>
         )}
 

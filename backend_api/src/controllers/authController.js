@@ -1,6 +1,7 @@
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import prisma from '../db.js';
+import { isDemoTenant } from '../services/demoGuardService.js';
 
 /**
  * Registra un nuevo Tenant y su respectivo Usuario Administrador
@@ -159,6 +160,8 @@ export async function loginAccount(req, res) {
       });
     }
 
+    const isDemo = isDemoTenant(user.tenantId);
+
     return res.json({
       message: 'Sesión iniciada con éxito.',
       token,
@@ -173,6 +176,7 @@ export async function loginAccount(req, res) {
         plan: user.tenant?.plan || null,
         planId: user.tenant?.planId || null,
         hasPlan,
+        isDemo,
         planFeatures,
         tenant: user.tenant ? {
           id: user.tenant.id,
@@ -182,6 +186,7 @@ export async function loginAccount(req, res) {
           connLimit: user.tenant.connLimit,
           msgLimit: user.tenant.msgLimit,
           hasPlan,
+          isDemo,
         } : null,
       },
     });

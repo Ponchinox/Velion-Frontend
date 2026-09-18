@@ -8,6 +8,7 @@ import prisma from '../db.js';
 import { markMessageAsSentByAi } from './aiMessageTracker.js';
 import { decryptText } from '../utils/cryptoUtils.js';
 import { getMetaGraphVersion } from '../controllers/metaOnboardingController.js';
+import { checkDemoOutboundGuard } from './demoGuardService.js';
 
 function getEvoHeaders(apiKey) {
   const key = (apiKey || process.env.EVOLUTION_API_KEY || '').trim();
@@ -104,8 +105,16 @@ export async function downloadMetaMedia(mediaId, token) {
  * @returns {Promise<string|null>} msgId (Evolution / Meta wamid) o null
  */
 export async function sendText(opts) {
-  assertNotInTestMode('sendText', opts?.to);
-  let { tenantId, provider, instance, apiKey, metaPhoneNumberId, metaAccessToken, to, text, isAutomated, origin } = opts;
+  let { tenantId, provider, instance, apiKey, metaPhoneNumberId, metaAccessToken, to, text, isAutomated, origin } = opts || {};
+
+  // ── SERVER-SIDE GUARD PARA TENANTS DEMO ──
+  // Si el tenant es demo, solo permite enviar a los números de la whitelist DEMO_ALLOWED_WHATSAPP_NUMBERS
+  const demoGuard = checkDemoOutboundGuard(tenantId, to);
+  if (!demoGuard.allowed) {
+    return null;
+  }
+
+  assertNotInTestMode('sendText', to);
 
   if (!provider && tenantId) {
     const ctx = await resolveGatewayCtx(tenantId);
@@ -199,13 +208,21 @@ export async function sendText(opts) {
  * Detecta automáticamente si es video por extensión o parámetro mediaType.
  */
 export async function sendMedia(opts) {
-  assertNotInTestMode('sendMedia', opts?.to);
-  let { tenantId, provider, instance, apiKey, metaPhoneNumberId, metaAccessToken, to, url, caption, mediaType, isAutomated, origin } = opts;
+  let { tenantId, provider, instance, apiKey, metaPhoneNumberId, metaAccessToken, to, url, caption, mediaType, isAutomated, origin } = opts || {};
+
+  // ── SERVER-SIDE GUARD PARA TENANTS DEMO ──
+  // Si el tenant es demo, solo permite enviar a los números de la whitelist DEMO_ALLOWED_WHATSAPP_NUMBERS
+  const demoGuard = checkDemoOutboundGuard(tenantId, to);
+  if (!demoGuard.allowed) {
+    return null;
+  }
 
   if (!url) {
     console.warn('[WA Gateway] sendMedia: URL no válida. Abortando.');
     return null;
   }
+
+  assertNotInTestMode('sendMedia', to);
 
   if (!provider && tenantId) {
     const ctx = await resolveGatewayCtx(tenantId);
