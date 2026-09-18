@@ -172,6 +172,38 @@ const initialNodes = [
   }
 ];
 
+function normalizeFlowNodes(nodes) {
+  if (!Array.isArray(nodes)) return [];
+  return nodes.map((node, index) => {
+    if (!node || typeof node !== 'object') return node;
+
+    const hasValidPosition =
+      node.position &&
+      typeof node.position.x === 'number' &&
+      !isNaN(node.position.x) &&
+      typeof node.position.y === 'number' &&
+      !isNaN(node.position.y);
+
+    if (!hasValidPosition) {
+      const fallbackX = (node.position && typeof node.position.x === 'number' && !isNaN(node.position.x))
+        ? node.position.x
+        : 250;
+      const fallbackY = (node.position && typeof node.position.y === 'number' && !isNaN(node.position.y))
+        ? node.position.y
+        : 100 + (index * 150);
+
+      return {
+        ...node,
+        position: {
+          x: fallbackX,
+          y: fallbackY
+        }
+      };
+    }
+    return node;
+  });
+}
+
 function FlowBuilderInner() {
   const [nodes, setNodes, onNodesChange] = useNodesState(initialNodes);
   const [edges, setEdges, onEdgesChange] = useEdgesState([]);
@@ -205,7 +237,8 @@ function FlowBuilderInner() {
         setTriggerKeyword(activeFlow.triggerKeyword);
         setIsActive(activeFlow.isActive);
         if (activeFlow.nodes) {
-          setNodes(typeof activeFlow.nodes === 'string' ? JSON.parse(activeFlow.nodes) : activeFlow.nodes);
+          const rawNodes = typeof activeFlow.nodes === 'string' ? JSON.parse(activeFlow.nodes) : activeFlow.nodes;
+          setNodes(normalizeFlowNodes(rawNodes));
         }
         if (activeFlow.edges) {
           setEdges(typeof activeFlow.edges === 'string' ? JSON.parse(activeFlow.edges) : activeFlow.edges);

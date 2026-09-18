@@ -1,6 +1,42 @@
 import prisma from '../db.js';
 
 /**
+ * Normaliza defensivamente la lista de nodos de un flujo para garantizar
+ * compatibilidad con React Flow sin corromper flujos con posiciones ya válidas.
+ */
+export function normalizeFlowNodes(nodes) {
+  if (!Array.isArray(nodes)) return [];
+  return nodes.map((node, index) => {
+    if (!node || typeof node !== 'object') return node;
+
+    const hasValidPosition =
+      node.position &&
+      typeof node.position.x === 'number' &&
+      !isNaN(node.position.x) &&
+      typeof node.position.y === 'number' &&
+      !isNaN(node.position.y);
+
+    if (!hasValidPosition) {
+      const fallbackX = (node.position && typeof node.position.x === 'number' && !isNaN(node.position.x))
+        ? node.position.x
+        : 250;
+      const fallbackY = (node.position && typeof node.position.y === 'number' && !isNaN(node.position.y))
+        ? node.position.y
+        : 100 + (index * 150);
+
+      return {
+        ...node,
+        position: {
+          x: fallbackX,
+          y: fallbackY
+        }
+      };
+    }
+    return node;
+  });
+}
+
+/**
  * Obtiene todos los flujos del tenant ordenados por fecha de actualización
  */
 export async function getFlows(req, res) {
@@ -15,7 +51,22 @@ export async function getFlows(req, res) {
       orderBy: { updatedAt: 'desc' }
     });
 
-    return res.status(200).json(flows);
+    const safeFlows = flows.map((flow) => {
+      let rawNodes = flow.nodes;
+      if (typeof rawNodes === 'string') {
+        try {
+          rawNodes = JSON.parse(rawNodes);
+        } catch {
+          rawNodes = [];
+        }
+      }
+      return {
+        ...flow,
+        nodes: normalizeFlowNodes(rawNodes)
+      };
+    });
+
+    return res.status(200).json(safeFlows);
   } catch (error) {
     console.error('❌ Error al obtener flujos:', error);
     return res.status(500).json({ error: 'Error al recuperar los flujos.' });
@@ -37,6 +88,16 @@ export async function saveFlow(req, res) {
       return res.status(400).json({ error: 'El nombre del flujo y la palabra clave de activación son obligatorios.' });
     }
 
+    let rawNodes = nodes || [];
+    if (typeof rawNodes === 'string') {
+      try {
+        rawNodes = JSON.parse(rawNodes);
+      } catch {
+        rawNodes = [];
+      }
+    }
+    const cleanNodes = normalizeFlowNodes(rawNodes);
+
     let flow;
 
     if (id) {
@@ -53,7 +114,7 @@ export async function saveFlow(req, res) {
         data: {
           name,
           triggerKeyword,
-          nodes: nodes || [],
+          nodes: cleanNodes,
           edges: edges || [],
           isActive: isActive ?? false
         }
@@ -65,7 +126,7 @@ export async function saveFlow(req, res) {
         data: {
           name,
           triggerKeyword,
-          nodes: nodes || [],
+          nodes: cleanNodes,
           edges: edges || [],
           isActive: isActive ?? false,
           tenantId

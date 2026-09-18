@@ -25,6 +25,7 @@ import SeguimientosPage from './pages/SeguimientosPage';
 import TenantDashboardPage from './pages/TenantDashboardPage';
 import PlanSelectionPage from './pages/PlanSelectionPage';
 import { UnsavedChangesProvider } from './context/UnsavedChangesContext';
+import RouteErrorBoundary from './components/RouteErrorBoundary';
 
 // Redireccionador inteligente del Dashboard según el rol del usuario
 function DashboardRedirect() {
@@ -64,6 +65,7 @@ const router = createBrowserRouter(
             </UnsavedChangesProvider>
           </ProtectedRoute>
         }
+        errorElement={<RouteErrorBoundary />}
       >
         <Route index element={<Navigate to="/dashboard" replace />} />
         <Route path="dashboard" element={<DashboardRedirect />} />
@@ -120,11 +122,15 @@ const router = createBrowserRouter(
         <Route path="contactos"       element={<ContactosPage />} />
         <Route path="mensajes"        element={<ChatPage />} />
         <Route path="seguimientos"    element={<SeguimientosPage />} />
-        <Route path="automatizacion" element={
-          <ProtectedRoute requiredPlanFeature="hasAutomations">
-            <FlowBuilderPage />
-          </ProtectedRoute>
-        } />
+        <Route
+          path="automatizacion"
+          element={
+            <ProtectedRoute requiredPlanFeature="hasAutomations">
+              <FlowBuilderPage />
+            </ProtectedRoute>
+          }
+          errorElement={<RouteErrorBoundary />}
+        />
         <Route path="productos"       element={<Products />} />
 
         {/* Billing es ahora una sub-vista dentro de Settings */}

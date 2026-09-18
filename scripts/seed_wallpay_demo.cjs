@@ -178,14 +178,15 @@ async function runSeed() {
     }
 
     // ── 5. PRODUCTOS SINTÉTICOS IDEMPOTENTES ──
+    const baseDemoMediaUrl = `https://185.163.116.210/media/tenants/${tenant.id}/products/images`;
     const syntheticProducts = [
       {
         name: 'Smartwatch X1',
         description: 'Reloj inteligente con pantalla AMOLED de 1.4", monitoreo continuo de ritmo cardíaco, SpO2 y batería de hasta 7 días.',
         category: 'Wearables',
         price: 189.0,
-        imageUrl: 'https://185.163.116.210/media/tenants/5eb9a15a-07ad-41a8-80be-ae53f122acd0/products/images/smartwatch-x1.jpg',
-        images: ['https://185.163.116.210/media/tenants/5eb9a15a-07ad-41a8-80be-ae53f122acd0/products/images/smartwatch-x1.jpg'],
+        imageUrl: `${baseDemoMediaUrl}/smartwatch-x1.png`,
+        images: [`${baseDemoMediaUrl}/smartwatch-x1.png`],
         tags: ['smartwatch', 'fitness', 'tecnologia', 'salud'],
         type: 'PHYSICAL_PRODUCT',
         isAvailable: true,
@@ -195,6 +196,8 @@ async function runSeed() {
         description: 'Audífonos inalámbricos TWS con cancelación activa de ruido (ANC) híbrida, 32h de autonomía total y carga rápida USB-C.',
         category: 'Audio',
         price: 149.0,
+        imageUrl: `${baseDemoMediaUrl}/airbeat-pro.png`,
+        images: [`${baseDemoMediaUrl}/airbeat-pro.png`],
         tags: ['auriculares', 'bluetooth', 'anc', 'audio'],
         type: 'PHYSICAL_PRODUCT',
         isAvailable: true,
@@ -204,6 +207,8 @@ async function runSeed() {
         description: 'Altavoz Bluetooth portátil ultracompacto con certificación impermeable IPX7, bajos reforzados y 10h de reproducción continua.',
         category: 'Audio',
         price: 89.0,
+        imageUrl: `${baseDemoMediaUrl}/soundmini.png`,
+        images: [`${baseDemoMediaUrl}/soundmini.png`],
         tags: ['parlante', 'portatil', 'bluetooth', 'musica'],
         type: 'PHYSICAL_PRODUCT',
         isAvailable: true,
@@ -234,6 +239,8 @@ async function runSeed() {
             description: prodData.description,
             category: prodData.category,
             price: prodData.price,
+            imageUrl: prodData.imageUrl,
+            images: prodData.images,
             tags: prodData.tags,
             isAvailable: true,
           }
@@ -440,6 +447,24 @@ async function runSeed() {
     console.log(`✅ Items operacionales (Nota y Tarea) sincronizados con dedupeKey.`);
 
     // ── 10. FLOW DE BIENVENIDA BÁSICO IDEMPOTENTE ──
+    const demoFlowNodes = [
+      {
+        id: 'start',
+        type: 'trigger',
+        position: { x: 250, y: 100 },
+        data: { label: 'Palabra clave: hola' }
+      },
+      {
+        id: 'greet',
+        type: 'message',
+        position: { x: 250, y: 250 },
+        data: { text: '¡Bienvenido a Velion Demo! ¿En qué podemos asesorarte hoy?' }
+      }
+    ];
+    const demoFlowEdges = [
+      { id: 'e-start-greet', source: 'start', target: 'greet' }
+    ];
+
     let flow = await prisma.flow.findFirst({
       where: {
         tenantId: tenant.id,
@@ -454,16 +479,22 @@ async function runSeed() {
           name: 'Flujo de Bienvenida Demo',
           triggerKeyword: 'hola',
           isActive: true,
-          nodes: [
-            { id: 'start', type: 'trigger', data: { label: 'Palabra clave: hola' } },
-            { id: 'greet', type: 'message', data: { text: '¡Bienvenido a Velion Demo! ¿En qué podemos asesorarte hoy?' } }
-          ],
-          edges: [
-            { id: 'e-start-greet', source: 'start', target: 'greet' }
-          ]
+          nodes: demoFlowNodes,
+          edges: demoFlowEdges
         }
       });
       console.log(`✅ Flujo de bienvenida sintético configurado.`);
+    } else {
+      await prisma.flow.update({
+        where: { id: flow.id },
+        data: {
+          nodes: demoFlowNodes,
+          edges: demoFlowEdges,
+          triggerKeyword: 'hola',
+          isActive: true
+        }
+      });
+      console.log(`ℹ️ Flujo de bienvenida sintético actualizado con posiciones válidas.`);
     }
 
     console.log('\n🎉 [ÉXITO] Aprovisionamiento sintético de demo completado correctamente.');
