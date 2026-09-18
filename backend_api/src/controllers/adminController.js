@@ -4,6 +4,8 @@ import path from 'path';
 import bcrypt from 'bcryptjs';
 import { encryptText } from '../utils/cryptoUtils.js';
 import { invalidateGlobalPromptCache } from '../services/globalConfigService.js';
+import { invalidateTenantActiveCache } from '../services/tenantGuardService.js';
+import { quarantineTenantMedia } from '../services/tenantMediaLifecycleService.js';
 
 // Claves de configuración que se gestionan en la tabla SystemConfig de PostgreSQL
 const CONFIG_KEYS = [
@@ -12,6 +14,7 @@ const CONFIG_KEYS = [
   'smtpUser', 'smtpPassword', 'errorWebhook',
   'backupFrequency', 'backupCloudEnabled', 'backupCloudProvider',
   'backupGdriveFolderId', 'backupGdriveCredentials',
+  'paymentMethod', 'paymentRecipient', 'paymentContact',
 ];
 
 // Valores por defecto que se usan SOLO si la clave aún no existe en la BD
@@ -34,6 +37,9 @@ const CONFIG_DEFAULTS = {
   backupCloudProvider: 'cloudinary',
   backupGdriveFolderId: '',
   backupGdriveCredentials: '',
+  paymentMethod: '',
+  paymentRecipient: '',
+  paymentContact: '',
 };
 
 // ==========================================
@@ -100,6 +106,9 @@ export async function updateTenantStatus(req, res) {
       where: { id },
       data: { active: isActive },
     });
+
+    // Invalidar inmediatamente el caché del guard
+    invalidateTenantActiveCache(id);
 
     return res.json({
       message: `El inquilino ha sido ${isActive ? 'reactivado' : 'suspendido'}.`,
@@ -325,6 +334,9 @@ export async function deleteTenant(req, res) {
       });
     }
 
+    // 0. Ciclo de vida seguro de multimedia: mover archivos fuera del webroot público a cuarentena
+    const quarantineResult = await quarantineTenantMedia(id);
+
     // Transacción en cascada para eliminar absolutamente todo rastro de la cuenta
     await prisma.$transaction(async (tx) => {
       // 1. Obtener IDs de usuarios del tenant
@@ -359,14 +371,24 @@ export async function deleteTenant(req, res) {
       await tx.tenant.delete({ where: { id } });
     });
 
-    console.log(`🗑️ [Admin] Empresa "${tenant.name}" (${id}) y todos sus datos fueron eliminados permanentemente.`);
+    // Invalidar inmediatamente cualquier caché en memoria del inquilino
+    invalidateTenantActiveCache(id);
+
+    console.log(`🗑️ [Admin] Empresa "${tenant.name}" (${id}) y todos sus datos fueron eliminados permanentemente. Media en cuarentena: ${quarantineResult.quarantined}`);
 
     return res.json({
       success: true,
       message: `Empresa "${tenant.name}" eliminada correctamente de forma permanente.`,
+      mediaQuarantined: quarantineResult.quarantined
     });
   } catch (error) {
     console.error('Error en deleteTenant:', error);
+    if (error.code === 'ERR_PATH_TRAVERSAL_DETECTED') {
+      return res.status(400).json({ error: 'Identificador de inquilino inválido o riesgo de seguridad detectado.' });
+    }
+    if (error.code === 'ERR_QUARANTINE_FS_FAILURE') {
+      return res.status(500).json({ error: 'Fallo al aislar los archivos multimedia en cuarentena. Eliminación de datos abortada por seguridad.' });
+    }
     return res.status(500).json({ error: 'Error interno al eliminar la empresa.' });
   }
 }
@@ -538,6 +560,9 @@ export async function getGlobalConfig(req, res) {
       backupCloudProvider: process.env.BACKUP_CLOUD_PROVIDER || 'cloudinary',
       backupGdriveFolderId: '',
       backupGdriveCredentials: '',
+      paymentMethod:        process.env.BILLING_PAYMENT_METHOD || '',
+      paymentRecipient:     process.env.BILLING_PAYMENT_RECIPIENT || '',
+      paymentContact:       process.env.BILLING_PAYMENT_CONTACT || '',
     };
 
     const configMap = { ...dynamicDefaults };

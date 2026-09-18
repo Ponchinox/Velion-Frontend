@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useNavigate, useLocation, Link } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { loginAccount } from '../services/authService';
@@ -38,6 +38,14 @@ export default function LoginPage() {
   const [error, setError] = useState('');
   const [forgotMsg, setForgotMsg] = useState('');
 
+  useEffect(() => {
+    const params = new URLSearchParams(location.search);
+    if (params.get('suspended') === '1' || sessionStorage.getItem('suspension_notice')) {
+      setError('Esta cuenta se encuentra temporalmente suspendida. Contacta al administrador para obtener más información.');
+      sessionStorage.removeItem('suspension_notice');
+    }
+  }, [location.search]);
+
   const handleSubmit = async (e) => {
     e.preventDefault();
     if (!email || !password) {
@@ -63,7 +71,11 @@ export default function LoginPage() {
       loginUser(res.user, res.token);
       navigate(from, { replace: true });
     } catch (err) {
-      setError(err.message || 'Credenciales inválidas o error de conexión con el servidor.');
+      if (err.code === 'TENANT_SUSPENDED' || (err.message && err.message.toLowerCase().includes('suspendid'))) {
+        setError('Esta cuenta se encuentra temporalmente suspendida. Contacta al administrador para obtener más información.');
+      } else {
+        setError(err.message || 'Credenciales inválidas o error de conexión con el servidor.');
+      }
       setLoading(false);
     }
   };

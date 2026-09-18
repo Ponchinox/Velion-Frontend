@@ -62,6 +62,23 @@ export async function apiClient(endpoint, options = {}) {
       throw error;
     }
 
+    // Manejo de sesión bloqueada por suspensión de tenant (403 TENANT_SUSPENDED)
+    if (response.status === 403) {
+      const errorData = await response.json().catch(() => ({}));
+      if (errorData.code === 'TENANT_SUSPENDED') {
+        if (endpoint !== '/auth/login') {
+          localStorage.removeItem('sa_token');
+          localStorage.removeItem('sa_mock_user');
+          sessionStorage.setItem('suspension_notice', 'Esta cuenta se encuentra temporalmente suspendida. Contacta al administrador para obtener más información.');
+          window.location.href = '/login?suspended=1';
+        }
+        const error = new Error(errorData.error || 'Esta cuenta se encuentra temporalmente suspendida. Contacta al administrador para obtener más información.');
+        error.status = 403;
+        error.code = 'TENANT_SUSPENDED';
+        throw error;
+      }
+    }
+
     const data = await response.json().catch(() => ({}));
 
     if (!response.ok) {

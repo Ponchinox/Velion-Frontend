@@ -53,12 +53,12 @@ export default function SettingsPage() {
     aiEnabled: true,
   });
 
-  // Estados Maqueta de Cuenta
+  // Estados de Cuenta
   const [adminConfig, setAdminConfig] = useState({
-    name: 'Administrador General',
-    email: 'soporte@velionagent.com',
-    phone: '+51 987 654 321',
-    role: 'Socio Fundador'
+    name: user?.name || '',
+    email: user?.email || '',
+    phone: user?.phone || '',
+    role: user?.role === 'superadmin' ? 'Super Admin' : user?.role === 'client' ? 'Cliente Administrador' : 'Miembro de Equipo'
   });
 
   const { setIsDirty } = useUnsavedChanges();

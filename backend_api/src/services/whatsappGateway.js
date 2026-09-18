@@ -9,6 +9,7 @@ import { markMessageAsSentByAi } from './aiMessageTracker.js';
 import { decryptText } from '../utils/cryptoUtils.js';
 import { getMetaGraphVersion } from '../controllers/metaOnboardingController.js';
 import { checkDemoOutboundGuard, isDemoTenant } from './demoGuardService.js';
+import { isTenantActive } from './tenantGuardService.js';
 
 function getEvoHeaders(apiKey) {
   const key = (apiKey || process.env.EVOLUTION_API_KEY || '').trim();
@@ -118,6 +119,12 @@ export async function sendText(opts) {
   // Si el tenant es demo, solo permite enviar a los números de la whitelist DEMO_ALLOWED_WHATSAPP_NUMBERS
   const demoGuard = checkDemoOutboundGuard(tenantId, to);
   if (!demoGuard.allowed) {
+    return null;
+  }
+
+  // ── SERVER-SIDE GUARD PARA TENANTS SUSPENDIDOS ──
+  if (tenantId && !(await isTenantActive(tenantId))) {
+    console.log(`🛑 [WA Gateway Guard] Envío de texto bloqueado para tenant suspendido: ${tenantId}`);
     return null;
   }
 
@@ -239,6 +246,12 @@ export async function sendMedia(opts) {
   // Si el tenant es demo, solo permite enviar a los números de la whitelist DEMO_ALLOWED_WHATSAPP_NUMBERS
   const demoGuard = checkDemoOutboundGuard(tenantId, to);
   if (!demoGuard.allowed) {
+    return null;
+  }
+
+  // ── SERVER-SIDE GUARD PARA TENANTS SUSPENDIDOS ──
+  if (tenantId && !(await isTenantActive(tenantId))) {
+    console.log(`🛑 [WA Gateway Guard] Envío multimedia bloqueado para tenant suspendido: ${tenantId}`);
     return null;
   }
 

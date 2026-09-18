@@ -110,6 +110,14 @@ export async function loginAccount(req, res) {
       return res.status(401).json({ error: 'Credenciales inválidas.' });
     }
 
+    // Verificar si el inquilino/tenant está suspendido (los SuperAdmin quedan exentos)
+    if (user.role !== 'superadmin' && user.tenant && user.tenant.active === false) {
+      return res.status(403).json({
+        code: 'TENANT_SUSPENDED',
+        error: 'Esta cuenta se encuentra temporalmente suspendida. Contacta al administrador para obtener más información.'
+      });
+    }
+
     // Firmar Token JWT
     if (!process.env.JWT_SECRET) {
       throw new Error('JWT_SECRET no está configurada en el entorno de Producción.');

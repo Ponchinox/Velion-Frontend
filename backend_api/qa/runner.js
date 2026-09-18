@@ -226,6 +226,16 @@ const QA_CATEGORIES = [
       'test_follow_up_v1_suite.js',
       'test_follow_up_decision_engine.js'
     ]
+  },
+  {
+    id: 'buyer_readiness',
+    name: 'Buyer Readiness Hardening',
+    type: 'standalone_files',
+    files: [
+      'test_tenant_suspension.js',
+      'test_tenant_delete_media_lifecycle.js',
+      'test_billing_config.js'
+    ]
   }
 ];
 

@@ -1,5 +1,6 @@
 import express from 'express';
 import prisma from '../db.js';
+import { getBillingConfig } from '../services/billingConfigService.js';
 
 const router = express.Router();
 
@@ -22,6 +23,24 @@ router.get('/', async (req, res) => {
     } catch (err2) {
       return res.status(500).json({ error: 'Error interno al consultar la lista de planes.' });
     }
+  }
+});
+
+/**
+ * Endpoint público para obtener la configuración comercial de pagos (Yape/WhatsApp/etc.)
+ * sin exponer datos personales hardcodeados en el frontend.
+ */
+router.get('/billing-config', async (req, res) => {
+  try {
+    const config = await getBillingConfig(prisma);
+    return res.json(config);
+  } catch (error) {
+    console.error('❌ [Plan Routes] Error al obtener billing-config:', error);
+    return res.json({
+      paymentMethod: null,
+      paymentRecipient: null,
+      paymentContact: null
+    });
   }
 });
 

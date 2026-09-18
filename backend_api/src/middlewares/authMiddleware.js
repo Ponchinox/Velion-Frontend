@@ -1,5 +1,6 @@
 import jwt from 'jsonwebtoken';
 import prisma from '../db.js';
+import { isTenantActive } from '../services/tenantGuardService.js';
 
 /**
  * Middleware para validar el token JWT e inyectar el contexto de usuario/tenant en la petición.
@@ -55,6 +56,18 @@ export default async function authMiddleware(req, res, next) {
       } catch (dbErr) {
         // No bloquear la petición por un error en la resolución; loguear y continuar.
         console.error('[authMiddleware] Error al resolver userId del tenant impersonado:', dbErr.message);
+      }
+    }
+
+    // ── ENFORCEMENT DE SUSPENSIÓN REAL DE TENANT ──────────────────────────────
+    // Si el inquilino está suspendido, bloquea cualquier sesión activa (JWT válido pero tenant inactivo)
+    if (req.user.role !== 'superadmin' && req.user.tenantId) {
+      const active = await isTenantActive(req.user.tenantId, prisma);
+      if (!active) {
+        return res.status(403).json({
+          code: 'TENANT_SUSPENDED',
+          error: 'Esta cuenta se encuentra temporalmente suspendida. Contacta al administrador para obtener más información.'
+        });
       }
     }
 

@@ -5,18 +5,15 @@ import { apiClient } from '../services/api';
 import { Cardholder, Check, Sparkle, WarningCircle, CircleNotch, X, Copy, QrCode, ArrowSquareOut } from '@phosphor-icons/react';
 import { isDemoUser } from '../utils/demoUtils';
 
-// Variables estáticas para fácil modificación
-const YAPE_NUMBER = '953789363';
-const SUPPORT_WHATSAPP = '984363997';
-
 export default function BillingPage() {
   const { user } = useAuth();
   const isDemo = isDemoUser(user);
   const [plans, setPlans] = useState([]);
+  const [billingConfig, setBillingConfig] = useState(null);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState('');
   
-  // Estado para el modal de Yape
+  // Estado para el modal de Pago
   const [selectedPlanModal, setSelectedPlanModal] = useState(null);
   const [copiedNumber, setCopiedNumber] = useState(false);
 
@@ -61,12 +58,18 @@ export default function BillingPage() {
     );
   }
 
-  // Cargar planes dinámicos desde la base de datos
-  const loadPlans = async () => {
+  // Cargar planes dinámicos y configuración de pagos desde el backend
+  const loadData = async () => {
     setIsLoading(true);
     try {
-      const data = await apiClient('/plans');
+      const [data, config] = await Promise.all([
+        apiClient('/plans'),
+        apiClient('/plans/billing-config').catch(() => null)
+      ]);
       setPlans(data || []);
+      if (config) {
+        setBillingConfig(config);
+      }
     } catch (err) {
       console.error('Error al cargar planes dinámicos:', err);
       setError('No se pudo cargar la lista de planes de suscripción.');
@@ -76,8 +79,12 @@ export default function BillingPage() {
   };
 
   useEffect(() => {
-    loadPlans();
+    loadData();
   }, []);
+
+  const hasPaymentDetails = Boolean(
+    billingConfig?.paymentMethod && billingConfig?.paymentRecipient
+  );
 
   const handleOpenModal = (plan) => {
     setSelectedPlanModal(plan);
@@ -89,17 +96,20 @@ export default function BillingPage() {
     setCopiedNumber(false);
   };
 
-  const handleCopyYapeNumber = () => {
-    navigator.clipboard.writeText(YAPE_NUMBER);
+  const handleCopyRecipient = () => {
+    if (!billingConfig?.paymentRecipient) return;
+    navigator.clipboard.writeText(billingConfig.paymentRecipient);
     setCopiedNumber(true);
     setTimeout(() => setCopiedNumber(false), 2000);
   };
 
-  // Construir el enlace directo a WhatsApp
+  // Construir el enlace directo a WhatsApp si existe contacto
   const getWhatsAppLink = () => {
-    if (!selectedPlanModal) return '#';
-    const message = `Hola, acabo de realizar el pago por Yape de S/ ${selectedPlanModal.price} para activar el Plan ${selectedPlanModal.name}. Adjunto la captura del comprobante.`;
-    return `https://wa.me/51${SUPPORT_WHATSAPP}?text=${encodeURIComponent(message)}`;
+    if (!selectedPlanModal || !billingConfig?.paymentContact) return '#';
+    const method = billingConfig.paymentMethod || 'pago';
+    const message = `Hola, acabo de realizar el ${method} de S/ ${selectedPlanModal.price} para activar el Plan ${selectedPlanModal.name}. Adjunto la captura del comprobante.`;
+    const cleanContact = billingConfig.paymentContact.replace(/\D/g, '');
+    return `https://wa.me/${cleanContact}?text=${encodeURIComponent(message)}`;
   };
 
   return (
@@ -170,49 +180,76 @@ export default function BillingPage() {
                       Plan {plan.name}
                     </p>
                     <div className="flex items-baseline gap-1 mt-2">
-                      <span className="text-4xl font-extrabold text-hi">S/ {plan.price}</span>
-                      <span className="text-sm text-lo font-semibold">/ mensual</span>
+                      <span className="text-4xl font-extrabold text-hi tracking-tight">S/ {plan.price}</span>
+                      <span className="text-sm text-lo font-medium">/ mes</span>
                     </div>
-                    <p className="text-sm text-lo mt-2">Acceso a todas las características del paquete.</p>
+                    <p className="text-sm text-lo mt-3">{plan.description}</p>
                   </div>
 
-                  {/* Features List */}
-                  <ul className="space-y-3.5 border-t border-line pt-6">
-                    {plan.features && plan.features.map((feature, i) => {
-                      const text = typeof feature === 'string' ? feature : feature.text;
-                      return (
-                        <li key={i} className="flex items-start gap-3">
-                          <Check size={18} className={`${plan.popular ? 'text-brand' : 'text-emerald-500'} flex-shrink-0 mt-0.5`} />
-                          <span className="text-sm text-mid font-medium">{text}</span>
+                  {/* Features */}
+                  <div className="space-y-3 border-t border-line pt-6">
+                    <div className="text-xs font-bold text-hi uppercase tracking-wider">Incluye:</div>
+                    <ul className="space-y-2.5 text-sm text-mid">
+                      <li className="flex items-center gap-2">
+                        <Check size={16} weight="bold" className="text-brand flex-shrink-0" />
+                        <span><strong>{plan.connLimit}</strong> Conexión de WhatsApp</span>
+                      </li>
+                      <li className="flex items-center gap-2">
+                        <Check size={16} weight="bold" className="text-brand flex-shrink-0" />
+                        <span><strong>{plan.msgLimit ? plan.msgLimit.toLocaleString() : 'Ilimitados'}</strong> Mensajes/mes</span>
+                      </li>
+                      <li className="flex items-center gap-2">
+                        <Check size={16} weight="bold" className="text-brand flex-shrink-0" />
+                        <span><strong>{plan.maxProducts || 10}</strong> Productos en catálogo</span>
+                      </li>
+                      {plan.hasCampaigns && (
+                        <li className="flex items-center gap-2">
+                          <Check size={16} weight="bold" className="text-brand flex-shrink-0" />
+                          <span>Campañas masivas</span>
                         </li>
-                      );
-                    })}
-                  </ul>
+                      )}
+                      {plan.hasAutomations && (
+                        <li className="flex items-center gap-2">
+                          <Check size={16} weight="bold" className="text-brand flex-shrink-0" />
+                          <span>Automatizaciones y Flujos</span>
+                        </li>
+                      )}
+                      {plan.hasAdvancedMarketing && (
+                        <li className="flex items-center gap-2">
+                          <Check size={16} weight="bold" className="text-brand flex-shrink-0" />
+                          <span>Marketing y analítica avanzada</span>
+                        </li>
+                      )}
+                      <li className="flex items-center gap-2">
+                        <Check size={16} weight="bold" className="text-brand flex-shrink-0" />
+                        <span>Atención con IA 24/7</span>
+                      </li>
+                    </ul>
+                  </div>
                 </div>
 
+                {/* Acciones */}
                 <div className="pt-8">
                   {isCurrent ? (
                     <button
                       disabled
-                      className="w-full py-3 px-4 rounded-lg border border-emerald-200 text-emerald-700 font-semibold text-sm bg-emerald-50 cursor-not-allowed transition-all duration-fast text-center"
+                      className="w-full py-3 px-4 bg-app border border-line text-muted rounded-xl text-sm font-bold flex items-center justify-center gap-2 cursor-not-allowed"
                     >
-                      Plan Activo ✓
+                      <Check size={18} weight="bold" />
+                      Plan Actual
                     </button>
                   ) : (
                     <button
                       onClick={() => handleOpenModal(plan)}
                       className={`
-                        w-full flex items-center justify-center gap-2
-                        py-3 px-4 rounded-lg font-semibold text-sm
-                        transition-all duration-fast cursor-pointer active:scale-[0.98]
+                        w-full py-3 px-4 rounded-xl text-sm font-bold transition-all duration-fast flex items-center justify-center gap-2 shadow-sm cursor-pointer
                         ${plan.popular
-                          ? 'bg-brand text-white hover:bg-brand-hover shadow-card'
-                          : 'bg-app text-mid hover:bg-line border border-line'
+                          ? 'bg-brand hover:bg-brand-hover text-white'
+                          : 'bg-app hover:bg-line border border-line text-hi'
                         }
                       `}
                     >
-                      <QrCode size={18} weight="bold" />
-                      <span>Adquirir Plan {plan.name}</span>
+                      Actualizar a este Plan
                     </button>
                   )}
                 </div>
@@ -222,17 +259,14 @@ export default function BillingPage() {
         </div>
       )}
 
-      {/* Modal de Pago por Yape */}
+      {/* MODAL DE PAGO (Portal) */}
       {selectedPlanModal && createPortal(
-        <div className="fixed inset-0 z-[99999] flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-fadeIn">
-          <div 
-            className="bg-card rounded-2xl max-w-md w-full p-6 sm:p-8 border border-line shadow-2xl relative space-y-6 animate-scaleUp"
-            onClick={(e) => e.stopPropagation()}
-          >
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm animate-fadeIn">
+          <div className="bg-card border border-line rounded-2xl max-w-md w-full p-6 space-y-6 shadow-2xl relative animate-scaleUp">
             {/* Botón Cerrar */}
             <button
               onClick={handleCloseModal}
-              className="absolute top-4 right-4 p-2 text-lo hover:text-hi hover:bg-app rounded-full transition-colors cursor-pointer"
+              className="absolute top-4 right-4 text-muted hover:text-hi p-1.5 rounded-lg hover:bg-app transition-colors cursor-pointer"
             >
               <X size={20} />
             </button>
@@ -246,62 +280,82 @@ export default function BillingPage() {
                 Activa tu Plan {selectedPlanModal.name}
               </h2>
               <p className="text-sm text-lo">
-                Para activar o renovar tu suscripción, por favor realiza el pago por Yape al siguiente número:
+                Para activar o renovar tu suscripción, sigue las instrucciones de pago a continuación:
               </p>
             </div>
 
-            {/* Tarjeta del Número de Yape */}
-            <div className="bg-purple-50 dark:bg-purple-950/40 border border-purple-200 dark:border-purple-800/50 rounded-xl p-4 flex items-center justify-between gap-3">
-              <div>
-                <p className="text-xs font-semibold text-purple-600 dark:text-purple-300 uppercase tracking-wider">
-                  Número Yape
-                </p>
-                <p className="text-2xl font-black text-purple-950 dark:text-purple-100 font-mono mt-0.5">
-                  {YAPE_NUMBER}
+            {/* Tarjeta de pago o fallback seguro */}
+            {hasPaymentDetails ? (
+              <div className="bg-purple-50 dark:bg-purple-950/40 border border-purple-200 dark:border-purple-800/50 rounded-xl p-4 flex items-center justify-between gap-3">
+                <div>
+                  <p className="text-xs font-semibold text-purple-600 dark:text-purple-300 uppercase tracking-wider">
+                    {billingConfig.paymentMethod}
+                  </p>
+                  <p className="text-2xl font-black text-purple-950 dark:text-purple-100 font-mono mt-0.5">
+                    {billingConfig.paymentRecipient}
+                  </p>
+                </div>
+                <button
+                  onClick={handleCopyRecipient}
+                  className="flex items-center gap-1.5 px-3 py-2 bg-purple-600 hover:bg-purple-700 text-white rounded-lg text-xs font-bold transition-all active:scale-95 cursor-pointer shadow-sm"
+                >
+                  {copiedNumber ? (
+                    <>
+                      <Check size={16} weight="bold" />
+                      <span>¡Copiado!</span>
+                    </>
+                  ) : (
+                    <>
+                      <Copy size={16} weight="bold" />
+                      <span>Copiar</span>
+                    </>
+                  )}
+                </button>
+              </div>
+            ) : (
+              <div className="bg-amber-500/10 border border-amber-500/20 rounded-xl p-4 text-center space-y-1">
+                <p className="text-sm font-semibold text-hi">
+                  Contacta al administrador para obtener instrucciones de pago.
                 </p>
               </div>
-              <button
-                onClick={handleCopyYapeNumber}
-                className="flex items-center gap-1.5 px-3 py-2 bg-purple-600 hover:bg-purple-700 text-white rounded-lg text-xs font-bold transition-all active:scale-95 cursor-pointer shadow-sm"
-              >
-                {copiedNumber ? (
-                  <>
-                    <Check size={16} weight="bold" />
-                    <span>¡Copiado!</span>
-                  </>
-                ) : (
-                  <>
-                    <Copy size={16} weight="bold" />
-                    <span>Copiar</span>
-                  </>
-                )}
-              </button>
-            </div>
+            )}
 
             {/* Instrucciones */}
             <div className="bg-app border border-line rounded-xl p-4 space-y-2 text-sm text-mid">
               <div className="flex items-center justify-between font-bold text-hi border-b border-line pb-2 mb-1">
-                <span>Monto a Yapear:</span>
+                <span>Monto a pagar:</span>
                 <span className="text-lg text-brand font-black">S/ {selectedPlanModal.price}</span>
               </div>
               <p className="text-xs leading-relaxed text-lo">
-                Una vez realizado el pago de <strong className="text-hi">S/ {selectedPlanModal.price}</strong>, envía una captura de pantalla del comprobante a nuestro soporte por WhatsApp para activar tu cuenta de inmediato.
+                Una vez realizado el pago de <strong className="text-hi">S/ {selectedPlanModal.price}</strong>, envía una captura de pantalla del comprobante para activar tu cuenta de inmediato.
               </p>
-              <p className="text-xs font-semibold text-hi pt-1">
-                Soporte: <span className="font-mono text-brand">{SUPPORT_WHATSAPP}</span>
-              </p>
+              {billingConfig?.paymentContact ? (
+                <p className="text-xs font-semibold text-hi pt-1">
+                  Soporte: <span className="font-mono text-brand">+{billingConfig.paymentContact.replace(/\D/g, '')}</span>
+                </p>
+              ) : (
+                <p className="text-xs font-semibold text-muted pt-1">
+                  Contacta al administrador para obtener instrucciones de pago.
+                </p>
+              )}
             </div>
 
-            {/* Botón Enviar comprobante por WhatsApp */}
-            <a
-              href={getWhatsAppLink()}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="w-full bg-emerald-600 hover:bg-emerald-500 text-white font-bold py-3.5 px-6 rounded-xl flex items-center justify-center gap-2.5 shadow-lg shadow-emerald-900/20 transition-all hover:scale-[1.01] active:scale-[0.99] text-sm cursor-pointer"
-            >
-              <span>Enviar comprobante por WhatsApp</span>
-              <ArrowSquareOut size={18} weight="bold" />
-            </a>
+            {/* Botón Enviar comprobante por WhatsApp si hay contacto configurado */}
+            {billingConfig?.paymentContact ? (
+              <a
+                href={getWhatsAppLink()}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="w-full bg-emerald-600 hover:bg-emerald-500 text-white font-bold py-3.5 px-6 rounded-xl flex items-center justify-center gap-2.5 shadow-lg shadow-emerald-900/20 transition-all hover:scale-[1.01] active:scale-[0.99] text-sm cursor-pointer"
+              >
+                <span>Enviar comprobante por WhatsApp</span>
+                <ArrowSquareOut size={18} weight="bold" />
+              </a>
+            ) : (
+              <div className="p-3 bg-app border border-line rounded-xl text-center text-xs text-lo font-semibold">
+                Contacta al administrador para obtener instrucciones de pago.
+              </div>
+            )}
           </div>
         </div>,
         document.body

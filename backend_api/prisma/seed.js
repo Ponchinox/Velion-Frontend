@@ -17,22 +17,22 @@ async function main() {
   });
 
   // 2. Hashear la contraseña del administrador
-  const hashedPassword = await bcrypt.hash('Undertale.926246740', 10);
+  const superAdminEmail = process.env.INITIAL_SUPERADMIN_EMAIL || 'admin@velion.pe';
+  const superAdminPassword = process.env.INITIAL_SUPERADMIN_PASSWORD || 'AdminSecure2026!';
+  const hashedPassword = await bcrypt.hash(superAdminPassword, 10);
 
   // 3. Crear el usuario SuperAdmin asociado a ese Tenant
   const user = await prisma.user.create({
     data: {
-      email: 'nehiseroblitas2001@gmail.com',
+      email: superAdminEmail,
       password: hashedPassword,
       role: 'superadmin',
       tenantId: tenant.id,
     },
   });
 
-
-
   console.log('🚀 Base de datos sembrada con éxito.');
-  console.log(`👤 SuperAdmin creado: email: ${user.email} | password: Undertale.926246740`);
+  console.log(`👤 SuperAdmin creado: email: ${user.email} (contraseña configurada vía entorno)`);
 }
 
 main()

@@ -639,7 +639,10 @@ export async function runCampaignWorker(campaignId) {
     if (!campaign || campaign.status !== 'running') return;
 
     const tenant = await prisma.tenant.findUnique({ where: { id: campaign.tenantId } });
-    if (!tenant) return;
+    if (!tenant || tenant.active === false) {
+      console.log(`🛑 [Campaign Worker V2] Tenant ${campaign.tenantId} no existe o se encuentra suspendido. Omitiendo campaña ${campaignId}.`);
+      return;
+    }
 
     const gatewayCtx = await resolveGatewayCtx(campaign.tenantId);
 
@@ -748,12 +751,14 @@ export async function recoverOrphanedProcessing() {
 export async function dispatchDueCampaigns() {
   const claimedCampaigns = await prisma.$queryRaw`
     WITH candidate AS (
-      SELECT id FROM "Campaign"
-      WHERE status = 'scheduled'
-        AND "nextRunAt" <= NOW()
-      ORDER BY "nextRunAt" ASC
+      SELECT c.id FROM "Campaign" c
+      INNER JOIN "Tenant" t ON t.id = c."tenantId"
+      WHERE c.status = 'scheduled'
+        AND c."nextRunAt" <= NOW()
+        AND t.active = true
+      ORDER BY c."nextRunAt" ASC
       LIMIT 1
-      FOR UPDATE SKIP LOCKED
+      FOR UPDATE OF c SKIP LOCKED
     )
     UPDATE "Campaign"
     SET status = 'running',
@@ -809,7 +814,10 @@ export async function dispatchDueCampaigns() {
  */
 export async function resumeRunningCampaigns() {
   const campaigns = await prisma.campaign.findMany({
-    where: { status: 'running' },
+    where: {
+      status: 'running',
+      tenant: { active: true }
+    },
     select: {
       id: true,
       tenantId: true,

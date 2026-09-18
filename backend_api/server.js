@@ -27,6 +27,8 @@ import followUpRoutes from './src/routes/followUpRoutes.js';
 import { initBackupScheduler } from './src/services/backupScheduler.js';
 import { initCampaignWorkerV2 } from './src/services/campaignWorkerV2.js';
 import { initFollowUpWorker } from './src/services/followUpWorker.js';
+import { isTenantActive } from './src/services/tenantGuardService.js';
+import { getBillingConfig } from './src/services/billingConfigService.js';
 import { 
   resolvePort, 
   resolveHost, 
@@ -152,6 +154,14 @@ app.use('/api/plans', planRoutes);
 app.use('/api/operational-items', operationalItemRoutes);
 app.use('/api/follow-ups', followUpRoutes);
 
+// Configuración de métodos de pago para planes y facturación (público / centralizado)
+const billingConfigHandler = async (req, res) => {
+  const config = await getBillingConfig(prisma);
+  return res.json(config);
+};
+app.get('/api/billing/config', billingConfigHandler);
+app.get('/api/billing/public-config', billingConfigHandler);
+
 // Ruta de comprobación de estado (Healthcheck + DB Test)
 app.get('/api/health', async (req, res) => {
   try {
@@ -215,6 +225,16 @@ io.use(async (socket, next) => {
     }
 
     socket.tenantId = effectiveTenantId;
+
+    // Protección de suspensión de tenant en tiempo real
+    if (decoded.role !== 'superadmin' && effectiveTenantId) {
+      const active = await isTenantActive(effectiveTenantId);
+      if (!active) {
+        console.warn(`🚫 [Socket.IO] Conexión rechazada: tenant ${effectiveTenantId} suspendido.`);
+        return next(new Error('TENANT_SUSPENDED'));
+      }
+    }
+
     next();
   } catch (err) {
     // B/C. JWT inválido o expirado

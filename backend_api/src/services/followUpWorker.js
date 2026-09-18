@@ -35,13 +35,15 @@ export async function claimDueSequences(limit = BATCH_SIZE, prismaClient = defau
   const db = prismaClient;
   const rows = await db.$queryRaw`
     WITH candidate AS (
-      SELECT id FROM "FollowUpSequence"
-      WHERE status IN ('SCHEDULED', 'WAITING_NEXT')
-        AND "nextRunAt" IS NOT NULL
-        AND "nextRunAt" <= (NOW() AT TIME ZONE 'UTC')
-      ORDER BY "nextRunAt" ASC
+      SELECT fs.id FROM "FollowUpSequence" fs
+      INNER JOIN "Tenant" t ON t.id = fs."tenantId"
+      WHERE fs.status IN ('SCHEDULED', 'WAITING_NEXT')
+        AND fs."nextRunAt" IS NOT NULL
+        AND fs."nextRunAt" <= (NOW() AT TIME ZONE 'UTC')
+        AND t.active = true
+      ORDER BY fs."nextRunAt" ASC
       LIMIT ${limit}
-      FOR UPDATE SKIP LOCKED
+      FOR UPDATE OF fs SKIP LOCKED
     )
     UPDATE "FollowUpSequence"
     SET status = 'PROCESSING',

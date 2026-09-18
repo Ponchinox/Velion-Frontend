@@ -2501,6 +2501,12 @@ async function _processWebhookEvent(body, isMeta, provider, io, query, headers) 
 
     if (!tenant) return;
 
+    // ── GUARD DE SUSPENSIÓN REAL DE TENANT ──
+    if (tenant.active === false) {
+      console.log(`🛑 [Tenant Suspendido] Inbound webhook ignorado para tenant: ${tenant.name || 'N/A'} (${tenant.id})`);
+      return;
+    }
+
     // ESCUDO DE GRUPOS para Evolution
     if (!isMeta) {
       const isGroup = remoteJid.endsWith('@g.us') || !!normalized.rawData?.key?.participant || normalized.rawData?.isGroup === true;
