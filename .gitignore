@@ -26,4 +26,7 @@ dist-ssr
 .env
 .env.*
 !.env.example
-
+# Security & Credentials
+*.secure.txt
+*credentials*.txt
+scratch/

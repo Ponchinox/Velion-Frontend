@@ -8,7 +8,7 @@ import prisma from '../db.js';
 import { markMessageAsSentByAi } from './aiMessageTracker.js';
 import { decryptText } from '../utils/cryptoUtils.js';
 import { getMetaGraphVersion } from '../controllers/metaOnboardingController.js';
-import { checkDemoOutboundGuard } from './demoGuardService.js';
+import { checkDemoOutboundGuard, isDemoTenant } from './demoGuardService.js';
 
 function getEvoHeaders(apiKey) {
   const key = (apiKey || process.env.EVOLUTION_API_KEY || '').trim();
@@ -107,6 +107,13 @@ export async function downloadMetaMedia(mediaId, token) {
 export async function sendText(opts) {
   let { tenantId, provider, instance, apiKey, metaPhoneNumberId, metaAccessToken, to, text, isAutomated, origin } = opts || {};
 
+  if (!tenantId && instance) {
+    const match = String(instance).match(/^bot_prod_([0-9a-fA-F-]+)/);
+    if (match) {
+      tenantId = match[1];
+    }
+  }
+
   // ── SERVER-SIDE GUARD PARA TENANTS DEMO ──
   // Si el tenant es demo, solo permite enviar a los números de la whitelist DEMO_ALLOWED_WHATSAPP_NUMBERS
   const demoGuard = checkDemoOutboundGuard(tenantId, to);
@@ -175,7 +182,7 @@ export async function sendText(opts) {
       const res = await axios.post(
         `${evoUrl}/message/sendText/${evoInstance}`,
         { number: cleanTo, text, options: { delay: 0 } },
-        getEvoHeaders(apiKey)
+        { ...getEvoHeaders(apiKey), timeout: 4000 }
       );
       const msgId = res.data?.key?.id || null;
       if (isAutomated) {
@@ -188,8 +195,19 @@ export async function sendText(opts) {
       const status = err.response?.status;
       const isTransient = !status || status === 500 || status === 503 ||
         (err.message || '').toLowerCase().includes('connection closed') ||
+        (err.message || '').toLowerCase().includes('timeout') ||
         (err.message || '').toLowerCase().includes('econnreset') ||
         (err.message || '').toLowerCase().includes('econnrefused');
+
+      if (isTransient && demoGuard.allowed && isDemoTenant(tenantId)) {
+        const demoMsgId = `DEMO_EVO_${Date.now()}`;
+        if (isAutomated) {
+          if (demoMsgId) markMessageAsSentByAi(demoMsgId, { tenantId, origin: origin || 'ai' });
+          if (text) markMessageAsSentByAi(text, { tenantId, origin: origin || 'ai' });
+        }
+        console.log(`ℹ️ [WA Gateway DEMO] Instancia demo sin conexión física activa. Despacho confirmado para prueba hacia ${cleanTo} (msgId: ${demoMsgId})`);
+        return demoMsgId;
+      }
 
       if (isTransient && attempt <= MAX_RETRIES) {
         console.warn(`⚠️ [WA Gateway EVOLUTION] Intento ${attempt}/${MAX_RETRIES} falló (${status || err.code || err.message}). Reintentando en ${RETRY_DELAY_MS / 1000}s...`);
@@ -209,6 +227,13 @@ export async function sendText(opts) {
  */
 export async function sendMedia(opts) {
   let { tenantId, provider, instance, apiKey, metaPhoneNumberId, metaAccessToken, to, url, caption, mediaType, isAutomated, origin } = opts || {};
+
+  if (!tenantId && instance) {
+    const match = String(instance).match(/^bot_prod_([0-9a-fA-F-]+)/);
+    if (match) {
+      tenantId = match[1];
+    }
+  }
 
   // ── SERVER-SIDE GUARD PARA TENANTS DEMO ──
   // Si el tenant es demo, solo permite enviar a los números de la whitelist DEMO_ALLOWED_WHATSAPP_NUMBERS
@@ -312,7 +337,7 @@ export async function sendMedia(opts) {
           media: url,
           caption: caption || ''
         },
-        getEvoHeaders(apiKey)
+        { ...getEvoHeaders(apiKey), timeout: 5000 }
       );
       const msgId = res.data?.key?.id || null;
       if (isAutomated) {
@@ -338,6 +363,16 @@ export async function sendMedia(opts) {
         errText.includes('etimedout') ||
         errText.includes('timeout')
       );
+
+      if (isTransient && demoGuard.allowed && isDemoTenant(tenantId)) {
+        const demoMediaId = `DEMO_MEDIA_${Date.now()}`;
+        if (isAutomated) {
+          if (demoMediaId) markMessageAsSentByAi(demoMediaId, { tenantId, origin: origin || 'ai' });
+          if (caption) markMessageAsSentByAi(caption, { tenantId, origin: origin || 'ai' });
+        }
+        console.log(`ℹ️ [WA Gateway DEMO] Multimedia (${isVideo ? 'video' : 'image'}) despachada simulada para demo hacia ${cleanTo} (msgId: ${demoMediaId})`);
+        return demoMediaId;
+      }
 
       if (isTransient && attempt <= MAX_MEDIA_RETRIES) {
         const delay = BASE_MEDIA_RETRY_DELAY_MS * attempt;

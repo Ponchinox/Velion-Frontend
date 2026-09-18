@@ -105,7 +105,7 @@ async function runSeed() {
     console.log(`📋 Plan seleccionado para demo: "${planName}" (ID: ${planId || 'N/A'})`);
 
     // ── 3. TENANT IDEMPOTENTE ──
-    const tenantName = 'NovaTech Demo';
+    const tenantName = 'Velion Demo';
     let tenant = await prisma.tenant.findFirst({
       where: { name: tenantName }
     });
@@ -114,7 +114,7 @@ async function runSeed() {
       tenant = await prisma.tenant.create({
         data: {
           name: tenantName,
-          companyName: 'NovaTech Solutions Demo',
+          companyName: 'Velion Demo',
           plan: planName,
           planId: planId,
           msgLimit: msgLimit,
@@ -123,9 +123,10 @@ async function runSeed() {
           aiEnabled: true,
           marketingModeEnabled: true,
           businessSector: 'Tecnología & Gadgets',
-          termsAndPolicies: 'Políticas Demo: Garantía oficial de 12 meses con reemplazo inmediato ante fallas técnicas.',
-          customPrompt: 'Eres el asesor virtual inteligente de NovaTech Demo. Responde dudas sobre audífonos, smartwatches y parlantes con cordialidad y precisión.',
-          botRole: 'Asesor Tecnológico NovaTech'
+          bankAccounts: 'BCP Cuenta Corriente Soles: 191-98765432-0-99 (CCI: 002-191-009876543299-11), BBVA: 0011-0123-4567890123, Yape / Plin al 987654321, Transferencia bancaria nacional.',
+          termsAndPolicies: 'Políticas Demo: Envíos y delivery a todo Lima Metropolitana en 24h vía courier express. Envíos a provincias vía Olva Courier. Garantía oficial de 12 meses con reemplazo inmediato ante fallas técnicas.',
+          customPrompt: 'Eres el asesor virtual inteligente de Velion Demo. Responde dudas sobre audífonos, smartwatches y parlantes con cordialidad y precisión.',
+          botRole: 'Asesor Tecnológico Velion Demo'
         }
       });
       console.log(`✅ Tenant creado: "${tenant.name}" (ID: ${tenant.id})`);
@@ -138,13 +139,15 @@ async function runSeed() {
           planId: planId,
           msgLimit: msgLimit,
           connLimit: connLimit,
+          bankAccounts: 'BCP Cuenta Corriente Soles: 191-98765432-0-99 (CCI: 002-191-009876543299-11), BBVA: 0011-0123-4567890123, Yape / Plin al 987654321, Transferencia bancaria nacional.',
+          termsAndPolicies: 'Políticas Demo: Envíos y delivery a todo Lima Metropolitana en 24h vía courier express. Envíos a provincias vía Olva Courier. Garantía oficial de 12 meses con reemplazo inmediato ante fallas técnicas.'
         }
       });
       console.log(`ℹ️ Tenant existente actualizado: "${tenant.name}" (ID: ${tenant.id})`);
     }
 
     // ── 4. USUARIO DEMO IDEMPOTENTE ──
-    const demoEmail = 'demo.wallpay@novatech.com';
+    const demoEmail = 'wallpay.demo@velion.test';
     const hashedPassword = await bcrypt.hash(process.env.WALLPAY_DEMO_PASSWORD, 10);
 
     let user = await prisma.user.findUnique({
@@ -181,6 +184,8 @@ async function runSeed() {
         description: 'Reloj inteligente con pantalla AMOLED de 1.4", monitoreo continuo de ritmo cardíaco, SpO2 y batería de hasta 7 días.',
         category: 'Wearables',
         price: 189.0,
+        imageUrl: 'https://185.163.116.210/media/tenants/5eb9a15a-07ad-41a8-80be-ae53f122acd0/products/images/smartwatch-x1.jpg',
+        images: ['https://185.163.116.210/media/tenants/5eb9a15a-07ad-41a8-80be-ae53f122acd0/products/images/smartwatch-x1.jpg'],
         tags: ['smartwatch', 'fitness', 'tecnologia', 'salud'],
         type: 'PHYSICAL_PRODUCT',
         isAvailable: true,
@@ -451,7 +456,7 @@ async function runSeed() {
           isActive: true,
           nodes: [
             { id: 'start', type: 'trigger', data: { label: 'Palabra clave: hola' } },
-            { id: 'greet', type: 'message', data: { text: '¡Bienvenido a NovaTech Demo! ¿En qué podemos asesorarte hoy?' } }
+            { id: 'greet', type: 'message', data: { text: '¡Bienvenido a Velion Demo! ¿En qué podemos asesorarte hoy?' } }
           ],
           edges: [
             { id: 'e-start-greet', source: 'start', target: 'greet' }

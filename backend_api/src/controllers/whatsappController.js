@@ -3087,7 +3087,7 @@ async function processBufferedMessage(bufferKey) {
   // never from the inbound webhook header (requestApiKey). The webhook header is only
   // valid for authenticating the inbound request itself.
   const authoritativeApiKey = (process.env.EVOLUTION_API_KEY || '').trim();
-  const gatewayCtx = { provider, instance, apiKey: authoritativeApiKey, metaPhoneNumberId, metaAccessToken };
+  const gatewayCtx = { tenantId: tenant.id, provider, instance, apiKey: authoritativeApiKey, metaPhoneNumberId, metaAccessToken };
 
   console.log(`🤖 [Message Buffer] Procesando ráfaga acumulada para +${clientNumber} (${userMessageText.length} caracteres): "${userMessageText.replace(/\n/g, ' ')}"`);
   const finalCleanNumber = String(clientNumber || '').includes('@lid') ? String(clientNumber || '').trim() : String(clientNumber || '').replace(/[^0-9]/g, '');
