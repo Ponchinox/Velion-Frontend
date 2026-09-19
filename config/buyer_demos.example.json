@@ -1,0 +1,18 @@
+{
+  "version": "1.0",
+  "description": "Plantilla de ejemplo para registro centralizado de inquilinos demo de compradores (Copia a config/buyer_demos.json en runtime)",
+  "updatedAt": "2026-09-18T00:00:00.000Z",
+  "buyers": [
+    {
+      "slug": "example-corp",
+      "name": "Example Corp",
+      "tenantName": "Example Corp Demo",
+      "tenantId": "00000000-0000-4000-8000-000000000001",
+      "email": "example.demo@velion.test",
+      "status": "ACTIVE",
+      "createdAt": "2026-09-18T00:00:00.000Z",
+      "validityHours": 48,
+      "expiresAt": "2026-09-20T00:00:00.000Z"
+    }
+  ]
+}
