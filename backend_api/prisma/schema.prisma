@@ -8,101 +8,105 @@ datasource db {
 }
 
 model Tenant {
-  id                   String                     @id @default(uuid())
-  name                 String
-  plan                 String?                    @default("Sin Plan")
-  planId               String?
-  active               Boolean                    @default(true)
-  msgLimit             Int                        @default(0)
-  connLimit            Int                        @default(0)
-  logoUrl              String?
-  companyName          String?                    @default("")
-  taxId                String?
-  address              String?
-  phone                String?
-  email                String?
-  businessSector       String?
-  bankAccounts         String?
-  businessHours        String?
-  termsAndPolicies     String?
-  customPrompt         String?
-  botRole              String?
-  multiMessageMode     Boolean                    @default(true)
-  respondInGroups      Boolean                    @default(false)
-  notificationPhone    String?
-  notifySalesWhatsApp  Boolean                    @default(false)
-  marketingModeEnabled Boolean                    @default(false)
-  createdAt            DateTime                   @default(now())
-  updatedAt            DateTime                   @updatedAt
-  aiEnabled            Boolean                    @default(true)
-  aiDisabledAt         DateTime?
-  sessionInactivityHours Int                      @default(6)
-  dailyTokenBudget     Int?                       @default(100000)
-  monthlyTokenBudget   Int?                       @default(2000000)
-  aiBudgetEnabled      Boolean                    @default(true)
-  alerts               Alert[]
-  automationFlows      AutomationFlow[]
-  campaigns            Campaign[]
-  chats                Chat[]
-  contacts             Contact[]
-  customers            Customer[]
-  flows                Flow[]
-  messages             Message[]
-  registeredNumbers    RegisteredWhatsAppNumber[]
-  users                User[]
-  orders               Order[]
-  aiUsages             TenantAIUsage[]
-  operationalItems     OperationalItem[]
-  followUpEnabled      Boolean                    @default(false)
-  followUpDecisionMode String?                    @default("OFF")
-  timezone             String?
-  followUpSequences    FollowUpSequence[]
+  id                      String                     @id @default(uuid())
+  name                    String
+  plan                    String?                    @default("Sin Plan")
+  planId                  String?
+  active                  Boolean                    @default(true)
+  msgLimit                Int                        @default(0)
+  connLimit               Int                        @default(0)
+  logoUrl                 String?
+  companyName             String?                    @default("")
+  taxId                   String?
+  address                 String?
+  phone                   String?
+  email                   String?
+  businessSector          String?
+  bankAccounts            String?
+  businessHours           String?
+  termsAndPolicies        String?
+  customPrompt            String?
+  botRole                 String?
+  multiMessageMode        Boolean                    @default(true)
+  respondInGroups         Boolean                    @default(false)
+  notificationPhone       String?
+  notifySalesWhatsApp     Boolean                    @default(false)
+  marketingModeEnabled    Boolean                    @default(false)
+  createdAt               DateTime                   @default(now())
+  updatedAt               DateTime                   @updatedAt
+  aiEnabled               Boolean                    @default(true)
+  aiDisabledAt            DateTime?
+  sessionInactivityHours  Int                        @default(6)
+  dailyTokenBudget        Int?                       @default(100000)
+  monthlyTokenBudget      Int?                       @default(2000000)
+  aiBudgetEnabled         Boolean                    @default(true)
+  alerts                  Alert[]
+  automationFlows         AutomationFlow[]
+  campaigns               Campaign[]
+  chats                   Chat[]
+  contacts                Contact[]
+  customers               Customer[]
+  flows                   Flow[]
+  messages                Message[]
+  registeredNumbers       RegisteredWhatsAppNumber[]
+  users                   User[]
+  orders                  Order[]
+  aiUsages                TenantAIUsage[]
+  operationalItems        OperationalItem[]
+  followUpEnabled         Boolean                    @default(false)
+  followUpDecisionMode    String?                    @default("OFF")
+  timezone                String?
+  currencyCode            String                     @default("PEN")
+  followUpSequences       FollowUpSequence[]
+  integrations            Integration[]
+  externalProducts        ExternalProduct[]
+  externalProductVariants ExternalProductVariant[]
 }
 
 model User {
-  id        String    @id @default(uuid())
-  email     String    @unique
-  password  String
-  name      String?
-  phone     String?
-  role      String    @default("client")
-  tenantId  String?
-  createdAt DateTime  @default(now())
-  updatedAt DateTime  @updatedAt
-  products  Product[]
-  tenant    Tenant?   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  id                        String            @id @default(uuid())
+  email                     String            @unique
+  password                  String
+  name                      String?
+  phone                     String?
+  role                      String            @default("client")
+  tenantId                  String?
+  createdAt                 DateTime          @default(now())
+  updatedAt                 DateTime          @updatedAt
+  products                  Product[]
+  tenant                    Tenant?           @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   createdOperationalItems   OperationalItem[] @relation("CreatedByUser")
   completedOperationalItems OperationalItem[] @relation("CompletedByUser")
 }
 
 model Contact {
-  id              String   @id @default(uuid())
-  createdAt       DateTime @default(now())
-  updatedAt       DateTime @updatedAt
-  botPaused       Boolean  @default(false)
-  category        String   @default("Nuevos Leads")
-  lastInteraction String?
-  name            String
-  phone           String
-  tags            String[]
-  tenantId        String
-  chats           Chat[]
-  tenant          Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  id               String            @id @default(uuid())
+  createdAt        DateTime          @default(now())
+  updatedAt        DateTime          @updatedAt
+  botPaused        Boolean           @default(false)
+  category         String            @default("Nuevos Leads")
+  lastInteraction  String?
+  name             String
+  phone            String
+  tags             String[]
+  tenantId         String
+  chats            Chat[]
+  tenant           Tenant            @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   operationalItems OperationalItem[]
 }
 
 model Chat {
-  id        String    @id @default(uuid())
-  createdAt DateTime  @default(now())
-  updatedAt DateTime  @updatedAt
-  botPaused Boolean   @default(false)
-  contactId String
-  status    String    @default("open")
-  tenantId  String
-  contact   Contact   @relation(fields: [contactId], references: [id], onDelete: Cascade)
-  tenant    Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  messages  Message[]
-  operationalItems OperationalItem[]
+  id                String             @id @default(uuid())
+  createdAt         DateTime           @default(now())
+  updatedAt         DateTime           @updatedAt
+  botPaused         Boolean            @default(false)
+  contactId         String
+  status            String             @default("open")
+  tenantId          String
+  contact           Contact            @relation(fields: [contactId], references: [id], onDelete: Cascade)
+  tenant            Tenant             @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  messages          Message[]
+  operationalItems  OperationalItem[]
   followUpSequences FollowUpSequence[]
 }
 
@@ -129,8 +133,8 @@ model Message {
   mediaGroupId    String?
   mediaGroupIndex Int?
 
-  chat       Chat     @relation(fields: [chatId], references: [id], onDelete: Cascade)
-  tenant     Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  chat             Chat              @relation(fields: [chatId], references: [id], onDelete: Cascade)
+  tenant           Tenant            @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   operationalItems OperationalItem[]
 
   @@index([chatId, mediaGroupId])
@@ -149,25 +153,29 @@ model AutomationFlow {
 }
 
 model Product {
-  id               String    @id @default(uuid())
+  id               String      @id @default(uuid())
   name             String
   description      String?
   category         String?
-  tags             String[]  @default([])
-  type             String    @default("PHYSICAL_PRODUCT")
+  tags             String[]    @default([])
+  type             String      @default("PHYSICAL_PRODUCT")
   price            Float
-  isAvailable      Boolean   @default(true)
+  isAvailable      Boolean     @default(true)
   imageUrl         String?
   promotionalPrice Float?
   promoStartDate   DateTime?
   promoEndDate     DateTime?
+  sku              String?
+  normalizedSku    String?
   userId           String
-  createdAt        DateTime  @default(now())
-  updatedAt        DateTime  @updatedAt
-  images           String[]  @default([])
+  createdAt        DateTime    @default(now())
+  updatedAt        DateTime    @updatedAt
+  images           String[]    @default([])
   videoUrl         String?
-  user             User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user             User        @relation(fields: [userId], references: [id], onDelete: Cascade)
   orderItems       OrderItem[]
+
+  @@index([userId, normalizedSku])
 }
 
 model Alert {
@@ -211,25 +219,25 @@ model SystemConfig {
 }
 
 model Customer {
-  id                String    @id @default(uuid())
-  phone             String
-  name              String?
-  preferences       String?
-  isBanned          Boolean   @default(false)
-  currentFlowId     String?
-  currentNodeId     String?
-  tags              String[]  @default([])
-  isBotPaused       Boolean   @default(false)
-  tenantId          String
-  commercialState   Json?
-  persistentProfile Json?
-  sessionUpdatedAt  DateTime? @default(now())
-  createdAt         DateTime  @default(now())
-  updatedAt         DateTime  @updatedAt
-  tenant            Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  orders            Order[]
-  operationalItems  OperationalItem[]
-  followUpSuppressed        Boolean   @default(false)
+  id                        String             @id @default(uuid())
+  phone                     String
+  name                      String?
+  preferences               String?
+  isBanned                  Boolean            @default(false)
+  currentFlowId             String?
+  currentNodeId             String?
+  tags                      String[]           @default([])
+  isBotPaused               Boolean            @default(false)
+  tenantId                  String
+  commercialState           Json?
+  persistentProfile         Json?
+  sessionUpdatedAt          DateTime?          @default(now())
+  createdAt                 DateTime           @default(now())
+  updatedAt                 DateTime           @updatedAt
+  tenant                    Tenant             @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  orders                    Order[]
+  operationalItems          OperationalItem[]
+  followUpSuppressed        Boolean            @default(false)
   followUpOptOutAt          DateTime?
   followUpSuppressionReason String?
   followUpSequences         FollowUpSequence[]
@@ -275,9 +283,9 @@ model CampaignLog {
   updatedAt     DateTime  @default(now()) @updatedAt
   campaign      Campaign  @relation(fields: [campaignId], references: [id], onDelete: Cascade)
 
+  @@unique([campaignId, customerPhone, occurrenceKey])
   @@index([campaignId])
   @@index([campaignId, status])
-  @@unique([campaignId, customerPhone, occurrenceKey])
 }
 
 model Flow {
@@ -294,62 +302,84 @@ model Flow {
 }
 
 model RegisteredWhatsAppNumber {
-  id                String   @id @default(uuid())
-  phoneNumber       String   @unique
-  tenantId          String
-  createdAt         DateTime @default(now())
-  metaAccessToken   String?
-  metaPhoneNumberId String?
-  metaWabaId        String?
-  provider          String    @default("EVOLUTION")
-  updatedAt         DateTime  @updatedAt
-  instanceName      String?   @unique
-  connectionState   String    @default("UNKNOWN")
+  id                       String    @id @default(uuid())
+  phoneNumber              String    @unique
+  tenantId                 String
+  createdAt                DateTime  @default(now())
+  metaAccessToken          String?
+  metaPhoneNumberId        String?
+  metaWabaId               String?
+  provider                 String    @default("EVOLUTION")
+  updatedAt                DateTime  @updatedAt
+  instanceName             String?   @unique
+  connectionState          String    @default("UNKNOWN")
   connectionStateUpdatedAt DateTime? @default(now())
-  tenant            Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  tenant                   Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
 }
 
 model Order {
-  id              String      @id @default(uuid())
-  tenantId        String
-  customerId      String
-  
-  status          String      @default("PENDING")
-  paymentStatus   String      @default("UNPAID")
-  
+  id         String @id @default(uuid())
+  tenantId   String
+  customerId String
+
+  status        String @default("PENDING")
+  paymentStatus String @default("UNPAID")
+
   paymentMethod   String?
   shippingCity    String?
   shippingAddress String?
   customerNeeds   String?
-  totalAmount     Float       @default(0)
-  
-  createdAt       DateTime    @default(now())
-  updatedAt       DateTime    @updatedAt
+  totalAmount     Float   @default(0)
 
-  tenant          Tenant      @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  customer        Customer    @relation(fields: [customerId], references: [id], onDelete: Cascade)
-  items           OrderItem[]
-  operationalItems OperationalItem[]
+  // Integraciones de Comercio Externo (Shopify, etc.)
+  externalProvider     String?
+  externalDraftOrderId String?
+  externalOrderId      String?
+  externalOrderNumber  String?
+  externalCheckoutUrl  String?
+  currencyCode         String?
+
+  externalSyncStatus   String?
+  externalSyncAttempts Int       @default(0)
+  externalSyncError    String?
+  externalSyncedAt     DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  tenant            Tenant             @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  customer          Customer           @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  items             OrderItem[]
+  operationalItems  OperationalItem[]
   followUpSequences FollowUpSequence[]
+
+  @@index([tenantId, externalSyncStatus])
+  @@index([tenantId, externalDraftOrderId])
 }
 
 model OrderItem {
-  id        String   @id @default(uuid())
+  id        String  @id @default(uuid())
   orderId   String
   productId String?
   name      String
-  quantity  Int      @default(1)
-  price     Float    @default(0)
+  quantity  Int     @default(1)
+  price     Float   @default(0)
   variant   String?
-  
-  order     Order    @relation(fields: [orderId], references: [id], onDelete: Cascade)
-  product   Product? @relation(fields: [productId], references: [id], onDelete: SetNull)
+
+  // Snapshot histórico de procedencia comercial externa
+  sourceProvider    String?
+  externalProductId String?
+  externalVariantId String?
+  sourceSku         String?
+
+  order   Order    @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  product Product? @relation(fields: [productId], references: [id], onDelete: SetNull)
 }
 
 model TenantAIUsage {
   id           String   @id @default(uuid())
   tenantId     String
-  date         String   // Formato YYYY-MM-DD
+  date         String // Formato YYYY-MM-DD
   requestCount Int      @default(0)
   inputTokens  Int      @default(0)
   outputTokens Int      @default(0)
@@ -359,54 +389,54 @@ model TenantAIUsage {
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
 
-  tenant       Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
 
   @@unique([tenantId, date])
 }
 
 model OperationalItem {
-  id                String      @id @default(uuid())
-  tenantId          String
-  customerId        String?
-  contactId         String?
-  chatId            String?
-  sourceMessageId   String?
-  orderId           String?
+  id              String  @id @default(uuid())
+  tenantId        String
+  customerId      String?
+  contactId       String?
+  chatId          String?
+  sourceMessageId String?
+  orderId         String?
 
-  type              String      // 'NOTE' | 'TASK'
-  category          String      @default("GENERAL") // 'GENERAL' | 'COORDINATION' | 'ATTENDANCE' | 'SERVICE_INSTRUCTION' | 'FOLLOW_UP' | 'ORDER_REQUEST' | 'SUPPORT' | 'OTHER'
-  
-  title             String?
-  summary           String
-  subjectName       String?
-  
-  status            String      @default("PENDING") // NOTE: 'ACTIVE' | 'ARCHIVED'. TASK: 'PENDING' | 'IN_PROGRESS' | 'COMPLETED' | 'CANCELED'
-  priority          String      @default("NORMAL")  // 'LOW' | 'NORMAL' | 'HIGH'
+  type     String // 'NOTE' | 'TASK'
+  category String @default("GENERAL") // 'GENERAL' | 'COORDINATION' | 'ATTENDANCE' | 'SERVICE_INSTRUCTION' | 'FOLLOW_UP' | 'ORDER_REQUEST' | 'SUPPORT' | 'OTHER'
 
-  createdByType     String      @default("AI")      // 'AI' | 'USER'
+  title       String?
+  summary     String
+  subjectName String?
+
+  status   String @default("PENDING") // NOTE: 'ACTIVE' | 'ARCHIVED'. TASK: 'PENDING' | 'IN_PROGRESS' | 'COMPLETED' | 'CANCELED'
+  priority String @default("NORMAL") // 'LOW' | 'NORMAL' | 'HIGH'
+
+  createdByType     String    @default("AI") // 'AI' | 'USER'
   createdByUserId   String?
   completedAt       DateTime?
   completedByUserId String?
 
-  dueDateLocal      String?     // 'YYYY-MM-DD'
-  dueTimeLocal      String?     // 'HH:mm'
-  dueAt             DateTime?   // UTC timestamp cuando fecha y hora son conocidas/calculables
+  dueDateLocal String? // 'YYYY-MM-DD'
+  dueTimeLocal String? // 'HH:mm'
+  dueAt        DateTime? // UTC timestamp cuando fecha y hora son conocidas/calculables
 
-  dedupeKey         String?
+  dedupeKey String?
 
-  details           Json?
+  details Json?
 
-  createdAt         DateTime    @default(now())
-  updatedAt         DateTime    @updatedAt
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
-  tenant            Tenant      @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  customer          Customer?   @relation(fields: [customerId], references: [id], onDelete: SetNull)
-  contact           Contact?    @relation(fields: [contactId], references: [id], onDelete: SetNull)
-  chat              Chat?       @relation(fields: [chatId], references: [id], onDelete: SetNull)
-  sourceMessage     Message?    @relation(fields: [sourceMessageId], references: [id], onDelete: SetNull)
-  order             Order?      @relation(fields: [orderId], references: [id], onDelete: SetNull)
-  createdByUser     User?       @relation("CreatedByUser", fields: [createdByUserId], references: [id], onDelete: SetNull)
-  completedByUser   User?       @relation("CompletedByUser", fields: [completedByUserId], references: [id], onDelete: SetNull)
+  tenant          Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  customer        Customer? @relation(fields: [customerId], references: [id], onDelete: SetNull)
+  contact         Contact?  @relation(fields: [contactId], references: [id], onDelete: SetNull)
+  chat            Chat?     @relation(fields: [chatId], references: [id], onDelete: SetNull)
+  sourceMessage   Message?  @relation(fields: [sourceMessageId], references: [id], onDelete: SetNull)
+  order           Order?    @relation(fields: [orderId], references: [id], onDelete: SetNull)
+  createdByUser   User?     @relation("CreatedByUser", fields: [createdByUserId], references: [id], onDelete: SetNull)
+  completedByUser User?     @relation("CompletedByUser", fields: [completedByUserId], references: [id], onDelete: SetNull)
 
   @@unique([tenantId, dedupeKey])
   @@index([tenantId, type, status])
@@ -417,42 +447,42 @@ model OperationalItem {
 }
 
 model FollowUpSequence {
-  id                String             @id @default(uuid())
-  tenantId          String
-  customerId        String
-  chatId            String?
-  orderId           String?
+  id         String  @id @default(uuid())
+  tenantId   String
+  customerId String
+  chatId     String?
+  orderId    String?
 
-  productId         String?
-  productName       String?
-  stageAtCreation   String
+  productId       String?
+  productName     String?
+  stageAtCreation String
 
-  status            String             @default("SCHEDULED")
+  status String @default("SCHEDULED")
   // 'SCHEDULED' | 'PROCESSING' | 'NEUTRALIZED_INBOUND' | 'WAITING_NEXT' | 'RECOVERED' | 'EXHAUSTED' | 'CANCELLED'
 
-  currentAttempt    Int                @default(0)
-  maxAttempts       Int                @default(3)
+  currentAttempt Int @default(0)
+  maxAttempts    Int @default(3)
 
-  anchorAt          DateTime
-  nextRunAt         DateTime?
-  lastRunAt         DateTime?
-  claimedAt         DateTime?
+  anchorAt  DateTime
+  nextRunAt DateTime?
+  lastRunAt DateTime?
+  claimedAt DateTime?
 
-  cancelReason      String?
-  recoveredAt       DateTime?
-  recoveredOrderId  String?
+  cancelReason     String?
+  recoveredAt      DateTime?
+  recoveredOrderId String?
 
   contextSnapshot   Json?
   explicitTimingIso DateTime?
 
-  createdAt         DateTime           @default(now())
-  updatedAt         DateTime           @updatedAt
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
-  tenant            Tenant             @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  customer          Customer           @relation(fields: [customerId], references: [id], onDelete: Cascade)
-  chat              Chat?              @relation(fields: [chatId], references: [id], onDelete: SetNull)
-  order             Order?             @relation(fields: [orderId], references: [id], onDelete: SetNull)
-  attempts          FollowUpAttempt[]
+  tenant   Tenant            @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  customer Customer          @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  chat     Chat?             @relation(fields: [chatId], references: [id], onDelete: SetNull)
+  order    Order?            @relation(fields: [orderId], references: [id], onDelete: SetNull)
+  attempts FollowUpAttempt[]
 
   @@index([status, nextRunAt])
   @@index([tenantId, customerId])
@@ -461,19 +491,19 @@ model FollowUpSequence {
 }
 
 model FollowUpAttempt {
-  id                String           @id @default(uuid())
-  sequenceId        String
-  attemptNumber     Int
+  id            String @id @default(uuid())
+  sequenceId    String
+  attemptNumber Int
 
-  status            String           @default("PENDING")
+  status String @default("PENDING")
   // Operational status (never changes after SENT):
   // 'PENDING' | 'PROCESSING' | 'SENT' | 'FAILED_SAFE' | 'UNKNOWN_DELIVERY' | 'SKIPPED_POLICY'
 
   // Delivery lifecycle (separate from operational status):
   // null | 'SERVER_ACK' | 'DELIVERY_ACK' | 'READ' | 'PLAYED' | 'ERROR'
-  deliveryStatus    String?
-  deliveredAt       DateTime?
-  readAt            DateTime?
+  deliveryStatus String?
+  deliveredAt    DateTime?
+  readAt         DateTime?
 
   scheduledAt       DateTime
   sentAt            DateTime?
@@ -485,10 +515,10 @@ model FollowUpAttempt {
   providerMessageId String?
   errorMessage      String?
 
-  createdAt         DateTime         @default(now())
-  updatedAt         DateTime         @updatedAt
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
-  sequence          FollowUpSequence @relation(fields: [sequenceId], references: [id], onDelete: Cascade)
+  sequence FollowUpSequence @relation(fields: [sequenceId], references: [id], onDelete: Cascade)
 
   @@unique([sequenceId, attemptNumber])
   @@index([sequenceId])
@@ -496,3 +526,103 @@ model FollowUpAttempt {
   @@index([providerMessageId])
 }
 
+model Integration {
+  id       String @id @default(uuid())
+  tenantId String
+  provider String // 'SHOPIFY' | 'WOOCOMMERCE' | 'TIENDANUBE' | 'MERCADOLIBRE'
+  status   String @default("DISCONNECTED") // 'CONNECTED' | 'DISCONNECTED' | 'ERROR'
+
+  shopDomain String?
+
+  encryptedAccessToken  String? // Cifrado AES-256-GCM
+  encryptedRefreshToken String? // Cifrado AES-256-GCM (Tokens expirables 2026)
+
+  accessTokenExpiresAt  DateTime? // Marca temporal de expiración
+  refreshTokenExpiresAt DateTime? // Marca temporal de expiración
+
+  scopes String[] @default([])
+
+  catalogMode       String @default("COMBINED") // 'VELION_ONLY' | 'SHOPIFY_ONLY' | 'COMBINED'
+  priceSource       String @default("SHOPIFY") // 'VELION' | 'SHOPIFY'
+  stockSource       String @default("SHOPIFY") // 'VELION' | 'SHOPIFY'
+  externalOrderMode String @default("SHOPIFY_DRAFT") // 'NONE' | 'SHOPIFY_DRAFT' | 'SHOPIFY_COMPLETE'
+  shopCurrencyCode  String?
+
+  syncProducts  Boolean @default(true)
+  syncInventory Boolean @default(true)
+
+  lastSyncedAt  DateTime?
+  syncStatus    String?   @default("IDLE") // 'IDLE' | 'SYNCING' | 'ERROR'
+  lastSyncError String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  tenant           Tenant            @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  externalProducts ExternalProduct[]
+
+  @@unique([tenantId, provider])
+  @@unique([provider, shopDomain])
+  @@index([tenantId, status])
+}
+
+model ExternalProduct {
+  id                   String    @id @default(uuid())
+  tenantId             String
+  integrationId        String
+  provider             String    @default("SHOPIFY")
+  externalId           String // GID: 'gid://shopify/Product/123456789'
+  title                String
+  description          String?
+  category             String?
+  tags                 String[]  @default([])
+  imageUrl             String?
+  images               String[]  @default([])
+  isAvailable          Boolean   @default(true)
+  syncedAt             DateTime  @default(now())
+  lastEventTriggeredAt DateTime?
+  createdAt            DateTime  @default(now())
+  updatedAt            DateTime  @updatedAt
+
+  tenant      Tenant                   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  integration Integration              @relation(fields: [integrationId], references: [id], onDelete: Cascade)
+  variants    ExternalProductVariant[]
+
+  @@unique([tenantId, provider, externalId])
+  @@index([tenantId, provider])
+  @@index([integrationId])
+}
+
+model ExternalProductVariant {
+  id                String @id @default(uuid())
+  tenantId          String
+  externalProductId String
+  provider          String @default("SHOPIFY")
+
+  externalVariantId String // GID: 'gid://shopify/ProductVariant/987654321'
+  inventoryItemId   String? // GID: 'gid://shopify/InventoryItem/55555'
+
+  sku           String?
+  normalizedSku String?
+
+  title String
+
+  price          Float
+  compareAtPrice Float?
+
+  inventoryQuantity Int     @default(0)
+  availableForSale  Boolean @default(true)
+
+  syncedAt             DateTime  @default(now())
+  lastEventTriggeredAt DateTime?
+  createdAt            DateTime  @default(now())
+  updatedAt            DateTime  @updatedAt
+
+  tenant          Tenant          @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  externalProduct ExternalProduct @relation(fields: [externalProductId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, provider, externalVariantId])
+  @@index([tenantId, provider])
+  @@index([tenantId, provider, normalizedSku])
+  @@index([externalProductId])
+}

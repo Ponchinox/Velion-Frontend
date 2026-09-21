@@ -7,39 +7,46 @@ import { invalidateGlobalPromptCache } from '../services/globalConfigService.js'
 import { invalidateTenantActiveCache } from '../services/tenantGuardService.js';
 import { quarantineTenantMedia } from '../services/tenantMediaLifecycleService.js';
 
-// Claves de configuración que se gestionan en la tabla SystemConfig de PostgreSQL
-const CONFIG_KEYS = [
-  'evoUrl', 'evoApiKey', 'wahaUrl', 'wahaApiKey', 'wahaIsPrimary',
-  'geminiKey', 'groqKey', 'systemPrompt', 'smtpHost', 'smtpPort',
-  'smtpUser', 'smtpPassword', 'errorWebhook',
-  'backupFrequency', 'backupCloudEnabled', 'backupCloudProvider',
-  'backupGdriveFolderId', 'backupGdriveCredentials',
-  'paymentMethod', 'paymentRecipient', 'paymentContact',
+// Claves de configuración EDITABLES desde SuperAdmin (GLOBAL_EDITABLE_CONFIG)
+// Los secretos de infraestructura (API keys, passwords, connection strings) NUNCA se editan
+// ni se persisten en SystemConfig desde el frontend; residen exclusivamente en process.env / Secret Manager.
+const EDITABLE_CONFIG_KEYS = [
+  'systemPrompt',
+  'errorWebhook',
+  'backupFrequency',
+  'backupCloudEnabled',
+  'backupCloudProvider',
+  'backupGdriveFolderId',
+  'backupGdriveCredentials',
+  'paymentMethod',
+  'paymentRecipient',
+  'paymentContact',
+  'evoUrl',
+  'wahaUrl',
+  'wahaIsPrimary',
+  'smtpHost',
+  'smtpPort',
+  'smtpUser',
 ];
 
-// Valores por defecto que se usan SOLO si la clave aún no existe en la BD
-const CONFIG_DEFAULTS = {
-  evoUrl:       '',
-  evoApiKey:    '',
-  wahaUrl:      '',
-  wahaApiKey:   '',
-  wahaIsPrimary:'false',
-  geminiKey:    '',
-  groqKey:      '',
-  systemPrompt: 'Eres un asistente de atención al cliente educado, eficiente y servicial.',
-  smtpHost:     '',
-  smtpPort:     '587',
-  smtpUser:     '',
-  smtpPassword: '',
-  errorWebhook: '',
-  backupFrequency: 'off',
-  backupCloudEnabled: 'false',
-  backupCloudProvider: 'cloudinary',
+// Valores por defecto seguros para configuración editable
+const EDITABLE_CONFIG_DEFAULTS = {
+  evoUrl: process.env.EVOLUTION_API_URL || '',
+  wahaUrl: process.env.WAHA_API_URL || '',
+  wahaIsPrimary: process.env.WAHA_IS_PRIMARY || 'false',
+  systemPrompt: process.env.SYSTEM_PROMPT || 'Eres un asistente de atención al cliente educado, eficiente y servicial.',
+  smtpHost: process.env.SMTP_HOST || '',
+  smtpPort: process.env.SMTP_PORT || '587',
+  smtpUser: process.env.SMTP_USER || '',
+  errorWebhook: process.env.ERROR_WEBHOOK || '',
+  backupFrequency: process.env.BACKUP_FREQUENCY || 'off',
+  backupCloudEnabled: process.env.BACKUP_CLOUD_ENABLED || 'false',
+  backupCloudProvider: process.env.BACKUP_CLOUD_PROVIDER || 'cloudinary',
   backupGdriveFolderId: '',
   backupGdriveCredentials: '',
-  paymentMethod: '',
-  paymentRecipient: '',
-  paymentContact: '',
+  paymentMethod: process.env.BILLING_PAYMENT_METHOD || '',
+  paymentRecipient: process.env.BILLING_PAYMENT_RECIPIENT || '',
+  paymentContact: process.env.BILLING_PAYMENT_CONTACT || '',
 };
 
 // ==========================================
@@ -539,47 +546,71 @@ export async function deletePlan(req, res) {
 export async function getGlobalConfig(req, res) {
   try {
     const rows = await prisma.systemConfig.findMany();
-    
-    // Generar defaults dinámicos leyendo de las variables de entorno (.env)
-    const dynamicDefaults = {
-      evoUrl:       process.env.EVOLUTION_API_URL || '',
-      evoApiKey:    process.env.EVOLUTION_API_KEY || '',
-      wahaUrl:      process.env.WAHA_API_URL || '',
-      wahaApiKey:   process.env.WAHA_API_KEY || '',
-      wahaIsPrimary: process.env.WAHA_IS_PRIMARY || 'false',
-      geminiKey:    process.env.GITHUB_MODELS_KEY || process.env.GITHUB_TOKEN || '',
-      groqKey:      process.env.GROQ_API_KEY || '',
-      systemPrompt: process.env.SYSTEM_PROMPT || 'Eres un asistente de atención al cliente educado, eficiente y servicial.',
-      smtpHost:     process.env.SMTP_HOST || '',
-      smtpPort:     process.env.SMTP_PORT || '587',
-      smtpUser:     process.env.SMTP_USER || '',
-      smtpPassword: process.env.SMTP_PASSWORD || process.env.SMTP_PASS || '',
-      errorWebhook: process.env.ERROR_WEBHOOK || '',
-      backupFrequency: process.env.BACKUP_FREQUENCY || 'off',
-      backupCloudEnabled: process.env.BACKUP_CLOUD_ENABLED || 'false',
-      backupCloudProvider: process.env.BACKUP_CLOUD_PROVIDER || 'cloudinary',
-      backupGdriveFolderId: '',
-      backupGdriveCredentials: '',
-      paymentMethod:        process.env.BILLING_PAYMENT_METHOD || '',
-      paymentRecipient:     process.env.BILLING_PAYMENT_RECIPIENT || '',
-      paymentContact:       process.env.BILLING_PAYMENT_CONTACT || '',
-    };
 
-    const configMap = { ...dynamicDefaults };
+    // Iniciar con valores por defecto de la configuración editable
+    const configMap = { ...EDITABLE_CONFIG_DEFAULTS };
     for (const row of rows) {
-      if (row.value !== undefined && row.value !== null) {
+      if (EDITABLE_CONFIG_KEYS.includes(row.key) && row.value !== undefined && row.value !== null) {
         configMap[row.key] = row.value;
       }
     }
 
-    // Deserializar wahaIsPrimary, smtpPort y backupCloudEnabled a sus tipos nativos para el frontend
+    // Deserializar tipos booleanos y numéricos para el frontend
     configMap.wahaIsPrimary      = String(configMap.wahaIsPrimary) === 'true';
     configMap.backupCloudEnabled = String(configMap.backupCloudEnabled) === 'true';
     configMap.smtpPort           = Number(configMap.smtpPort) || 587;
-    
+
     // Ocultar la credencial de Google Drive por seguridad, enviando solo un booleano al frontend
     configMap.hasGdriveCredentials = !!configMap.backupGdriveCredentials && configMap.backupGdriveCredentials.includes(':');
     delete configMap.backupGdriveCredentials;
+
+    // POLÍTICA DE SEGURIDAD: GLOBAL_SECRET
+    // Los secretos NUNCA se devuelven en claro al frontend.
+    // Solo se expone metadatos seguros de presencia (configured: boolean, masked: "••••••••").
+    const mask = '••••••••';
+    configMap.secrets = {
+      database: { configured: Boolean(process.env.DATABASE_URL) },
+      jwt: { configured: Boolean(process.env.JWT_SECRET) },
+      tokenEncryption: { configured: Boolean(process.env.TOKEN_ENCRYPTION_KEY) },
+      backupEncryption: { configured: Boolean(process.env.BACKUP_ENCRYPTION_KEY) },
+      botSecret: { configured: Boolean(process.env.BOT_SECRET) },
+      mediaTokenSecret: { configured: Boolean(process.env.MEDIA_TOKEN_SECRET) },
+      gemini: {
+        configured: Boolean(process.env.GEMINI_API_KEY || process.env.GITHUB_MODELS_KEY || process.env.GITHUB_TOKEN),
+        masked: (process.env.GEMINI_API_KEY || process.env.GITHUB_MODELS_KEY || process.env.GITHUB_TOKEN) ? mask : ''
+      },
+      groq: {
+        configured: Boolean(process.env.GROQ_API_KEY),
+        masked: process.env.GROQ_API_KEY ? mask : ''
+      },
+      evolution: {
+        configured: Boolean(process.env.EVOLUTION_API_KEY),
+        masked: process.env.EVOLUTION_API_KEY ? mask : ''
+      },
+      meta: {
+        configured: Boolean(process.env.META_APP_ID && process.env.META_APP_SECRET),
+        masked: process.env.META_APP_SECRET ? mask : ''
+      },
+      shopify: {
+        configured: Boolean(process.env.SHOPIFY_CLIENT_ID && process.env.SHOPIFY_CLIENT_SECRET),
+        masked: process.env.SHOPIFY_CLIENT_SECRET ? mask : ''
+      },
+      stripe: {
+        configured: Boolean(process.env.STRIPE_SECRET_KEY),
+        masked: process.env.STRIPE_SECRET_KEY ? mask : ''
+      },
+      smtp: {
+        configured: Boolean(process.env.SMTP_PASSWORD || process.env.SMTP_PASS),
+        masked: (process.env.SMTP_PASSWORD || process.env.SMTP_PASS) ? mask : ''
+      }
+    };
+
+    // Campos legacy para compatibilidad con UIs que esperen string enmascarado
+    configMap.evoApiKey = process.env.EVOLUTION_API_KEY ? mask : '';
+    configMap.wahaApiKey = process.env.WAHA_API_KEY ? mask : '';
+    configMap.geminiKey = (process.env.GEMINI_API_KEY || process.env.GITHUB_MODELS_KEY || process.env.GITHUB_TOKEN) ? mask : '';
+    configMap.groqKey = process.env.GROQ_API_KEY ? mask : '';
+    configMap.smtpPassword = (process.env.SMTP_PASSWORD || process.env.SMTP_PASS) ? mask : '';
 
     return res.json(configMap);
   } catch (error) {
@@ -591,23 +622,31 @@ export async function getGlobalConfig(req, res) {
 /**
  * Recibe un objeto plano con las claves de configuración y hace upsert de cada una
  * en la tabla SystemConfig de PostgreSQL.
+ * Solo permite persistir claves de GLOBAL_EDITABLE_CONFIG.
+ * Los secretos globales de infraestructura son ignorados y no se pueden sobrescribir desde la UI.
  */
 export async function saveGlobalConfig(req, res) {
   try {
     const configData = req.body;
 
-    // Filtrar solo las claves válidas
-    let validKeys = CONFIG_KEYS.filter(key => configData[key] !== undefined);
-    
+    // Filtrar estrictamente solo claves editables autorizadas (GLOBAL_EDITABLE_CONFIG)
+    let validKeys = EDITABLE_CONFIG_KEYS.filter(key => configData[key] !== undefined);
+
     // Evitar sobreescribir la credencial con un placeholder o cadena vacía si no se modificó
     if (validKeys.includes('backupGdriveCredentials')) {
-      if (!configData['backupGdriveCredentials'] || configData['backupGdriveCredentials'] === '********') {
+      if (!configData['backupGdriveCredentials'] || configData['backupGdriveCredentials'] === '********' || configData['backupGdriveCredentials'] === '••••••••') {
         validKeys = validKeys.filter(k => k !== 'backupGdriveCredentials');
       } else {
         // Si hay una nueva credencial, cifrarla antes de guardar
         configData['backupGdriveCredentials'] = encryptText(configData['backupGdriveCredentials']);
       }
     }
+
+    // Filtrar placeholders enmascarados para evitar sobreescribir valores reales con máscaras
+    validKeys = validKeys.filter(k => {
+      const val = String(configData[k]);
+      return val !== '••••••••' && val !== '********';
+    });
 
     const upsertPromises = validKeys
       .map(key =>

@@ -1,5 +1,7 @@
 import prisma from '../db.js';
 import { cancelFollowUpOnOrderEvent } from './followUpService.js';
+import { CommerceService, commerceService } from './commerce/CommerceService.js';
+import shopifyDraftOrderService from './integrations/shopify/shopifyDraftOrderService.js';
 
 /**
  * Calcula el precio canónico vigente de un producto (respetando promociones por fecha).
@@ -298,6 +300,8 @@ async function _syncCommercialOrderInternal(params, lockMeta = {}) {
 
   let customerAlreadyPersisted = false;
   let notificationWarning = null;
+  let createdOrder = null;
+  let draftOrderResult = null;
 
   // 1. Obtener y validar métodos de pago y políticas de envío reales del tenant
   let tenantBankAccounts = tenant.bankAccounts;
@@ -368,6 +372,143 @@ async function _syncCommercialOrderInternal(params, lockMeta = {}) {
   const triggerStages = ['PAYMENT_PENDING', 'PAYMENT_VERIFIED', 'COMPLETED'];
 
   if (triggerStages.includes(updatedState.currentStage)) {
+    // ── COMMERCE ROUTER & RESOLUTION (FASE 5B) ──
+    const commerceSvc = (prismaClient && prismaClient !== prisma)
+      ? new CommerceService(prismaClient)
+      : commerceService;
+
+    let resolvedCommerceItem = null;
+    let itemSource = 'VELION';
+    let isShopifyOrder = false;
+    let shopifyIntegration = null;
+    let externalProductId = null;
+    let externalVariantId = null;
+    let sourceSku = null;
+
+    // Mixed cart guard: Si hay múltiples items en el draft o argumentos, verificar consistencia de procedencia
+    if (Array.isArray(updatedState.items) && updatedState.items.length > 1) {
+      const sources = new Set();
+      for (const itm of updatedState.items) {
+        let itmSource = 'VELION';
+        if (itm.productId) {
+          try {
+            const p = await commerceSvc.getProduct(tenant.id, itm.productId);
+            itmSource = p?.source || (String(itm.productId).startsWith('shopify:') ? 'SHOPIFY' : 'VELION');
+          } catch {}
+        }
+        sources.add(itmSource);
+      }
+      if (sources.has('VELION') && (sources.has('SHOPIFY') || sources.has('MERGED'))) {
+        return {
+          error: 'MIXED_PROVIDER_ORDER_NOT_SUPPORTED',
+          message: 'No se permiten pedidos mixtos que combinen productos locales de Velion con productos de Shopify.',
+          state: currentCommercialState
+        };
+      }
+    }
+
+    if (updatedState.productId) {
+      try {
+        resolvedCommerceItem = await commerceSvc.getProduct(tenant.id, updatedState.productId);
+        if (resolvedCommerceItem) {
+          itemSource = resolvedCommerceItem.source || (String(updatedState.productId).startsWith('shopify:') ? 'SHOPIFY' : 'VELION');
+        } else if (String(updatedState.productId).startsWith('shopify:')) {
+          itemSource = 'SHOPIFY';
+        }
+      } catch (checkErr) {
+        if (checkErr.message === 'SHOPIFY_INTEGRATION_NOT_CONNECTED') {
+          return {
+            error: 'SHOPIFY_INTEGRATION_NOT_CONNECTED',
+            message: 'La integración con Shopify no está conectada.',
+            state: currentCommercialState
+          };
+        }
+        console.warn(`⚠️ [Order Router] Advertencia al verificar item "${updatedState.productId}":`, checkErr.message);
+      }
+    }
+
+    if (itemSource === 'SHOPIFY' || itemSource === 'MERGED') {
+      isShopifyOrder = true;
+      shopifyIntegration = await db.integration.findFirst({
+        where: { tenantId: tenant.id, provider: 'SHOPIFY' },
+        select: {
+          id: true,
+          status: true,
+          shopDomain: true,
+          externalOrderMode: true,
+          priceSource: true,
+          shopCurrencyCode: true
+        }
+      });
+
+      if (!shopifyIntegration || shopifyIntegration.status !== 'CONNECTED' || !shopifyIntegration.shopDomain) {
+        return {
+          error: 'SHOPIFY_INTEGRATION_NOT_CONNECTED',
+          message: 'La integración de Shopify no está activa para este tenant.',
+          state: currentCommercialState
+        };
+      }
+
+      if (shopifyIntegration.externalOrderMode === 'NONE' || !shopifyIntegration.externalOrderMode) {
+        return {
+          error: 'EXTERNAL_ORDER_DISABLED',
+          message: 'La creación de pedidos externos está deshabilitada.',
+          state: currentCommercialState
+        };
+      }
+
+      if (shopifyIntegration.externalOrderMode === 'SHOPIFY_COMPLETE') {
+        return {
+          error: 'SHOPIFY_COMPLETE_NOT_IMPLEMENTED',
+          message: 'El modo SHOPIFY_COMPLETE no está soportado en esta fase.',
+          state: currentCommercialState
+        };
+      }
+
+      if (shopifyIntegration.priceSource === 'VELION') {
+        return {
+          error: 'SHOPIFY_PRICE_OVERRIDE_CURRENCY_UNRESOLVED',
+          message: 'priceSource VELION no está permitido para pedidos Shopify en Fase 5B.',
+          state: currentCommercialState
+        };
+      }
+
+      if (!shopifyIntegration.shopCurrencyCode) {
+        return {
+          error: 'SHOPIFY_CURRENCY_UNRESOLVED',
+          message: 'Moneda de tienda Shopify no resuelta.',
+          state: currentCommercialState
+        };
+      }
+
+      if (resolvedCommerceItem) {
+        externalProductId = resolvedCommerceItem.externalProductId || null;
+        externalVariantId = resolvedCommerceItem.externalVariantId || null;
+        sourceSku = resolvedCommerceItem.sku || null;
+
+        if (!externalVariantId && resolvedCommerceItem.shopifyVariantLocalId) {
+          const vRecord = await db.externalProductVariant.findUnique({
+            where: { id: resolvedCommerceItem.shopifyVariantLocalId }
+          });
+          if (vRecord) {
+            externalVariantId = vRecord.externalVariantId;
+            externalProductId = externalProductId || vRecord.externalProductId;
+            sourceSku = sourceSku || vRecord.sku;
+          }
+        }
+        if (!externalVariantId && resolvedCommerceItem.normalizedSku) {
+          const vRecord = await db.externalProductVariant.findFirst({
+            where: { tenantId: tenant.id, provider: 'SHOPIFY', normalizedSku: resolvedCommerceItem.normalizedSku }
+          });
+          if (vRecord) {
+            externalVariantId = vRecord.externalVariantId;
+            externalProductId = externalProductId || vRecord.externalProductId;
+            sourceSku = sourceSku || vRecord.sku;
+          }
+        }
+      }
+    }
+
     const orderId = updatedState.activeOrderId;
 
     // Parsear cantidad
@@ -398,7 +539,10 @@ async function _syncCommercialOrderInternal(params, lockMeta = {}) {
         let verifiedProduct = null;
         let productPrice = 0;
 
-        if (updatedState.productId) {
+        if (isShopifyOrder && resolvedCommerceItem) {
+          verifiedProduct = resolvedCommerceItem;
+          productPrice = resolvedCommerceItem.price;
+        } else if (updatedState.productId) {
           verifiedProduct = await db.product.findFirst({
             where: {
               id: updatedState.productId,
@@ -422,7 +566,7 @@ async function _syncCommercialOrderInternal(params, lockMeta = {}) {
         const isConfirmed = Boolean(updatedState.customerConfirmed === true);
         const hasValidProduct = Boolean(verifiedProduct);
         const productType = verifiedProduct?.type || 'PHYSICAL_PRODUCT';
-        const isService = productType === 'SERVICE';
+        const isService = productType === 'SERVICE' && !isShopifyOrder;
 
         // Determinar validez de método de pago para crear orden (Estricto Fail-Closed)
         let isPaymentValidForOrder = false;
@@ -455,8 +599,6 @@ async function _syncCommercialOrderInternal(params, lockMeta = {}) {
         if (canCreateOrder) {
           const quantity = finalQuantity;
           const total = quantity * productPrice;
-
-          let createdOrder = null;
 
           try {
             await executeTransaction(db, async (tx) => {
@@ -513,13 +655,23 @@ async function _syncCommercialOrderInternal(params, lockMeta = {}) {
                   shippingAddress: isService ? null : (updatedState.shippingAddress || null),
                   customerNeeds: updatedState.customerNeeds || null,
                   totalAmount: total,
+                  currencyCode: isShopifyOrder ? shopifyIntegration.shopCurrencyCode : (tenant.currencyCode || 'PEN'),
+                  externalProvider: isShopifyOrder ? 'SHOPIFY' : null,
+                  externalSyncStatus: isShopifyOrder ? 'NOT_STARTED' : null,
+                  externalSyncAttempts: 0,
                   items: {
                     create: [{
-                      productId: verifiedProduct.id,
+                      productId: (verifiedProduct.source === 'VELION' || !verifiedProduct.source)
+                        ? verifiedProduct.id
+                        : (verifiedProduct.nativeProductId || null),
                       name: verifiedProduct.name,
                       quantity: quantity,
                       price: productPrice,
-                      variant: updatedState.variant || null
+                      variant: updatedState.variant || null,
+                      sourceProvider: isShopifyOrder ? (verifiedProduct.source || 'SHOPIFY') : 'VELION',
+                      externalProductId: isShopifyOrder ? externalProductId : null,
+                      externalVariantId: isShopifyOrder ? externalVariantId : null,
+                      sourceSku: isShopifyOrder ? sourceSku : null
                     }]
                   }
                 }
@@ -541,6 +693,8 @@ async function _syncCommercialOrderInternal(params, lockMeta = {}) {
               if (isService) {
                 const qtyNote = quantity > 1 ? ` (${quantity} personas)` : '';
                 alertMessage = `💼 SERVICIO REGISTRADO | Cliente: +${clientNumber} (${customer.name || 'Sin Nombre'}) | ${verifiedProduct.name}${qtyNote}`;
+              } else if (isShopifyOrder) {
+                alertMessage = `📦 PEDIDO SHOPIFY CREADO | Cliente: +${clientNumber} (${customer.name || 'Sin Nombre'}) | ${verifiedProduct.name} x${quantity} | ${shopifyIntegration.shopCurrencyCode} ${total}`;
               } else {
                 alertMessage = `📦 PEDIDO CREADO | Cliente: +${clientNumber} (${customer.name || 'Sin Nombre'}) | ${verifiedProduct.name} x${quantity}`;
               }
@@ -573,7 +727,30 @@ async function _syncCommercialOrderInternal(params, lockMeta = {}) {
             };
           }
 
-          // 6. Notificaciones externas POST-COMMIT (desacopladas de la transacción)
+          // 6. Despacho a Shopify Draft Order (Post-commit fuera de la transacción)
+          if (isShopifyOrder && createdOrder) {
+            try {
+              draftOrderResult = await shopifyDraftOrderService.createDraftOrderForOrder(createdOrder.id, tenant.id, {
+                prismaClient: db,
+                graphqlExecutor: params?.graphqlExecutor,
+                lockClient: params?.lockClient
+              });
+              if (draftOrderResult?.invoiceUrl) {
+                updatedState.externalCheckoutUrl = draftOrderResult.invoiceUrl;
+              }
+            } catch (draftErr) {
+              console.warn(`⚠️ [Order Commercial] createDraftOrderForOrder falló para orden ${createdOrder.id}:`, draftErr.message);
+              if (['SHOPIFY_INTEGRATION_NOT_CONNECTED', 'EXTERNAL_ORDER_DISABLED', 'SHOPIFY_COMPLETE_NOT_IMPLEMENTED', 'SHOPIFY_PRICE_OVERRIDE_CURRENCY_UNRESOLVED', 'SHOPIFY_CURRENCY_UNRESOLVED'].includes(draftErr.code)) {
+                return {
+                  error: draftErr.code,
+                  message: draftErr.message,
+                  state: currentCommercialState
+                };
+              }
+            }
+          }
+
+          // 7. Notificaciones externas POST-COMMIT (desacopladas de la transacción)
           if (createdOrder && !createdOrder.isExisting && typeof onNotification === 'function') {
             try {
               await onNotification({
@@ -840,6 +1017,13 @@ async function _syncCommercialOrderInternal(params, lockMeta = {}) {
   }
 
   const result = { success: true, state: updatedState };
+  if (createdOrder) {
+    result.order = createdOrder;
+  }
+  if (draftOrderResult) {
+    result.draftOrder = draftOrderResult.draftOrder;
+    result.invoiceUrl = draftOrderResult.invoiceUrl || null;
+  }
   if (notificationWarning) {
     result.warning = notificationWarning;
   }

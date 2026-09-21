@@ -126,6 +126,7 @@ switch (command) {
     const tenantId = flags.tenantId;
     const email = flags.email || `${slug}.demo@velion.test`;
     const hours = parseInt(flags.hours || '48', 10);
+    const autoRenew = flags['auto-renew'] === true || flags.autoRenew === true || flags.autoRenew === 'true';
 
     if (!slug || !name || !tenantId) {
       console.error('❌ Argumentos requeridos: --slug <slug> --name <name> --tenantId <uuid>');
@@ -145,6 +146,7 @@ switch (command) {
       existing.email = email;
       existing.status = 'ACTIVE';
       existing.validityHours = hours;
+      existing.autoRenew = autoRenew !== undefined ? autoRenew : (existing.autoRenew || false);
       existing.expiresAt = expiresAt;
       console.log(`ℹ️ Comprador existente actualizado en registro: "${name}" (${slug})`);
     } else {
@@ -157,6 +159,7 @@ switch (command) {
         status: 'ACTIVE',
         createdAt: now.toISOString(),
         validityHours: hours,
+        autoRenew: autoRenew || false,
         expiresAt
       });
       console.log(`✅ Comprador añadido exitosamente a registro: "${name}" (${slug})`);
@@ -192,21 +195,29 @@ switch (command) {
   case 'check-expiration': {
     const registry = loadRegistry();
     const now = new Date();
-    let updatedCount = 0;
+    let renewedCount = 0;
+    let expiredCount = 0;
 
     (registry.buyers || []).forEach(b => {
       if (b.status === 'ACTIVE' && b.expiresAt) {
         if (new Date(b.expiresAt) < now) {
-          b.status = 'EXPIRED';
-          updatedCount++;
-          console.log(`⚠️ Demo expirada detectada: "${b.name}" (${b.slug}) expiró el ${b.expiresAt}`);
+          if (b.autoRenew) {
+            const extendHours = b.validityHours || 720;
+            b.expiresAt = new Date(now.getTime() + extendHours * 60 * 60 * 1000).toISOString();
+            renewedCount++;
+            console.log(`🔄 Demo auto-renovada por ${extendHours}h (${Math.round(extendHours / 24)} días): "${b.name}" (${b.slug}) nueva vigencia hasta ${b.expiresAt}`);
+          } else {
+            b.status = 'EXPIRED';
+            expiredCount++;
+            console.log(`⚠️ Demo expirada detectada: "${b.name}" (${b.slug}) expiró el ${b.expiresAt}`);
+          }
         }
       }
     });
 
-    if (updatedCount > 0) {
+    if (renewedCount > 0 || expiredCount > 0) {
       saveRegistry(registry);
-      console.log(`✅ Registro actualizado: ${updatedCount} demo(s) marcadas como EXPIRED.`);
+      console.log(`✅ Registro actualizado: ${renewedCount} renovada(s), ${expiredCount} expirada(s).`);
     } else {
       console.log('✅ Todas las demos activas se encuentran dentro de su ventana de vigencia.');
     }

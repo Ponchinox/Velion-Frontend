@@ -11,6 +11,7 @@ import {
   downloadMetaMedia,
 } from '../services/whatsappGateway.js';
 import { getCompactCatalogIndex } from '../services/catalogCacheService.js';
+import { commerceService } from '../services/commerce/CommerceService.js';
 import { evaluateAiBudgetGuard } from '../services/aiBudgetGuardService.js';
 import {
   markMessageAsSentByAi as _trackerMarkAi,
@@ -1149,7 +1150,7 @@ export async function connectDevice(req, res) {
   const instanceName = existingConn?.instanceName || getEvoInstanceName(tenantId);
   const evoUrl = process.env.EVOLUTION_API_URL || 'http://localhost:8080';
 
-  const baseUrl = process.env.APP_URL || 'https://185.163.116.210';
+  const baseUrl = process.env.APP_URL || 'http://localhost:3000';
   const rawWebhookUrl = process.env.WEBHOOK_URL || `${baseUrl.replace(/\/$/, '')}/api/whatsapp/webhook`;
   const cleanApiKey = (process.env.EVOLUTION_API_KEY || '').trim();
   const webhookUrl = rawWebhookUrl;
@@ -2204,7 +2205,7 @@ async function _processWebhookEvent(body, isMeta, provider, io, query, headers) 
 
       // Webhook readiness verifier: re-aplica y verifica el webhook en Evolution antes de declarar READY
       const evoUrl = process.env.EVOLUTION_API_URL || 'http://localhost:8080';
-      const baseUrl = process.env.APP_URL || 'https://185.163.116.210';
+      const baseUrl = process.env.APP_URL || 'http://localhost:3000';
       const rawWebhookUrl = process.env.WEBHOOK_URL || `${baseUrl.replace(/\/$/, '')}/api/whatsapp/webhook`;
       const cleanApiKey = (process.env.EVOLUTION_API_KEY || '').trim();
       const webhookUrl = rawWebhookUrl;
@@ -4109,19 +4110,7 @@ ${catalogIndexCsv}
         console.log(`🔍 [FC] get_product_details — ID: "${productId}"`);
 
         try {
-          const product = await prisma.product.findFirst({
-            where: { 
-              id: productId,
-              user: { tenantId: tenant.id }
-            },
-            select: {
-              name: true, description: true, price: true, category: true,
-              type: true,
-              tags: true, isAvailable: true, promotionalPrice: true,
-              promoStartDate: true, promoEndDate: true,
-              imageUrl: true, images: true, videoUrl: true
-            }
-          });
+          const product = await commerceService.getProduct(tenant.id, productId);
 
           if (!product) {
             return { result: 'Producto no encontrado o no disponible en esta tienda.' };
@@ -4266,20 +4255,7 @@ Atributos/Tags: ${Array.isArray(product.tags) ? product.tags.join(', ') : ''}
 
         try {
           // Aislamiento Multi-tenant estricto: el producto DEBE pertenecer al tenant actual
-          const product = await prisma.product.findFirst({
-            where: {
-              id: productId,
-              user: { tenantId: tenant.id }
-            },
-            select: {
-              id: true,
-              name: true,
-              imageUrl: true,
-              images: true,
-              videoUrl: true,
-              type: true
-            }
-          });
+          const product = await commerceService.getProduct(tenant.id, productId);
 
           if (!product) {
             console.warn(`⚠️ [FC] send_product_media: Producto "${productId}" no encontrado o no pertenece al tenant ${tenant.id}.`);

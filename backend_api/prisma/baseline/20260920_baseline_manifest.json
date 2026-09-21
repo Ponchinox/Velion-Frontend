@@ -1,0 +1,26 @@
+{
+  "baselineVersion": "20260920",
+  "baselineSqlFile": "20260920_baseline.sql",
+  "generatedAt": "2026-09-20T19:47:00Z",
+  "throughMigration": "20260920150000_add_commerce_integrations",
+  "description": "Frozen baseline representing complete pre-Shopify-runtime schema, including Velion Core, Follow-Ups V1, and Phase 2A/2B Commerce Integrations model.",
+  "includedMigrations": [
+    "20260711011611_init_saas_schema",
+    "20260711023200_add_chats_and_flows",
+    "20260712194941_add_alert_model",
+    "20260712204940_fix_ram_storage",
+    "20260815181423_add_whatsapp_gateway_fields",
+    "20260901210339_add_ai_disabled_at",
+    "20260901210500_add_connection_state",
+    "20260902163500_add_unique_instance_name",
+    "20260904170000_add_campaign_v2_scheduling",
+    "20260905180000_add_product_type",
+    "20260906140000_add_operational_item",
+    "20260911060000_add_message_media_fields",
+    "20260911130000_add_media_group_to_message",
+    "20260912183000_add_follow_up_module_v1",
+    "20260913160000_add_delivery_lifecycle_fields",
+    "20260913210000_add_follow_up_decision_mode",
+    "20260920150000_add_commerce_integrations"
+  ]
+}

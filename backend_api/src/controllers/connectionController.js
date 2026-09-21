@@ -4,6 +4,7 @@ import { validateAndRegisterWhatsAppConnection } from '../services/antiFraudServ
 import { determineReconciliationUpdates, applyReconciliationUpdates } from '../utils/connectionSyncLogic.js';
 import { decryptText } from '../utils/cryptoUtils.js';
 import { getMetaGraphVersion } from './metaOnboardingController.js';
+import { isDemoTenant } from '../services/demoGuardService.js';
 
 /**
  * GET /api/connections/provider
@@ -118,6 +119,13 @@ export async function createMetaInstance(req, res) {
       return res.status(400).json({ error: 'El usuario no está asociado a ningún Tenant.' });
     }
 
+    // ── BLINDAJE DEMO: Impedir vinculación de cuentas reales en demo ──
+    if (isDemoTenant(tenantId)) {
+      return res.status(403).json({
+        error: 'La vinculación de números de WhatsApp reales (Meta Cloud API) está deshabilitada en cuentas de demostración públicas para proteger la infraestructura.'
+      });
+    }
+
     const {
       metaPhoneNumberId,
       metaWabaId,
@@ -133,7 +141,7 @@ export async function createMetaInstance(req, res) {
     }
 
     const evoUrl = process.env.EVOLUTION_API_URL || 'http://localhost:8080';
-    const baseUrl = process.env.APP_URL || 'https://185.163.116.210';
+    const baseUrl = process.env.APP_URL || 'http://localhost:3000';
     const rawWebhookUrl = process.env.WEBHOOK_URL || `${baseUrl.replace(/\/$/, '')}/api/whatsapp/webhook`;
     const cleanApiKey = (process.env.EVOLUTION_API_KEY || '').trim();
     const webhookUrl = rawWebhookUrl;
@@ -415,6 +423,14 @@ export async function getQrCode(req, res) {
       return res.status(400).json({ error: 'El usuario no está asociado a ningún Tenant.', message: 'El usuario no está asociado a ningún Tenant.' });
     }
 
+    // ── BLINDAJE DEMO: Impedir vinculación de cuentas reales por QR en demo ──
+    if (isDemoTenant(tenantId)) {
+      return res.status(403).json({
+        error: 'La generación de código QR para vincular WhatsApp real está deshabilitada en cuentas de demostración públicas.',
+        message: 'La generación de código QR para vincular WhatsApp real está deshabilitada en cuentas de demostración públicas.'
+      });
+    }
+
     let instanceName = req.query.instanceName;
     if (!instanceName) {
       const existingConn = await prisma.registeredWhatsAppNumber.findFirst({
@@ -445,7 +461,7 @@ export async function getQrCode(req, res) {
       // Si falla o no existe, continuamos con el flujo normal de generación de QR
     }
 
-    const baseUrl = process.env.APP_URL || 'https://185.163.116.210';
+    const baseUrl = process.env.APP_URL || 'http://localhost:3000';
     const rawWebhookUrl = process.env.WEBHOOK_URL || `${baseUrl.replace(/\/$/, '')}/api/whatsapp/webhook`;
     const cleanApiKey = (process.env.EVOLUTION_API_KEY || '').trim();
     const webhookUrl = rawWebhookUrl;

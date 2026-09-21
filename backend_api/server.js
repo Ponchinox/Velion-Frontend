@@ -24,6 +24,8 @@ import tenantDashboardRoutes from './src/routes/tenantDashboardRoutes.js';
 import planRoutes from './src/routes/planRoutes.js';
 import operationalItemRoutes from './src/routes/operationalItemRoutes.js';
 import followUpRoutes from './src/routes/followUpRoutes.js';
+import shopifyRoutes from './src/routes/shopifyRoutes.js';
+import orderRoutes from './src/routes/orderRoutes.js';
 import { initBackupScheduler } from './src/services/backupScheduler.js';
 import { initCampaignWorkerV2 } from './src/services/campaignWorkerV2.js';
 import { initFollowUpWorker } from './src/services/followUpWorker.js';
@@ -35,15 +37,21 @@ import {
   areBackgroundJobsEnabled, 
   startBackgroundJobsIfEnabled 
 } from './src/config/serverConfig.js';
+import { validateCriticalConfig } from './src/config/configValidator.js';
 
 // Cargar variables de entorno
 dotenv.config();
+
+// Validación fail-fast de seguridad crítica al iniciar
+validateCriticalConfig();
 
 const app = express();
 
 app.set('trust proxy', true);
 
+// Endpoints de comprobación en la raíz para balanceadores de carga / probes
 app.get('/ping', (req, res) => res.status(200).send('pong'));
+app.get('/health', (req, res) => res.status(200).json({ status: 'ok', service: 'velion-backend' }));
 
 // Aumentar el límite de carga a 50mb para flujos pesados con multimedia (Base64)
 app.use(express.json({
@@ -64,17 +72,48 @@ const HOST = resolveHost(process.env.HOST);
 const httpServer = createServer(app);
 
 // Configuración de orígenes permitidos (CORS & Socket.IO)
-// Incluye VPS principal, Vercel temporal (rollback/acceso público temporal) y desarrollo local
-const defaultAllowedOrigins = [
-  'https://185.163.116.210',
-  'https://velion-agent.vercel.app',
-  'http://localhost:5173',
-  'http://localhost:3000'
-];
+// Limpia IPs/dominios de prueba del desarrollador e introduce soporte para ALLOWED_ORIGINS
+function resolveAllowedOrigins(env = process.env) {
+  const localDevDefaults = [
+    'http://localhost:5173',
+    'http://localhost:3000',
+    'http://127.0.0.1:5173',
+    'http://127.0.0.1:3000'
+  ];
 
-const allowedOrigins = process.env.FRONTEND_URL 
-  ? Array.from(new Set([process.env.FRONTEND_URL, ...defaultAllowedOrigins])) 
-  : defaultAllowedOrigins;
+  const candidateOrigins = [];
+
+  if (env.ALLOWED_ORIGINS) {
+    const parsed = env.ALLOWED_ORIGINS
+      .split(',')
+      .map(o => o.trim())
+      .filter(Boolean);
+    candidateOrigins.push(...parsed);
+  }
+
+  if (env.FRONTEND_URL) {
+    candidateOrigins.push(env.FRONTEND_URL.trim());
+  }
+
+  // Filtrar orígenes válidos (evita wildcard '*' inseguro con credentials: true y valida URLs)
+  const validOrigins = candidateOrigins.filter(origin => {
+    if (!origin || origin === '*') {
+      console.warn('⚠️ [CORS] Comodín "*" o valor vacío rechazado por incompatibilidad con credentials: true');
+      return false;
+    }
+    try {
+      const parsedUrl = new URL(origin);
+      return parsedUrl.protocol === 'http:' || parsedUrl.protocol === 'https:';
+    } catch {
+      console.warn(`⚠️ [CORS] Origen inválido omitido: "${origin}"`);
+      return false;
+    }
+  });
+
+  return Array.from(new Set([...localDevDefaults, ...validOrigins]));
+}
+
+const allowedOrigins = resolveAllowedOrigins();
 
 const io = new Server(httpServer, {
   cors: {
@@ -153,6 +192,8 @@ app.use('/api/tenant/dashboard', tenantDashboardRoutes);
 app.use('/api/plans', planRoutes);
 app.use('/api/operational-items', operationalItemRoutes);
 app.use('/api/follow-ups', followUpRoutes);
+app.use('/api/integrations/shopify', shopifyRoutes);
+app.use('/api/orders', orderRoutes);
 
 // Configuración de métodos de pago para planes y facturación (público / centralizado)
 const billingConfigHandler = async (req, res) => {
@@ -274,4 +315,4 @@ if (isMainModule && process.env.NODE_ENV !== 'test') {
   });
 }
 
-export { app, httpServer, io, PORT, HOST, areBackgroundJobsEnabled };
+export { app, httpServer, io, PORT, HOST, areBackgroundJobsEnabled, resolveAllowedOrigins };

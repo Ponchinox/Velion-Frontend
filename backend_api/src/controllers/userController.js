@@ -47,6 +47,21 @@ export async function updateProfile(req, res) {
       return res.status(400).json({ error: 'El correo electrónico es un campo requerido.' });
     }
 
+    const currentUser = await prisma.user.findUnique({
+      where: { id: userId }
+    });
+
+    if (!currentUser) {
+      return res.status(404).json({ error: 'Usuario no encontrado.' });
+    }
+
+    // ── BLINDAJE DEMO: Impedir cambio de email en tenants demo ──
+    if (isDemoTenant(req.user.tenantId) && email !== currentUser.email) {
+      return res.status(403).json({
+        error: 'El correo electrónico no puede ser modificado en cuentas de demostración públicas.'
+      });
+    }
+
     // Verificar si el nuevo correo está ocupado por otro usuario
     const userWithEmail = await prisma.user.findUnique({
       where: { email }
@@ -91,6 +106,13 @@ export async function updatePassword(req, res) {
   try {
     const { userId } = req.user;
     const { currentPassword, newPassword } = req.body;
+
+    // ── BLINDAJE DEMO: Impedir cambio de password en tenants demo ──
+    if (isDemoTenant(req.user.tenantId)) {
+      return res.status(403).json({
+        error: 'La modificación de contraseña está deshabilitada en cuentas de demostración públicas para preservar el acceso de evaluación.'
+      });
+    }
 
     if (!currentPassword || !newPassword) {
       return res.status(400).json({ error: 'Debes proporcionar la contraseña actual y la nueva contraseña.' });

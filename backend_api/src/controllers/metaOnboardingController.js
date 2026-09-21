@@ -23,6 +23,7 @@
 import axios from 'axios';
 import prisma from '../db.js';
 import { encryptText } from '../utils/cryptoUtils.js';
+import { isDemoTenant } from '../services/demoGuardService.js';
 
 export function getMetaGraphVersion() {
   return process.env.META_GRAPH_API_VERSION || 'v21.0';
@@ -69,6 +70,14 @@ export async function handleMetaOnboardingCallback(req, res) {
   const tenantId = req.user?.tenantId;
   if (!tenantId) {
     return res.status(400).json({ error: 'Usuario no asociado a ningún Tenant.' });
+  }
+
+  // ── BLINDAJE DEMO: Impedir vinculación de Meta Cloud API en tenants demo ──
+  if (isDemoTenant(tenantId)) {
+    return res.status(403).json({
+      error: 'La vinculación de Meta Cloud API está deshabilitada en cuentas de demostración públicas para proteger la infraestructura.',
+      code: 'DEMO_RESTRICTED'
+    });
   }
 
   const { code, wabaId, phoneNumberId } = req.body;
@@ -307,6 +316,14 @@ export async function handleMetaLegacyConnect(req, res) {
   const tenantId = req.user?.tenantId;
   if (!tenantId) {
     return res.status(400).json({ error: 'Usuario no asociado a ningún Tenant.' });
+  }
+
+  // ── BLINDAJE DEMO: Impedir vinculación de Meta Cloud API en tenants demo ──
+  if (isDemoTenant(tenantId)) {
+    return res.status(403).json({
+      error: 'La vinculación de Meta Cloud API está deshabilitada en cuentas de demostración públicas para proteger la infraestructura.',
+      code: 'DEMO_RESTRICTED'
+    });
   }
 
   const { metaPhoneNumberId, metaWabaId, metaAccessToken, phoneNumber } = req.body;

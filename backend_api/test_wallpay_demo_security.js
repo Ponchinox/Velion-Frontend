@@ -23,10 +23,12 @@ import { sendText, sendMedia } from './src/services/whatsappGateway.js';
 import adminMiddleware from './src/middlewares/adminMiddleware.js';
 import authMiddleware from './src/middlewares/authMiddleware.js';
 import { isDemoUser } from '../src/utils/demoUtils.js';
+import { setTenantActiveMock } from './src/services/tenantGuardService.js';
 
 const TEST_JWT_SECRET = 'wallpay_test_jwt_secret_demo_guard_2026';
 process.env.JWT_SECRET = TEST_JWT_SECRET;
 process.env.NODE_ENV = 'test';
+setTenantActiveMock(() => true);
 
 // Registro de llamadas de red para verificar invariante de CERO llamadas externas
 let externalNetworkCallsCount = 0;

@@ -132,6 +132,37 @@ function apiGet(urlPath, token = null) {
   });
 }
 
+function apiPut(urlPath, payload, token = null) {
+  return new Promise((resolve, reject) => {
+    const data = JSON.stringify(payload);
+    const req = https.request({
+      hostname: host,
+      port: 443,
+      path: urlPath,
+      method: 'PUT',
+      rejectUnauthorized: false,
+      headers: {
+        'Content-Type': 'application/json',
+        'Content-Length': Buffer.byteLength(data),
+        ...(token ? { 'Authorization': `Bearer ${token}` } : {})
+      }
+    }, res => {
+      let body = '';
+      res.on('data', chunk => body += chunk);
+      res.on('end', () => {
+        try {
+          resolve({ status: res.statusCode, headers: res.headers, data: JSON.parse(body) });
+        } catch {
+          resolve({ status: res.statusCode, headers: res.headers, data: body });
+        }
+      });
+    });
+    req.on('error', reject);
+    req.write(data);
+    req.end();
+  });
+}
+
 async function runBuyerSmoke() {
   console.log('═══════════════════════════════════════════════════════════════════');
   console.log(`🛡️  SMOKE AUTOMATIZADO DE VERIFICACIÓN: ${buyerSlug.toUpperCase()}`);
@@ -261,10 +292,51 @@ async function runBuyerSmoke() {
   }
   console.log('BUYER_OUTBOUND_FAIL_CLOSED =', isOutboundFailClosed ? 'PASS' : 'FAIL');
 
+  // 11. BUYER_CAMPAIGNS
+  const campaignsRes = await apiGet('/api/campaigns', token);
+  const campaigns = Array.isArray(campaignsRes.data) ? campaignsRes.data : [];
+  const isCampaignsOk = campaignsRes.status === 200 && campaigns.length >= 1;
+  console.log('BUYER_CAMPAIGNS =', isCampaignsOk ? 'PASS' : 'FAIL');
+
+  // 12. BUYER_PASSWORD_CHANGE_BLOCKED
+  const pwdRes = await apiPut('/api/users/password', {
+    currentPassword: 'fake_attempt_password_123',
+    newPassword: 'new_fake_password_456'
+  }, token);
+  const isPasswordBlocked = (pwdRes.status === 403);
+  console.log('BUYER_PASSWORD_CHANGE_BLOCKED =', isPasswordBlocked ? 'PASS' : 'FAIL');
+
+  // 13. BUYER_EMAIL_CHANGE_BLOCKED
+  const emailRes = await apiPut('/api/users/profile', {
+    email: 'hacker_malicious_change@test.com'
+  }, token);
+  const isEmailBlocked = (emailRes.status === 403);
+  console.log('BUYER_EMAIL_CHANGE_BLOCKED =', isEmailBlocked ? 'PASS' : 'FAIL');
+
+  // 14. BUYER_QR_CONNECT_BLOCKED
+  const qrRes = await apiGet('/api/connections/qr', token);
+  const isQrBlocked = (qrRes.status === 403);
+  console.log('BUYER_QR_CONNECT_BLOCKED =', isQrBlocked ? 'PASS' : 'FAIL');
+
+  // 15. BUYER_META_CONNECT_BLOCKED
+  const metaRes = await apiPost('/api/connections/meta/connect', {
+    metaPhoneNumberId: '123456789',
+    metaWabaId: '987654321',
+    metaAccessToken: 'fake_meta_token',
+    phoneNumber: '51999999999'
+  }, token);
+  const isMetaBlocked = (metaRes.status === 403);
+  console.log('BUYER_META_CONNECT_BLOCKED =', isMetaBlocked ? 'PASS' : 'FAIL');
+
+  const allPassed = isDashboardOk && isProductsOk && isLivechatOk && isOrdersOk &&
+                    hasValidPositions && isBillingPrivate && isSuperAdminBlocked &&
+                    crossIsolated && isOutboundFailClosed && isCampaignsOk &&
+                    isPasswordBlocked && isEmailBlocked && isQrBlocked && isMetaBlocked;
+
   console.log('\n───────────────────────────────────────────────────────────────────');
   console.log('🎉 RESUMEN DE SMOKE:');
   console.log(`   Comprador: ${buyerSlug}`);
-  console.log(`   Todos los checks pasaron: ${isDashboardOk && isProductsOk && isLivechatOk && isOrdersOk && hasValidPositions && isBillingPrivate && isSuperAdminBlocked && crossIsolated && isOutboundFailClosed ? 'SÍ' : 'NO'}`);
+  console.log(`   Todos los checks pasaron (15/15): ${allPassed ? 'SÍ (PASS)' : 'NO (FAIL)'}`);
 }
 
 runBuyerSmoke().catch(err => {

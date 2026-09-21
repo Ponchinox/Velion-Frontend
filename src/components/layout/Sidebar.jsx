@@ -17,6 +17,8 @@ import {
   Lock,
   ArrowCircleUp,
   ClockCounterClockwise,
+  Receipt,
+  PlugsConnected,
   X,
 } from '@phosphor-icons/react';
 import { useAuth } from '../../context/AuthContext';
@@ -177,10 +179,12 @@ export default function Sidebar() {
       {
         category: 'GESTIÓN Y DATOS',
         items: [
-          { label: 'Contactos',  to: '/contactos',  Icon: AddressBook },
-          { label: 'Inventario', to: '/productos',  Icon: Package },
-          { label: 'Conexiones', to: '/conexiones', Icon: DeviceMobile },
-          { label: 'Ajustes',    to: '/settings',   Icon: Gear },
+          { label: 'Contactos',     to: '/contactos',     Icon: AddressBook },
+          { label: 'Productos',     to: '/productos',     Icon: Package },
+          { label: 'Pedidos',       to: '/pedidos',       Icon: Receipt },
+          { label: 'Conexiones',    to: '/conexiones',    Icon: DeviceMobile },
+          { label: 'Integraciones', to: '/integraciones', Icon: PlugsConnected },
+          { label: 'Ajustes',       to: '/settings',      Icon: Gear },
         ],
       },
     ];

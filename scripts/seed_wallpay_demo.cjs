@@ -178,7 +178,8 @@ async function runSeed() {
     }
 
     // ── 5. PRODUCTOS SINTÉTICOS IDEMPOTENTES ──
-    const baseDemoMediaUrl = `https://185.163.116.210/media/tenants/${tenant.id}/products/images`;
+    const appUrl = (process.env.APP_URL || 'http://localhost:3000').replace(/\/+$/, '');
+    const baseDemoMediaUrl = `${appUrl}/media/tenants/${tenant.id}/products/images`;
     const syntheticProducts = [
       {
         name: 'Smartwatch X1',

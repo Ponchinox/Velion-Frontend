@@ -15,7 +15,7 @@ export function resolveMediaRoot() {
 }
 
 export const MEDIA_ROOT = resolveMediaRoot();
-const APP_URL = (process.env.APP_URL || 'https://185.163.116.210').replace(/\/+$/, '');
+const APP_URL = (process.env.APP_URL || 'http://localhost:3000').replace(/\/+$/, '');
 
 // Sanitizar tenantId para prevenir path traversal
 function getSafeTenantId(tenantId) {

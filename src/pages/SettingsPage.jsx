@@ -12,7 +12,9 @@ import {
   ShieldCheck,
   ArrowLeft,
   CreditCard,
-  Lock
+  Lock,
+  Plug,
+  ArrowRight
 } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import * as settingsService from '../services/settingsService';
@@ -299,6 +301,16 @@ export default function SettingsPage() {
         desc: isDemo ? 'Plan de evaluación preconfigurado' : 'Tu plan activo, pagos y método Yape',
         bgClass: 'bg-emerald-50',
         iconClass: 'text-emerald-600'
+      },
+      {
+        id: 'integrations',
+        Icon: Plug,
+        label: 'Integraciones',
+        desc: 'Administra Shopify, WhatsApp y otras conexiones externas.',
+        bgClass: 'bg-purple-50',
+        iconClass: 'text-purple-600',
+        onClick: () => navigate('/integraciones'),
+        buttonText: 'Administrar integraciones'
       }
     ];
 
@@ -314,27 +326,43 @@ export default function SettingsPage() {
 
         {/* Bento Grid Layout */}
         <div className="w-full grid gap-6 grid-cols-[repeat(auto-fit,minmax(320px,1fr))]">
-          {GRID_ITEMS.map(({ id, Icon, label, desc, bgClass, iconClass }) => (
-            <button
+          {GRID_ITEMS.map(({ id, Icon, label, desc, bgClass, iconClass, onClick, buttonText }) => (
+            <div
               key={id}
-              onClick={() => setActiveSection(id)}
-              className="w-full h-full flex flex-col items-start p-6 text-left bg-white border border-gray-200 rounded-xl shadow-2xs hover:border-blue-500 hover:shadow-md cursor-pointer group"
+              onClick={() => onClick ? onClick() : setActiveSection(id)}
+              className="w-full h-full flex flex-col justify-between items-start p-6 text-left bg-white border border-gray-200 rounded-xl shadow-2xs hover:border-blue-500 hover:shadow-md cursor-pointer group transition-all"
             >
-              {/* Icon wrapper identical to mockup */}
-              <div className={`flex items-center justify-center w-12 h-12 rounded-xl ${bgClass} ${iconClass}`}>
-                <Icon size={22} />
+              <div className="w-full">
+                {/* Icon wrapper identical to mockup */}
+                <div className={`flex items-center justify-center w-12 h-12 rounded-xl ${bgClass} ${iconClass}`}>
+                  <Icon size={22} />
+                </div>
+
+                {/* Title */}
+                <h3 className="text-sm font-bold text-gray-900 mt-4 tracking-tight">
+                  {label}
+                </h3>
+
+                {/* Description */}
+                <p className="text-sm text-gray-500 mt-1 leading-snug">
+                  {desc}
+                </p>
               </div>
 
-              {/* Title */}
-              <h3 className="text-sm font-bold text-gray-900 mt-4 tracking-tight">
-                {label}
-              </h3>
-
-              {/* Description */}
-              <p className="text-sm text-gray-500 mt-1 leading-snug">
-                {desc}
-              </p>
-            </button>
+              {buttonText && (
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    if (onClick) onClick();
+                  }}
+                  className="mt-4 inline-flex items-center gap-1.5 text-xs font-semibold text-purple-600 hover:text-purple-700 bg-purple-50 hover:bg-purple-100 px-3 py-1.5 rounded-lg transition-colors cursor-pointer"
+                >
+                  {buttonText}
+                  <ArrowRight size={12} />
+                </button>
+              )}
+            </div>
           ))}
         </div>
 

@@ -1,0 +1,165 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "Velion Agent REST API",
+    "description": "Especificación oficial de la API de Velion Agent para procesos de Due Diligence y adquisición técnica.",
+    "version": "1.0.0"
+  },
+  "servers": [
+    {
+      "url": "https://api.tuempresa.com/api",
+      "description": "Servidor de Producción"
+    },
+    {
+      "url": "http://localhost:3000/api",
+      "description": "Servidor de Desarrollo Local"
+    }
+  ],
+  "paths": {
+    "/health": {
+      "get": {
+        "summary": "Healthcheck de Servidor y Base de Datos",
+        "responses": {
+          "200": {
+            "description": "Servidor y base de datos operativos",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": { "type": "string", "example": "ok" },
+                    "message": { "type": "string", "example": "Servidor API Operativo" },
+                    "database": { "type": "string", "example": "Conectado" },
+                    "tenants": { "type": "integer", "example": 12 }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/auth/login": {
+      "post": {
+        "summary": "Inicio de Sesión",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["email", "password"],
+                "properties": {
+                  "email": { "type": "string", "format": "email", "example": "operador@empresa.com" },
+                  "password": { "type": "string", "format": "password", "example": "PasswordSeguro123!" }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Autenticación exitosa",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "token": { "type": "string" },
+                    "user": { "type": "object" },
+                    "tenant": { "type": "object" }
+                  }
+                }
+              }
+            }
+          },
+          "401": { "description": "Credenciales inválidas" }
+        }
+      }
+    },
+    "/connections/status": {
+      "get": {
+        "summary": "Estado de la Conexión de WhatsApp del Tenant",
+        "security": [{ "BearerAuth": [] }],
+        "responses": {
+          "200": {
+            "description": "Estado retornado exitosamente",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "connected": { "type": "boolean" },
+                    "connectionState": { "type": "string", "example": "CONNECTED" },
+                    "provider": { "type": "string", "example": "EVOLUTION" },
+                    "phoneNumber": { "type": "string", "example": "51999888777" }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/chats": {
+      "get": {
+        "summary": "Listar Hilos de Conversación de LiveChat",
+        "security": [{ "BearerAuth": [] }],
+        "parameters": [
+          { "name": "search", "in": "query", "schema": { "type": "string" }, "description": "Filtrar por nombre o teléfono" },
+          { "name": "page", "in": "query", "schema": { "type": "integer", "default": 1 } },
+          { "name": "limit", "in": "query", "schema": { "type": "integer", "default": 30 } }
+        ],
+        "responses": {
+          "200": { "description": "Lista de conversaciones retornada con éxito" }
+        }
+      }
+    },
+    "/follow-ups/summary": {
+      "get": {
+        "summary": "Métricas de Desempeño de Cadencias de Seguimiento",
+        "security": [{ "BearerAuth": [] }],
+        "responses": {
+          "200": {
+            "description": "Métricas agregadas",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "activeCount": { "type": "integer", "example": 14 },
+                    "recoveredCount": { "type": "integer", "example": 38 },
+                    "attributedSalesCount": { "type": "integer", "example": 29 },
+                    "attributedSalesTotal": { "type": "number", "example": 4850.0 },
+                    "recoveryRatePercent": { "type": "number", "example": 24.5 },
+                    "followUpEnabled": { "type": "boolean", "example": true },
+                    "timezone": { "type": "string", "example": "America/Lima" }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/system-health": {
+      "get": {
+        "summary": "Diagnóstico de Salud de Infraestructura (SuperAdmin)",
+        "security": [{ "BearerAuth": [] }],
+        "responses": {
+          "200": { "description": "Estado de servicios retornado" }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "BearerAuth": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "JWT",
+        "description": "Token JWT de sesión emitido en /api/auth/login"
+      }
+    }
+  }
+}
