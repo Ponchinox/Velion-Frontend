@@ -10,7 +10,6 @@ import {
   HelpCircle,
   Key,
   ShieldCheck,
-  ArrowLeft,
   CreditCard,
   Lock,
   Plug,
@@ -22,6 +21,14 @@ import * as userService from '../services/userService';
 import { useUnsavedChanges } from '../context/UnsavedChangesContext';
 import { useAuth } from '../context/AuthContext';
 import { isDemoUser } from '../utils/demoUtils';
+import PageNavigationHeader from '../components/navigation/PageNavigationHeader';
+
+const SECTION_TITLES = {
+  admin: 'Perfil de Administrador',
+  bot: 'Cerebro del Bot (Empresa)',
+  security: 'Seguridad',
+  billing: 'Facturación & Plan',
+};
 
 export default function SettingsPage() {
   const { user, updateUser } = useAuth();
@@ -384,14 +391,16 @@ export default function SettingsPage() {
   // --- VISTA B: DETALLE DE CONFIGURACIÓN SELECCIONADA ---
   return (
     <div className="w-full h-full flex flex-col flex-1">
-      {/* Botón de Retorno */}
-      <button
-        onClick={() => setActiveSection(null)}
-        className="inline-flex items-center gap-2 text-sm font-bold text-blue-600 hover:text-blue-700 transition-colors cursor-pointer mb-6"
-      >
-        <ArrowLeft size={14} />
-        <span>Volver a Ajustes</span>
-      </button>
+      {/* ─── Navegación Unificada ───────────────────────────────────────────── */}
+      <PageNavigationHeader
+        onBack={() => setActiveSection(null)}
+        backLabel="Volver a Ajustes"
+        breadcrumbs={[
+          { label: 'Ajustes', onClick: () => setActiveSection(null) },
+          { label: SECTION_TITLES[activeSection] || 'Detalle' },
+        ]}
+        className="mb-6"
+      />
 
       {/* Contenedor del Formulario */}
       <div className="bg-white border border-gray-200 rounded-xl p-6 md:p-8 shadow-sm">

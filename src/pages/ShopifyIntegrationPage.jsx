@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { useNavigate, useSearchParams, Link } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import {
   ArrowsClockwise,
   CheckCircle,
@@ -9,12 +9,11 @@ import {
   FloppyDisk,
   ShieldCheck,
   Warning,
-  CaretRight,
-  ArrowLeft,
   Storefront,
 } from '@phosphor-icons/react';
 import * as integrationService from '../services/integrationService';
 import ConfirmModal from '../components/ui/ConfirmModal';
+import PageNavigationHeader from '../components/navigation/PageNavigationHeader';
 import shopifyLogo from '../assets/integrations/shopify.svg';
 
 export default function ShopifyIntegrationPage() {
@@ -188,21 +187,11 @@ export default function ShopifyIntegrationPage() {
         </div>
       )}
 
-      {/* ─── Breadcrumb ──────────────────────────────────────────────────────── */}
-      <nav aria-label="Breadcrumb" className="flex items-center gap-1.5 text-xs text-lo">
-        <Link to="/settings" className="hover:text-hi transition-colors font-medium">
-          Ajustes
-        </Link>
-        <CaretRight size={12} className="text-muted" />
-        <Link to="/integraciones" className="hover:text-hi transition-colors font-medium">
-          Integraciones
-        </Link>
-        <CaretRight size={12} className="text-muted" />
-        <span className="text-hi font-semibold">Shopify</span>
-      </nav>
+      {/* ─── Navegación Unificada ───────────────────────────────────────────── */}
+      <PageNavigationHeader />
 
       {/* ─── Header ─────────────────────────────────────────────────────────── */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-line pb-5">
+      <div className="flex items-center justify-between gap-4 border-b border-line pb-5">
         <div className="flex items-center gap-4">
           <div className="w-14 h-14 rounded-2xl bg-emerald-50/60 border border-emerald-100 p-2.5 flex items-center justify-center shrink-0">
             <img src={shopifyLogo} alt="Shopify Logo" className="w-full h-full object-contain" />
@@ -230,14 +219,6 @@ export default function ShopifyIntegrationPage() {
             </p>
           </div>
         </div>
-
-        <button
-          onClick={() => navigate('/integraciones')}
-          className="inline-flex items-center gap-2 px-3.5 py-2 rounded-xl bg-app hover:bg-card border border-line text-xs font-semibold text-hi transition-colors cursor-pointer self-start sm:self-auto"
-        >
-          <ArrowLeft size={14} />
-          Volver a Integraciones
-        </button>
       </div>
 
       {/* ─── Contenido Principal ────────────────────────────────────────────── */}

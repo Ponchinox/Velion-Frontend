@@ -4,6 +4,7 @@ import { useAuth } from '../context/AuthContext';
 import { apiClient } from '../services/api';
 import { Cardholder, Check, Sparkle, WarningCircle, CircleNotch, X, Copy, QrCode, ArrowSquareOut } from '@phosphor-icons/react';
 import { isDemoUser } from '../utils/demoUtils';
+import PageNavigationHeader from '../components/navigation/PageNavigationHeader';
 
 export default function BillingPage() {
   const { user } = useAuth();
@@ -22,7 +23,10 @@ export default function BillingPage() {
 
   if (isDemo) {
     return (
-      <div className="space-y-8 max-w-4xl mx-auto p-4 sm:p-6 lg:p-8">
+      <div className="space-y-6 max-w-4xl mx-auto p-4 sm:p-6 lg:p-8">
+        {/* ─── Navegación Unificada ───────────────────────────────────────────── */}
+        <PageNavigationHeader />
+
         {/* Header */}
         <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4 border-b border-line pb-6">
           <div>
@@ -113,7 +117,10 @@ export default function BillingPage() {
   };
 
   return (
-    <div className="space-y-8 max-w-6xl mx-auto p-4 sm:p-6 lg:p-8">
+    <div className="space-y-6 max-w-6xl mx-auto p-4 sm:p-6 lg:p-8">
+      {/* ─── Navegación Unificada ───────────────────────────────────────────── */}
+      <PageNavigationHeader />
+
       {/* Header */}
       <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4 border-b border-line pb-6">
         <div>

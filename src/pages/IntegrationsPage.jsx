@@ -1,8 +1,7 @@
 import React, { useState, useEffect } from 'react';
-import { useNavigate, Link } from 'react-router-dom';
+import { useNavigate } from 'react-router-dom';
 import {
   CheckCircle,
-  CaretRight,
   ArrowRight,
   Lock,
   CirclesThreePlus,
@@ -11,6 +10,7 @@ import {
   ArrowSquareOut,
 } from '@phosphor-icons/react';
 import * as integrationService from '../services/integrationService';
+import PageNavigationHeader from '../components/navigation/PageNavigationHeader';
 import shopifyLogo from '../assets/integrations/shopify.svg';
 
 export default function IntegrationsPage() {
@@ -42,14 +42,8 @@ export default function IntegrationsPage() {
 
   return (
     <div className="w-full flex flex-col space-y-6 animate-in fade-in duration-200">
-      {/* ─── Breadcrumb ──────────────────────────────────────────────────────── */}
-      <nav aria-label="Breadcrumb" className="flex items-center gap-1.5 text-xs text-lo">
-        <Link to="/settings" className="hover:text-hi transition-colors font-medium">
-          Ajustes
-        </Link>
-        <CaretRight size={12} className="text-muted" />
-        <span className="text-hi font-semibold">Integraciones</span>
-      </nav>
+      {/* ─── Navegación Unificada ───────────────────────────────────────────── */}
+      <PageNavigationHeader />
 
       {/* ─── Header ─────────────────────────────────────────────────────────── */}
       <div>

@@ -143,6 +143,7 @@ const router = createBrowserRouter(
         <Route path="billing"         element={<BillingPage />} />
 
         <Route path="settings"   element={<SettingsPage />} />
+        <Route path="ajustes"    element={<Navigate to="/settings" replace />} />
       </Route>
 
       {/* Fallback */}
