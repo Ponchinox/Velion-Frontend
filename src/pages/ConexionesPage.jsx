@@ -879,7 +879,7 @@ export default function ConexionesPage() {
           }`}>
             <p className="text-xs font-bold flex items-center gap-1.5">
               {conn.connectionState === 'DISCONNECTED' ? (
-                <><CheckCircle size={16} weight="fill" className="text-red-500" /> Requiere Reconexión</>
+                <><WarningCircle size={16} weight="fill" className="text-red-500" /> Requiere Reconexión</>
               ) : (
                 <><CheckCircle size={16} weight="fill" /> {isMeta ? 'Conectado vía Meta Cloud API Oficial' : 'WhatsApp vinculado exitosamente - Bot Activo'}</>
               )}
@@ -895,7 +895,9 @@ export default function ConexionesPage() {
 
           {conn.phoneNumber && (
             <div className="flex items-center justify-between text-xs py-1 border-t border-line">
-              <span className="text-lo font-medium">Número conectado:</span>
+              <span className="text-lo font-medium">
+                {conn.connectionState === 'DISCONNECTED' ? 'Último número vinculado:' : 'Número conectado:'}
+              </span>
               <span className="font-mono font-bold text-hi">+{conn.phoneNumber}</span>
             </div>
           )}

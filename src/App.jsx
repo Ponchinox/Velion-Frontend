@@ -25,6 +25,7 @@ import SeguimientosPage from './pages/SeguimientosPage';
 import TenantDashboardPage from './pages/TenantDashboardPage';
 import PlanSelectionPage from './pages/PlanSelectionPage';
 import IntegrationsPage from './pages/IntegrationsPage';
+import ShopifyIntegrationPage from './pages/ShopifyIntegrationPage';
 import OrdersPage from './pages/OrdersPage';
 import { UnsavedChangesProvider } from './context/UnsavedChangesContext';
 import RouteErrorBoundary from './components/RouteErrorBoundary';
@@ -133,9 +134,10 @@ const router = createBrowserRouter(
           }
           errorElement={<RouteErrorBoundary />}
         />
-        <Route path="productos"       element={<Products />} />
-        <Route path="pedidos"         element={<OrdersPage />} />
-        <Route path="integraciones"   element={<IntegrationsPage />} />
+        <Route path="productos"               element={<Products />} />
+        <Route path="pedidos"                 element={<OrdersPage />} />
+        <Route path="integraciones"           element={<IntegrationsPage />} />
+        <Route path="integraciones/shopify"   element={<ShopifyIntegrationPage />} />
 
         {/* Billing es ahora una sub-vista dentro de Settings */}
         <Route path="billing"         element={<BillingPage />} />

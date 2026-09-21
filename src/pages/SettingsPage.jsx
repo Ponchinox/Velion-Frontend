@@ -306,7 +306,7 @@ export default function SettingsPage() {
         id: 'integrations',
         Icon: Plug,
         label: 'Integraciones',
-        desc: 'Administra Shopify, WhatsApp y otras conexiones externas.',
+        desc: 'Conecta Shopify y otras plataformas de comercio externas.',
         bgClass: 'bg-purple-50',
         iconClass: 'text-purple-600',
         onClick: () => navigate('/integraciones'),
