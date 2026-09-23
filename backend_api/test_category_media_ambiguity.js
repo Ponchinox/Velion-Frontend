@@ -471,7 +471,7 @@ async function runAllTests() {
       userMessageText,
       env.tenantAvailableProducts,
       'prod-jbl-1',
-      { isExplicitMedia: true }
+      { isExplicitMedia: true, lastConsultedProductId: 'prod-jbl-1', confirmedProductId: 'prod-jbl-1' }
     );
 
     assert.ok(targetProduct, 'Debe resolver el producto JBL');

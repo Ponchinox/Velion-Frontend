@@ -6,7 +6,9 @@ const STOP_WORDS = new Set([
   'del', 'al', 'es', 'son', 'cuanto', 'cuesta', 'cuestan', 'vale', 'valen',
   'precio', 'precios', 'tienes', 'tienen', 'hay', 'vendes', 'venden',
   'stock', 'disponible', 'disponibles', 'me', 'interesa', 'quiero', 'quisiera',
-  'buenas', 'tardes', 'dias', 'noches', 'hola', 'favor', 'pf', 'porfavor'
+  'buenas', 'tardes', 'dias', 'noches', 'hola', 'favor', 'pf', 'porfavor',
+  'su', 'sus', 'mi', 'mis', 'tu', 'tus', 'vi', 'vio', 'visto',
+  'producto', 'productos', 'articulo', 'articulos', 'item', 'items', 'tienda'
 ]);
 
 // Patrón estructural de contexto de soporte, reclamo, falla o postventa
@@ -48,6 +50,44 @@ export function isNegativeProductIntent(text) {
 }
 
 /**
+ * Detecta si el mensaje hace referencia a un producto de forma genérica o indeterminada
+ * (ej. "un producto", "el producto", "un modelo", "de un producto que me interesa").
+ */
+export function isGenericProductReference(text) {
+  if (!text || typeof text !== 'string') return false;
+  const normalized = normalizeText(text);
+  const genericPatterns = [
+    /\b(?:de\s+)?un\s+producto(?:\s+que\s+me\s+(?:ha\s+)?interes(?:a|ado))?\b/,
+    /\bdel\s+producto\b/,
+    /\bde\s+algun\s+producto\b/,
+    /\bel\s+producto\b/,
+    /\bun\s+articulo\b/,
+    /\bdel\s+articulo\b/,
+    /\bun\s+modelo\b/,
+    /\bde\s+un\s+modelo\b/
+  ];
+  return genericPatterns.some(p => p.test(normalized));
+}
+
+/**
+ * Detecta si el usuario corrige, refuta o desmiente haber mencionado o seleccionado un producto
+ * (ej. "Pero no te he mencionado el producto", "no te he dicho qué producto").
+ */
+export function isUserProductDisavowal(text) {
+  if (!text || typeof text !== 'string') return false;
+  const normalized = normalizeText(text);
+  const patterns = [
+    /\bno\s+(?:te\s+)?(?:he\s+)?(?:mencionado|dicho|especificado|indicado)\s+(?:el|ningun|que)\s+producto\b/,
+    /\bno\s+(?:te\s+)?(?:dije|mencione|especifique|indique)\s+(?:el|ningun|que)\s+producto\b/,
+    /\b(?:pero\s+)?no\s+(?:te\s+)?(?:he\s+)?(?:dicho|mencionado)\s+(?:que\s+producto|el\s+producto|ningun\s+producto)\b/,
+    /\b(?:no\s+es|ese\s+no\s+es|aquel\s+no\s+es)\s+(?:el|ese)?\s*producto\b/,
+    /\bquien\s+dijo\s+(?:que\s+era\s+ese|ese\s+producto)\b/,
+    /\b(?:aún|aun|todavia)\s+no\s+(?:te\s+)?(?:digo|he\s+dicho|menciono|he\s+mencionado)\b/
+  ];
+  return patterns.some(rgx => rgx.test(normalized));
+}
+
+/**
  * Tokens de acciones o términos genéricos que NO identifican un producto específico
  */
 const MEDIA_ACTION_TOKENS = new Set([
@@ -56,7 +96,8 @@ const MEDIA_ACTION_TOKENS = new Set([
   'pasame', 'ensename', 'comparteme', 'comparte', 'catalogo',
   'opciones', 'modelos', 'variedades', 'tienes', 'tienen', 'hay',
   'vendes', 'venden', 'quiero', 'quisiera', 'mas', 'otra', 'unas', 'unos',
-  'aver', 'haber', 'buenas', 'hola', 'favor', 'porfavor'
+  'aver', 'haber', 'buenas', 'hola', 'favor', 'porfavor',
+  'mandas', 'envias', 'pasas', 'compartes', 'mandar', 'enviar', 'pasar', 'compartir', 'mostrar', 'ensenar'
 ]);
 
 /**
@@ -68,6 +109,25 @@ export function extractSignificantTokens(text) {
   return normalized
     .split(' ')
     .filter(token => token.length > 1 && !STOP_WORDS.has(token));
+}
+
+/**
+ * Raíz o lema simplificado para mitigar plurales (smartwatches -> smartwatch, relojes -> reloj, etc.)
+ */
+export function stemToken(w) {
+  if (!w || typeof w !== 'string') return '';
+  return w.length > 3 ? w.replace(/e?s$/, '') : w;
+}
+
+/**
+ * Compara dos tokens considerando coincidencia exacta o equivalencia de plurales
+ */
+export function tokensMatch(t1, t2) {
+  if (!t1 || !t2) return false;
+  if (t1 === t2) return true;
+  const s1 = stemToken(t1);
+  const s2 = stemToken(t2);
+  return s1 === s2;
 }
 
 /**
@@ -99,11 +159,19 @@ export function detectCategoryOrMultiProductQuery(userMessageText, availableProd
     const prodNameNorm = normalizeText(product.name);
     const prodCatNorm = product.category ? normalizeText(product.category) : '';
     const prodTagsNorm = Array.isArray(product.tags) ? product.tags.map(t => normalizeText(t)).join(' ') : '';
-    const prodTokens = new Set(extractSignificantTokens(product.name));
+    const prodTokens = extractSignificantTokens(product.name);
+    const prodCatTokens = product.category ? extractSignificantTokens(product.category) : [];
+    const prodTagTokens = Array.isArray(product.tags) ? product.tags.flatMap(t => extractSignificantTokens(t)) : [];
 
-    const matchesName = searchTokens.some(st => prodTokens.has(st) || prodNameNorm.includes(st));
-    const matchesCategory = prodCatNorm && searchTokens.some(st => prodCatNorm.includes(st));
-    const matchesTags = prodTagsNorm && searchTokens.some(st => prodTagsNorm.includes(st));
+    const matchesName = searchTokens.some(st =>
+      prodTokens.some(pt => tokensMatch(st, pt)) || (st.length > 3 && prodNameNorm.includes(st))
+    );
+    const matchesCategory = searchTokens.some(st =>
+      prodCatTokens.some(ct => tokensMatch(st, ct)) || (st.length > 3 && prodCatNorm && prodCatNorm.includes(st))
+    );
+    const matchesTags = searchTokens.some(st =>
+      prodTagTokens.some(tt => tokensMatch(st, tt)) || (st.length > 3 && prodTagsNorm && prodTagsNorm.includes(st))
+    );
 
     if (matchesName || matchesCategory || matchesTags) {
       matchedCandidates.push(product);
@@ -190,9 +258,14 @@ export function resolveTargetProduct(
   userMessageText,
   availableProducts = [],
   currentProductId = null,
-  { isExplicitMedia = false, lastConsultedProductId = null } = {}
+  { isExplicitMedia = false, lastConsultedProductId = null, isProductConfirmed = false, confirmedProductId = null } = {}
 ) {
   if (!Array.isArray(availableProducts) || availableProducts.length === 0) {
+    return null;
+  }
+
+  // GUARD DE DESMENTIDO: Si el usuario expresa que no ha mencionado o que no es ese producto, nunca resolver
+  if (isUserProductDisavowal(userMessageText)) {
     return null;
   }
 
@@ -214,15 +287,15 @@ export function resolveTargetProduct(
     }
 
     // Coincidencia por todos los tokens significativos del producto presentes en el mensaje
-    if (prodTokens.length > 0 && prodTokens.every(t => userTokens.has(t))) {
+    if (prodTokens.length > 0 && prodTokens.every(t => Array.from(userTokens).some(ut => tokensMatch(ut, t)))) {
       matchedProducts.push(product);
       continue;
     }
 
-    // Si el nombre del producto contiene al menos 2 tokens significativos y el usuario tiene al menos el 80% de ellos
+    // Si el nombre del producto contiene al menos 2 tokens significativos y el usuario tiene al menos el 50% de ellos
     if (prodTokens.length >= 2) {
-      const matchCount = prodTokens.filter(t => userTokens.has(t)).length;
-      if (matchCount / prodTokens.length >= 0.8) {
+      const matchCount = prodTokens.filter(t => Array.from(userTokens).some(ut => tokensMatch(ut, t))).length;
+      if (matchCount >= 2 && (matchCount / prodTokens.length >= 0.5)) {
         matchedProducts.push(product);
         continue;
       }
@@ -249,7 +322,7 @@ export function resolveTargetProduct(
 
     // Si la desambiguación arrojó exactamente un producto no negado / preferido
     if (nonNegatedProducts.length === 1) {
-      return nonNegatedProducts[0];
+      return { ...nonNegatedProducts[0], _isConfirmed: true };
     }
 
     // Si sigue habiendo ambigüedad: fail-closed explícito (NUNCA caer a producto viejo)
@@ -271,13 +344,24 @@ export function resolveTargetProduct(
 
     if (isSingleNegated) {
       // Producto explícitamente rechazado por el usuario
-      return { ...singleProduct, _isRejected: true };
+      return { ...singleProduct, _isRejected: true, _isConfirmed: false };
     }
 
-    return singleProduct;
+    // El usuario mencionó explícitamente este producto de forma unívoca en su mensaje
+    return { ...singleProduct, _isConfirmed: true };
   }
 
   // ── CASO C: Ningún producto individual alcanzó coincidencia unívoca en el texto actual ──
+  // Precaution 2: Una referencia genérica como "el producto", "del producto", "este producto", "ese producto", "un producto"
+  // SÍ debe reutilizar contexto cuando exista confirmedProductId válido (o isProductConfirmed === true).
+  // Pero si NO existe un producto confirmado por el usuario, PROHIBIDO asumir o reusar y PROHIBIDO interpretar como categoría.
+  const isGeneric = isGenericProductReference(userMessageText);
+  const effectiveConfirmedId = confirmedProductId || (isProductConfirmed ? (lastConsultedProductId || currentProductId) : null);
+
+  if (isGeneric && !effectiveConfirmedId) {
+    return null;
+  }
+
   // GUARD DE CATEGORÍA: Si el usuario consultó por una categoría o grupo con múltiples candidatos,
   // PROHIBIDO hacer fallback a un producto stale previo.
   const categoryCheck = detectCategoryOrMultiProductQuery(userMessageText, availableProducts);
@@ -289,22 +373,31 @@ export function resolveTargetProduct(
     };
   }
 
-  // REGLA DE LATEST INTENT: Solo recurrir a contexto previo si el usuario solicitó explícitamente multimedia
-  // para el producto en contexto (ej. "¿Tienes foto?", "Muéstrame video", "Fotos") y NO hay ambigüedad de categoría.
+  // REGLA DE CONTEXTO: Solo recurrir a contexto previo si el usuario solicitó explícitamente multimedia.
+  // Para referencias GENÉRICAS ("un producto que me interesa"), exigimos confirmedProductId (guardia de arriba).
+  // Para solicitudes elípticas NO genéricas ("Fotos", "Video", "muéstrame"), lastConsultedProductId es suficiente.
   if (isExplicitMedia) {
-    // 1. Preferir lastConsultedProductId válido/canónico del tenant
-    if (lastConsultedProductId) {
-      const consulted = availableProducts.find(p => p.id === lastConsultedProductId);
-      if (consulted) {
-        return consulted;
+    // 1. Prioridad: confirmedProductId explícito
+    if (effectiveConfirmedId) {
+      const confirmed = availableProducts.find(p => p.id === effectiveConfirmedId);
+      if (confirmed) {
+        return { ...confirmed, _isConfirmed: true };
       }
     }
 
-    // 2. Fallback a currentProductId (producto seleccionado/confirmado en commercialState)
-    if (currentProductId) {
+    // 2. Fallback: lastConsultedProductId (solo si la solicitud NO es genérica)
+    if (!isGeneric && lastConsultedProductId) {
+      const consulted = availableProducts.find(p => p.id === lastConsultedProductId);
+      if (consulted) {
+        return { ...consulted, _isConfirmed: false };
+      }
+    }
+
+    // 3. Fallback final: currentProductId (solo si no es genérica)
+    if (!isGeneric && currentProductId) {
       const existing = availableProducts.find(p => p.id === currentProductId);
       if (existing) {
-        return existing;
+        return { ...existing, _isConfirmed: false };
       }
     }
   }
@@ -313,34 +406,107 @@ export function resolveTargetProduct(
 }
 
 /**
+ * Fuente canónica y determinista de disponibilidad de medios de un producto.
+ * Normaliza todas las fuentes reales de multimedia del modelo Product (imageUrl, images, videoUrl, videos)
+ * y retorna listas deduplicadas y flags de disponibilidad verificadas.
+ *
+ * @param {object} product
+ * @returns {{ images: Array<string>, videos: Array<string>, hasImage: boolean, hasVideo: boolean }}
+ */
+export function getCanonicalProductMedia(product) {
+  if (!product || typeof product !== 'object') {
+    return {
+      images: [],
+      videos: [],
+      hasImage: false,
+      hasVideo: false
+    };
+  }
+
+  // 1. Extraer y normalizar todas las fuentes potenciales de imágenes
+  const rawImages = [];
+  if (product.imageUrl) rawImages.push(product.imageUrl);
+  if (Array.isArray(product.images)) {
+    rawImages.push(...product.images);
+  } else if (typeof product.images === 'string') {
+    const trimmed = product.images.trim();
+    if (trimmed.startsWith('[') && trimmed.endsWith(']')) {
+      try {
+        const parsed = JSON.parse(trimmed);
+        if (Array.isArray(parsed)) rawImages.push(...parsed);
+      } catch {}
+    } else if (trimmed.includes(',')) {
+      rawImages.push(...trimmed.split(',').map(s => s.trim()));
+    } else if (trimmed) {
+      rawImages.push(trimmed);
+    }
+  }
+
+  const seenImages = new Set();
+  const canonicalImages = [];
+  for (const item of rawImages) {
+    if (!item || typeof item !== 'string') continue;
+    const clean = item.trim();
+    if (clean === '' || clean.toLowerCase() === 'sin imagen') continue;
+    if (!clean.startsWith('http://') && !clean.startsWith('https://')) continue;
+    if (!seenImages.has(clean)) {
+      seenImages.add(clean);
+      canonicalImages.push(clean);
+    }
+  }
+
+  // 2. Extraer y normalizar todas las fuentes potenciales de videos
+  const rawVideos = [];
+  if (product.videoUrl) rawVideos.push(product.videoUrl);
+  if (Array.isArray(product.videos)) {
+    rawVideos.push(...product.videos);
+  } else if (typeof product.videos === 'string') {
+    const trimmed = product.videos.trim();
+    if (trimmed.startsWith('[') && trimmed.endsWith(']')) {
+      try {
+        const parsed = JSON.parse(trimmed);
+        if (Array.isArray(parsed)) rawVideos.push(...parsed);
+      } catch {}
+    } else if (trimmed.includes(',')) {
+      rawVideos.push(...trimmed.split(',').map(s => s.trim()));
+    } else if (trimmed) {
+      rawVideos.push(trimmed);
+    }
+  }
+  if (Array.isArray(product.videoUrls)) {
+    rawVideos.push(...product.videoUrls);
+  }
+
+  const seenVideos = new Set();
+  const canonicalVideos = [];
+  for (const item of rawVideos) {
+    if (!item || typeof item !== 'string') continue;
+    const clean = item.trim();
+    if (clean === '' || clean.toLowerCase() === 'sin video') continue;
+    if (!clean.startsWith('http://') && !clean.startsWith('https://')) continue;
+    if (!seenVideos.has(clean)) {
+      seenVideos.add(clean);
+      canonicalVideos.push(clean);
+    }
+  }
+
+  return {
+    images: canonicalImages,
+    videos: canonicalVideos,
+    hasImage: canonicalImages.length > 0,
+    hasVideo: canonicalVideos.length > 0
+  };
+}
+
+/**
  * Construye la lista canónica, deduplicada y ordenada de imágenes de un producto.
- * Preserva product.imageUrl como índice 0 (portada) si es válida.
+ * Preserva compatibilidad delegando en getCanonicalProductMedia.
  *
  * @param {object} product
  * @returns {Array<string>} URLs válidas y deduplicadas
  */
 export function getCanonicalProductImages(product) {
-  if (!product) return [];
-  const rawList = [
-    product.imageUrl,
-    ...(Array.isArray(product.images) ? product.images : [])
-  ];
-
-  const seen = new Set();
-  const canonical = [];
-
-  for (const item of rawList) {
-    if (!item || typeof item !== 'string') continue;
-    const trimmed = item.trim();
-    if (trimmed === '' || trimmed.toLowerCase() === 'sin imagen') continue;
-    if (!trimmed.startsWith('http://') && !trimmed.startsWith('https://')) continue;
-    if (!seen.has(trimmed)) {
-      seen.add(trimmed);
-      canonical.push(trimmed);
-    }
-  }
-
-  return canonical;
+  return getCanonicalProductMedia(product).images;
 }
 
 /**
@@ -494,26 +660,20 @@ export function getNextUnseenProductImage(product, productMediaState = {}) {
  * Obtiene la URL canónica de video de un producto si existe
  */
 export function getCanonicalProductVideoUrl(product) {
-  if (!product) return null;
-  if (product.videoUrl && typeof product.videoUrl === 'string') {
-    const trimmed = product.videoUrl.trim();
-    if (trimmed !== '' && trimmed !== 'Sin video' && trimmed.startsWith('http')) {
-      return trimmed;
-    }
-  }
-  return null;
+  const videos = getCanonicalProductMedia(product).videos;
+  return videos.length > 0 ? videos[0] : null;
 }
 
 /**
  * Orquestador principal de multimedia de producto.
- * Decide de forma determinista si se debe despachar una imagen o video para el turno actual.
+ * Decide de forma determinista si se debe despachar una imagen, video o ambos para el turno actual.
  *
  * @param {object} params
  * @param {string} params.userMessageText - Mensaje actual del cliente
  * @param {Array<object>} params.availableProducts - Catálogo activo del tenant
  * @param {object|null} params.currentCommercialState - Estado comercial actual
  * @param {Array<string>} [params.sentMediaProductIds=[]] - IDs de productos cuya imagen ya fue enviada
- * @returns {object} { shouldDispatch, targetProduct, mediaType, url, isExplicit, reason }
+ * @returns {object} { shouldDispatch, targetProduct, mediaType, url, urls, mediaItems, isExplicit, reason }
  */
 export function orchestrateProductMedia({
   userMessageText,
@@ -523,13 +683,18 @@ export function orchestrateProductMedia({
 }) {
   const currentProductId = currentCommercialState?.productId || null;
   const lastConsultedProductId = currentCommercialState?.lastConsultedProductId || null;
+  const isProductConfirmed = Boolean(currentCommercialState?.isProductConfirmed);
+  const confirmedProductId = currentCommercialState?.confirmedProductId || null;
+
   const isExplicitVideo = isExplicitProductVideoIntent(userMessageText);
   const isExplicitPhoto = isExplicitProductPhotoIntent(userMessageText);
   const isExplicitMedia = isExplicitVideo || isExplicitPhoto;
 
   const targetProduct = resolveTargetProduct(userMessageText, availableProducts, currentProductId, {
     isExplicitMedia,
-    lastConsultedProductId
+    lastConsultedProductId,
+    isProductConfirmed,
+    confirmedProductId
   });
 
   if (!targetProduct) {
@@ -538,8 +703,11 @@ export function orchestrateProductMedia({
       targetProduct: null,
       mediaType: null,
       url: null,
-      isExplicit: false,
-      reason: 'NO_TARGET_PRODUCT_RESOLVED'
+      urls: [],
+      mediaItems: [],
+      isExplicit: Boolean(isExplicitMedia),
+      needsClarification: Boolean(isExplicitMedia),
+      reason: isExplicitMedia ? 'PRODUCT_CLARIFICATION_REQUIRED' : 'NO_TARGET_PRODUCT_RESOLVED'
     };
   }
 
@@ -550,6 +718,8 @@ export function orchestrateProductMedia({
       targetProduct: null,
       mediaType: null,
       url: null,
+      urls: [],
+      mediaItems: [],
       isExplicit: Boolean(isExplicitMedia),
       isAmbiguous: true,
       candidateCount: targetProduct.candidateProducts?.length || 0,
@@ -565,6 +735,8 @@ export function orchestrateProductMedia({
       targetProduct,
       mediaType: null,
       url: null,
+      urls: [],
+      mediaItems: [],
       isExplicit: false,
       reason: 'NEGATIVE_PRODUCT_INTENT'
     };
@@ -578,20 +750,91 @@ export function orchestrateProductMedia({
       targetProduct,
       mediaType: null,
       url: null,
+      urls: [],
+      mediaItems: [],
       isExplicit: false,
       reason: 'SUPPORT_OR_POST_SALE_CONTEXT'
     };
   }
 
-  // ── CASO 1: VIDEO (ESTRICTAMENTE EXPLICIT-ONLY) ──
+  const canonicalMedia = getCanonicalProductMedia(targetProduct);
+
+  // ── CASO 1: AMBOS MEDIOS SOLICITADOS (FOTO Y VIDEO) ──
+  if (isExplicitVideo && isExplicitPhoto) {
+    if (canonicalMedia.hasImage && canonicalMedia.hasVideo) {
+      return {
+        shouldDispatch: true,
+        targetProduct,
+        mediaType: 'both',
+        url: canonicalMedia.images[0],
+        urls: [canonicalMedia.images[0], canonicalMedia.videos[0]],
+        mediaItems: [
+          { type: 'image', url: canonicalMedia.images[0] },
+          { type: 'video', url: canonicalMedia.videos[0] }
+        ],
+        hasImage: true,
+        hasVideo: true,
+        isExplicit: true,
+        reason: 'EXPLICIT_PHOTO_AND_VIDEO_REQUESTED'
+      };
+    } else if (canonicalMedia.hasImage && !canonicalMedia.hasVideo) {
+      return {
+        shouldDispatch: true,
+        targetProduct,
+        mediaType: 'image',
+        url: canonicalMedia.images[0],
+        urls: [canonicalMedia.images[0]],
+        mediaItems: [
+          { type: 'image', url: canonicalMedia.images[0] }
+        ],
+        hasImage: true,
+        hasVideo: false,
+        isExplicit: true,
+        reason: 'EXPLICIT_BOTH_REQUESTED_ONLY_IMAGE_AVAILABLE'
+      };
+    } else if (!canonicalMedia.hasImage && canonicalMedia.hasVideo) {
+      return {
+        shouldDispatch: true,
+        targetProduct,
+        mediaType: 'video',
+        url: canonicalMedia.videos[0],
+        urls: [canonicalMedia.videos[0]],
+        mediaItems: [
+          { type: 'video', url: canonicalMedia.videos[0] }
+        ],
+        hasImage: false,
+        hasVideo: true,
+        isExplicit: true,
+        reason: 'EXPLICIT_BOTH_REQUESTED_ONLY_VIDEO_AVAILABLE'
+      };
+    } else {
+      return {
+        shouldDispatch: false,
+        targetProduct,
+        mediaType: 'both',
+        url: null,
+        urls: [],
+        mediaItems: [],
+        hasImage: false,
+        hasVideo: false,
+        isExplicit: true,
+        reason: 'NO_MEDIA_REGISTERED'
+      };
+    }
+  }
+
+  // ── CASO 2: SOLO VIDEO (ESTRICTAMENTE EXPLICIT-ONLY) ──
   if (isExplicitVideo) {
-    const videoUrl = getCanonicalProductVideoUrl(targetProduct);
-    if (!videoUrl) {
+    if (!canonicalMedia.hasVideo) {
       return {
         shouldDispatch: false,
         targetProduct,
         mediaType: 'video',
         url: null,
+        urls: [],
+        mediaItems: [],
+        hasImage: canonicalMedia.hasImage,
+        hasVideo: false,
         isExplicit: true,
         reason: 'NO_VIDEO_REGISTERED'
       };
@@ -601,20 +844,29 @@ export function orchestrateProductMedia({
       shouldDispatch: true,
       targetProduct,
       mediaType: 'video',
-      url: videoUrl,
+      url: canonicalMedia.videos[0],
+      urls: [canonicalMedia.videos[0]],
+      mediaItems: [
+        { type: 'video', url: canonicalMedia.videos[0] }
+      ],
+      hasImage: canonicalMedia.hasImage,
+      hasVideo: true,
       isExplicit: true,
       reason: 'EXPLICIT_VIDEO_REQUESTED'
     };
   }
 
-  // ── CASO 2: IMAGEN (AUTO-IMAGE DETERMINISTA + ROTACIÓN DE GALERÍA) ──
-  const canonicalImages = getCanonicalProductImages(targetProduct);
-  if (canonicalImages.length === 0) {
+  // ── CASO 3: IMAGEN (AUTO-IMAGE DETERMINISTA + ROTACIÓN DE GALERÍA) ──
+  if (!canonicalMedia.hasImage) {
     return {
       shouldDispatch: false,
       targetProduct,
       mediaType: 'image',
       url: null,
+      urls: [],
+      mediaItems: [],
+      hasImage: false,
+      hasVideo: canonicalMedia.hasVideo,
       isExplicit: isExplicitPhoto,
       reason: 'NO_IMAGE_REGISTERED'
     };
@@ -625,9 +877,6 @@ export function orchestrateProductMedia({
 
   const alreadySent = Array.isArray(sentMediaProductIds) && sentMediaProductIds.includes(targetProduct.id);
 
-  // Si ya se envió previamente:
-  // - Solo se permite reenvío si el usuario lo solicita de forma EXPLÍCITA ("¿tienes foto?", "mándame una foto", "más fotos", "otra foto")
-  // - En caso contrario, se bloquea por deduplicación para no saturar al cliente en cada turno
   if (alreadySent) {
     if (isExplicitPhoto) {
       if (isExhausted) {
@@ -637,10 +886,11 @@ export function orchestrateProductMedia({
           mediaType: 'image',
           url: null,
           urls: [],
+          mediaItems: [],
           isExplicit: true,
           isExhausted: true,
-          totalImages: canonicalImages.length,
-          isSingleImage: canonicalImages.length === 1,
+          totalImages: canonicalMedia.images.length,
+          isSingleImage: canonicalMedia.images.length === 1,
           reason: 'ALL_PRODUCT_IMAGES_ALREADY_SENT'
         };
       }
@@ -656,9 +906,10 @@ export function orchestrateProductMedia({
           mediaType: 'image',
           url: remainingImages[0],
           urls: remainingImages,
+          mediaItems: remainingImages.map(u => ({ type: 'image', url: u })),
           isExplicit: true,
           requestType: 'MORE_PHOTOS',
-          totalImages: canonicalImages.length,
+          totalImages: canonicalMedia.images.length,
           reason: 'MORE_PHOTOS_REQUESTED'
         };
       }
@@ -669,9 +920,10 @@ export function orchestrateProductMedia({
         mediaType: 'image',
         url: nextImageUrl,
         urls: [nextImageUrl],
+        mediaItems: [{ type: 'image', url: nextImageUrl }],
         isExplicit: true,
         requestType: 'NEXT_PHOTO',
-        totalImages: canonicalImages.length,
+        totalImages: canonicalMedia.images.length,
         reason: 'EXPLICIT_PHOTO_RE_REQUESTED'
       };
     }
@@ -679,10 +931,11 @@ export function orchestrateProductMedia({
       shouldDispatch: false,
       targetProduct,
       mediaType: 'image',
-      url: canonicalImages[0],
-      urls: [canonicalImages[0]],
+      url: canonicalMedia.images[0],
+      urls: [canonicalMedia.images[0]],
+      mediaItems: [{ type: 'image', url: canonicalMedia.images[0] }],
       isExplicit: false,
-      totalImages: canonicalImages.length,
+      totalImages: canonicalMedia.images.length,
       reason: 'ALREADY_SENT_DEDUP'
     };
   }
@@ -692,11 +945,12 @@ export function orchestrateProductMedia({
     shouldDispatch: true,
     targetProduct,
     mediaType: 'image',
-    url: canonicalImages[0],
-    urls: [canonicalImages[0]],
+    url: canonicalMedia.images[0],
+    urls: [canonicalMedia.images[0]],
+    mediaItems: [{ type: 'image', url: canonicalMedia.images[0] }],
     isExplicit: isExplicitPhoto,
     requestType: 'SINGLE_PHOTO',
-    totalImages: canonicalImages.length,
+    totalImages: canonicalMedia.images.length,
     reason: isExplicitPhoto ? 'EXPLICIT_PHOTO_FIRST_REQUEST' : 'AUTO_IMAGE_ON_PRODUCT_INQUIRY'
   };
 }

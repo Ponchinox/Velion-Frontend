@@ -661,7 +661,7 @@ Aquí tienes la foto del reloj con su correa metálica dorada. Visita nuestra we
     const props = Object.keys(SEND_PRODUCT_MEDIA_DECLARATION.parameters.properties);
     assert.ok(props.includes('productId'), 'Debe exponer productId');
     assert.ok(props.includes('mediaType'), 'Debe exponer mediaType');
-    assert.deepStrictEqual(SEND_PRODUCT_MEDIA_DECLARATION.parameters.properties.mediaType.enum, ['image', 'video']);
+    assert.deepStrictEqual(SEND_PRODUCT_MEDIA_DECLARATION.parameters.properties.mediaType.enum, ['image', 'video', 'both']);
     assert.deepStrictEqual(SEND_PRODUCT_MEDIA_DECLARATION.parameters.required, ['productId']);
     assert.ok(!props.includes('url'), 'No debe tener propiedad url');
     assert.ok(!props.includes('imageUrl'), 'No debe tener propiedad imageUrl');
