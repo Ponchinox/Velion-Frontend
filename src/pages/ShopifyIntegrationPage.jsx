@@ -96,13 +96,28 @@ export default function ShopifyIntegrationPage() {
     setIsConnecting(true);
 
     try {
-      const res = await integrationService.connectShopify(cleanDomain);
-      if (res.authUrl) {
-        window.location.href = res.authUrl;
-      } else {
-        showToast('No se recibió la URL de autorización de Shopify.', 'error');
-        setIsConnecting(false);
+      const token = localStorage.getItem('sa_token');
+      const impersonatedTenantId = localStorage.getItem('impersonatedTenantId');
+      const returnTo = `${window.location.origin}/integraciones/shopify`;
+
+      // Resolver URL base de la API backend
+      let apiBase = import.meta.env.VITE_API_URL;
+      if (!apiBase) {
+        apiBase = window.location.hostname === 'localhost' ? 'http://localhost:3000' : 'https://185.163.116.210';
       }
+      const baseUrl = apiBase.endsWith('/api') ? apiBase : `${apiBase}/api`;
+      const connectUrl = new URL(`${baseUrl}/integrations/shopify/connect`);
+      connectUrl.searchParams.set('shop', cleanDomain);
+      connectUrl.searchParams.set('returnTo', returnTo);
+      if (token) {
+        connectUrl.searchParams.set('token', token);
+      }
+      if (impersonatedTenantId) {
+        connectUrl.searchParams.set('tenantId', impersonatedTenantId);
+      }
+
+      // NAVEGACIÓN TOP-LEVEL directa al backend (garantiza persistencia de cookie SameSite=Lax)
+      window.location.assign(connectUrl.toString());
     } catch (err) {
       console.error('[Shopify Detail] Error conectando:', err);
       showToast(err.message || 'Error al iniciar conexión con Shopify.', 'error');

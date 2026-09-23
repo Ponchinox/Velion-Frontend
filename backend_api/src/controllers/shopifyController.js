@@ -148,6 +148,9 @@ export async function connectShopify(req, res) {
         const decoded = jwt.verify(req.query.token, process.env.JWT_SECRET);
         tenantId = decoded.tenantId;
         userId = decoded.userId || decoded.id;
+        if (decoded.role === 'superadmin' && req.query.tenantId) {
+          tenantId = req.query.tenantId;
+        }
       } catch (err) {
         return res.status(401).json({ error: 'Token JWT inválido en query.' });
       }
@@ -158,14 +161,26 @@ export async function connectShopify(req, res) {
     }
   }
 
+  // Si es superadmin sin tenantId explícito, resolver primer tenant
+  if (!tenantId && req.user?.role === 'superadmin') {
+    if (req.query?.tenantId) {
+      tenantId = req.query.tenantId;
+    } else {
+      const firstTenant = await prisma.tenant.findFirst({ select: { id: true } });
+      if (firstTenant) tenantId = firstTenant.id;
+    }
+  }
+
   if (!tenantId || !userId) {
     return res.status(401).json({ error: 'Contexto de autenticación requerido.' });
   }
 
-  const shopDomain = req.body?.shopDomain || req.query?.shopDomain || req.query?.shop;
+  const shopDomain = req.query?.shop || req.query?.shopDomain || req.body?.shopDomain;
   if (!shopDomain) {
-    return res.status(400).json({ error: 'El campo shopDomain es requerido.' });
+    return res.status(400).json({ error: 'El campo shopDomain o shop es requerido.' });
   }
+
+  const returnTo = req.query?.returnTo || req.body?.returnTo || null;
 
   try {
     const canonicalDomain = canonicalizeShopDomain(shopDomain);
@@ -191,6 +206,7 @@ export async function connectShopify(req, res) {
       shopDomain: canonicalDomain,
       tenantId,
       userId,
+      returnTo,
     });
 
     // Fijar cookie HttpOnly SameSite=Lax
@@ -268,9 +284,36 @@ export async function handleShopifyCallback(req, res) {
       tokenData,
     });
 
-    // 7. Redirigir al frontend si se especificó FRONTEND_URL, o responder JSON
-    const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:5173';
-    return res.redirect(`${frontendUrl}/integraciones?shopify=connected&shop=${encodeURIComponent(validatedState.shopDomain)}`);
+    // 7. Redirigir al frontend Vercel o destino validado
+    let destination = validatedState.returnTo;
+    const defaultFrontend = process.env.FRONTEND_URL || 'https://velion-agent.vercel.app';
+    const defaultDestination = `${defaultFrontend.replace(/\/+$/, '')}/integraciones/shopify`;
+
+    let finalRedirectUrl = defaultDestination;
+    if (destination) {
+      try {
+        const parsed = new URL(destination);
+        const allowedHosts = [
+          'velion-agent.vercel.app',
+          '185.163.116.210',
+          'localhost',
+          '127.0.0.1',
+        ];
+        if (process.env.FRONTEND_URL) {
+          try {
+            allowedHosts.push(new URL(process.env.FRONTEND_URL).hostname);
+          } catch (_) {}
+        }
+        if (allowedHosts.includes(parsed.hostname)) {
+          finalRedirectUrl = destination;
+        }
+      } catch (_) {
+        finalRedirectUrl = defaultDestination;
+      }
+    }
+
+    const separator = finalRedirectUrl.includes('?') ? '&' : '?';
+    return res.redirect(`${finalRedirectUrl}${separator}shopify=connected&shop=${encodeURIComponent(validatedState.shopDomain)}`);
   } catch (error) {
     res.clearCookie(OAUTH_COOKIE_NAME, clearCookieOpts);
 

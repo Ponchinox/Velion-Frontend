@@ -132,6 +132,10 @@ export function decryptOAuthStateStrict(stateString) {
     throw new ShopifyOAuthError('Estructura interna del state incompleta o corrupta.', 'INVALID_STATE');
   }
 
+  if (payload.returnTo !== undefined && payload.returnTo !== null && typeof payload.returnTo !== 'string') {
+    throw new ShopifyOAuthError('Parámetro returnTo en state inválido.', 'INVALID_STATE');
+  }
+
   // Validar expiración
   if (payload.exp < Date.now()) {
     throw new ShopifyOAuthError('El estado de autorización OAuth ha expirado. Inicia el flujo nuevamente.', 'STATE_EXPIRED');
@@ -147,10 +151,11 @@ export function decryptOAuthStateStrict(stateString) {
  * @param {string} params.shopDomain - Dominio de la tienda (ej: "mitienda.myshopify.com")
  * @param {string} params.tenantId   - Tenant autenticado en Velion
  * @param {string} params.userId     - Usuario que inició la acción
+ * @param {string} [params.returnTo] - URL de retorno al frontend post-OAuth
  * @param {Object} [params.config]   - Configuración opcional inyectada (para tests)
  * @returns {Object} { authUrl, state, nonce, cookieOptions }
  */
-export function buildAuthorizationUrl({ shopDomain, tenantId, userId, config = null }) {
+export function buildAuthorizationUrl({ shopDomain, tenantId, userId, returnTo = null, config = null }) {
   if (!tenantId || !userId) {
     throw new ShopifyOAuthError('tenantId y userId son obligatorios para iniciar el flujo OAuth.', 'AUTH_REQUIRED');
   }
@@ -168,6 +173,10 @@ export function buildAuthorizationUrl({ shopDomain, tenantId, userId, config = n
     shopDomain: canonicalDomain,
     exp,
   };
+
+  if (returnTo && typeof returnTo === 'string') {
+    statePayload.returnTo = returnTo;
+  }
 
   const state = encryptOAuthState(statePayload);
 
@@ -304,6 +313,7 @@ export function verifyOAuthState({ state, cookieNonce, shop }) {
     tenantId: payload.tenantId,
     userId: payload.userId,
     shopDomain: payload.shopDomain,
+    returnTo: payload.returnTo || null,
   };
 }
 
