@@ -24,6 +24,7 @@ export async function apiClient(endpoint, options = {}) {
   }
 
   const config = {
+    credentials: 'include',
     ...options,
     headers,
   };

@@ -14,8 +14,19 @@ import { getShopifyConfig } from './shopifyConfig.js';
 import { ShopifyOAuthError } from './shopifyErrors.js';
 
 export const OAUTH_COOKIE_NAME = 'shopify_oauth_nonce';
-export const OAUTH_COOKIE_PATH = '/api/integrations/shopify';
+export const OAUTH_COOKIE_PATH = '/';
 export const OAUTH_STATE_TTL_MS = 10 * 60 * 1000; // 10 minutos
+
+/**
+ * Resuelve si la cookie OAuth debe tener el flag Secure.
+ * Debe ser true en producción o cuando la redirección/frontend use HTTPS.
+ */
+export function resolveOAuthCookieSecure() {
+  if (process.env.NODE_ENV === 'production') return true;
+  if (process.env.SHOPIFY_REDIRECT_URI && process.env.SHOPIFY_REDIRECT_URI.startsWith('https://')) return true;
+  if (process.env.FRONTEND_URL && process.env.FRONTEND_URL.startsWith('https://')) return true;
+  return false;
+}
 
 /**
  * Obtiene la llave de cifrado AES-256-GCM desde el entorno.
@@ -169,10 +180,10 @@ export function buildAuthorizationUrl({ shopDomain, tenantId, userId, config = n
 
   const authUrl = `https://${canonicalDomain}/admin/oauth/authorize?${queryParams.toString()}`;
 
-  const isProduction = process.env.NODE_ENV === 'production';
+  const secure = resolveOAuthCookieSecure();
   const cookieOptions = {
     httpOnly: true,
-    secure: isProduction,
+    secure,
     sameSite: 'lax',
     path: OAUTH_COOKIE_PATH,
     maxAge: OAUTH_STATE_TTL_MS,
@@ -190,10 +201,10 @@ export function buildAuthorizationUrl({ shopDomain, tenantId, userId, config = n
  * Opciones para eliminar la cookie shopify_oauth_nonce tras consumirse.
  */
 export function getClearCookieOptions() {
-  const isProduction = process.env.NODE_ENV === 'production';
+  const secure = resolveOAuthCookieSecure();
   return {
     httpOnly: true,
-    secure: isProduction,
+    secure,
     sameSite: 'lax',
     path: OAUTH_COOKIE_PATH,
     maxAge: 0,
