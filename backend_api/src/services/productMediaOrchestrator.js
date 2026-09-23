@@ -131,6 +131,161 @@ export function tokensMatch(t1, t2) {
 }
 
 /**
+ * Taxonomía canónica controlada de categorías y términos de catálogo.
+ * Basada en los datos reales del catálogo para cuando Product.category es null.
+ */
+export const CANONICAL_CATEGORY_TAXONOMY = {
+  smartwatch: {
+    categoryTerms: ['smartwatch', 'smartwatches', 'reloj inteligente', 'relojes inteligentes', 'smart watch'],
+    nameMatch: (nameNorm) => nameNorm.includes('smartwatch') || nameNorm.includes('smart watch')
+  },
+  reloj: {
+    categoryTerms: ['reloj', 'relojes', 'watch', 'watches'],
+    nameMatch: (nameNorm) => nameNorm.includes('reloj') || nameNorm.includes('smartwatch') || nameNorm.includes('watch')
+  },
+  audifonos: {
+    categoryTerms: ['audifono', 'audifonos', 'audífonos', 'auricular', 'auriculares', 'earbuds', 'headphones', 'airpods', 'airpod', 'headset'],
+    nameMatch: (nameNorm) =>
+      nameNorm.includes('audifono') ||
+      nameNorm.includes('audifonos') ||
+      nameNorm.includes('auricular') ||
+      nameNorm.includes('auriculares') ||
+      nameNorm.includes('airpod') ||
+      nameNorm.includes('airpods') ||
+      nameNorm.includes('earbud') ||
+      nameNorm.includes('earbuds') ||
+      nameNorm.includes('headphone')
+  },
+  parlante: {
+    categoryTerms: ['parlante', 'parlantes', 'altavoz', 'altavoces', 'speaker', 'bocina', 'bocinas'],
+    nameMatch: (nameNorm) => nameNorm.includes('parlante') || nameNorm.includes('altavoz') || nameNorm.includes('speaker') || nameNorm.includes('bocina') || nameNorm.includes('jbl')
+  },
+  lentes: {
+    categoryTerms: ['lentes', 'gafas', 'anteojos'],
+    nameMatch: (nameNorm) => nameNorm.includes('lentes') || nameNorm.includes('gafas') || nameNorm.includes('anteojos')
+  },
+  cargador: {
+    categoryTerms: ['cargador', 'cargadores', 'cable', 'cables', 'adaptador', 'cubo'],
+    nameMatch: (nameNorm) => nameNorm.includes('cargador') || nameNorm.includes('cables') || nameNorm.includes('cable') || nameNorm.includes('adaptador')
+  }
+};
+
+/**
+ * Resuelve qué productos del catálogo pertenecen a una categoría consultada,
+ * usando el campo category si existe, o la taxonomía canónica sobre el nombre normalizado.
+ *
+ * @param {Array<object>} availableProducts
+ * @param {string} categoryQuery
+ * @returns {Array<object>} Lista de productos coincidentes
+ */
+export function resolveProductsByCategory(availableProducts = [], categoryQuery = '') {
+  if (!Array.isArray(availableProducts) || !categoryQuery || typeof categoryQuery !== 'string') {
+    return [];
+  }
+  const queryNorm = normalizeText(categoryQuery);
+
+  let matchedTaxonomyKey = null;
+  for (const [key, tax] of Object.entries(CANONICAL_CATEGORY_TAXONOMY)) {
+    if (queryNorm === key || tax.categoryTerms.some(t => queryNorm.includes(normalizeText(t)) || normalizeText(t).includes(queryNorm))) {
+      matchedTaxonomyKey = key;
+      break;
+    }
+  }
+
+  const matched = [];
+  for (const p of availableProducts) {
+    if (!p || !p.name) continue;
+    const prodNameNorm = normalizeText(p.name);
+    const prodCatNorm = p.category ? normalizeText(p.category) : '';
+
+    if (prodCatNorm) {
+      if (prodCatNorm.includes(queryNorm) || queryNorm.includes(prodCatNorm)) {
+        matched.push(p);
+        continue;
+      }
+      if (matchedTaxonomyKey && CANONICAL_CATEGORY_TAXONOMY[matchedTaxonomyKey].categoryTerms.some(t => prodCatNorm.includes(normalizeText(t)))) {
+        matched.push(p);
+        continue;
+      }
+    }
+
+    if (matchedTaxonomyKey) {
+      if (CANONICAL_CATEGORY_TAXONOMY[matchedTaxonomyKey].nameMatch(prodNameNorm)) {
+        matched.push(p);
+        continue;
+      }
+    } else {
+      const qTokens = extractSignificantTokens(queryNorm);
+      if (qTokens.length > 0 && qTokens.some(qt => qt.length >= 3 && prodNameNorm.includes(qt))) {
+        matched.push(p);
+      }
+    }
+  }
+
+  return matched;
+}
+
+/**
+ * Detecta el alcance de la solicitud: 'all' para conjuntos totales o 'single' para un solo elemento/pregunta.
+ * REGLA 1: 'tienes' o 'disponibles' por sí solos NUNCA son scope="all". Requiere intención clara de conjunto.
+ *
+ * @param {string} text
+ * @returns {'all'|'single'}
+ */
+export function detectTargetScope(text) {
+  if (!text || typeof text !== 'string') return 'single';
+  const norm = normalizeText(text);
+
+  // 1. Preguntas de existencia/catálogo: "¿tienes...?", "¿tienen...?", "¿hay...?" son 'single'
+  if (/^(?:hola\s+)?(?:buenas\s+)?(?:tienes|tienen|hay|vendes|venden|manejas|manejan|dispones|disponen)\b/i.test(norm) &&
+      !/\b(?:todos|todas|todo)\b/i.test(norm)) {
+    return 'single';
+  }
+
+  // 2. Intención explícita de conjunto totalizante:
+  // A. "todos los...", "todas las...", "todos...", "todas..."
+  if (/\b(?:todos|todas)\b/i.test(norm)) {
+    return 'all';
+  }
+
+  // B. "los/las [X] que tengas" / "que tienen" / "que haya" acompañado de intención de ver/enviar
+  if (/\b(?:que\s+(?:tengas?|tienen|haya|tenga|dispones?))\b/i.test(norm)) {
+    if (/\b(?:los|las|ver|mostrar|muestrame|mándame|mandame|enviame|envíame|fotos?|videos?)\b/i.test(norm)) {
+      return 'all';
+    }
+  }
+
+  // C. "los/las [X] disponibles" cuando va precedido de acción explícita de ver/enviar
+  if (/\b(?:ver|mostrar|muestrame|mándame|mandame|enviame|envíame)\s+(?:los|las)\b.*?\bdisponibles?\b/i.test(norm)) {
+    return 'all';
+  }
+
+  return 'single';
+}
+
+/**
+ * Determina si el mensaje del usuario es una referencia elíptica genuina e inequívoca
+ * hacia un producto ya consultado o confirmado (ej. "mándame sus fotos", "y el video?", "muéstramelo").
+ *
+ * @param {string} text
+ * @returns {boolean}
+ */
+export function isEllipticalProductFollowUp(text) {
+  if (!text || typeof text !== 'string') return false;
+  const norm = normalizeText(text);
+
+  // Referencias pronominales directas hacia el producto previo
+  const directPronominal = /\b(?:sus\s+fotos?|sus\s+videos?|su\s+foto|su\s+video|muestramelo|muestramela|mandamelo|mandamela|pasamelo|pasamela|verlo|verla|de\s+este|de\s+ese)\b/i;
+  if (directPronominal.test(norm)) return true;
+
+  // Frases cortas de multimedia elíptica: "y el video?", "y la foto?", "fotos", "video", "más fotos", "otra foto"
+  const shortElliptical = /^(?:y\s+)?(?:el\s+video|la\s+foto|las\s+fotos|los\s+videos|fotos|foto|video|videos|mas\s+fotos|otra\s+foto)(?:\s+por\s+favor|\s+pf|\s+pls|\s*\?)?$/i;
+  if (shortElliptical.test(norm)) return true;
+
+  return false;
+}
+
+/**
  * Detecta si el mensaje actual del cliente corresponde a una consulta de categoría o grupo
  * con múltiples candidatos posibles en el catálogo, sin haber especificado un modelo unívoco.
  *
@@ -194,7 +349,7 @@ export function detectCategoryOrMultiProductQuery(userMessageText, availableProd
       }
     }
     const distinguishingTokens = candTokens.filter(t => !otherTokens.has(t));
-    const hasDistinguishing = distinguishingTokens.some(dt => allUserTokens.includes(dt) || normalizedUserText.includes(dt));
+    const hasDistinguishing = distinguishingTokens.some(dt => allUserTokens.includes(dt) || new RegExp(`\\b${dt}\\b`, 'i').test(normalizedUserText));
     if (hasDistinguishing) {
       uniquelyDistinguished.push(cand);
     }
@@ -378,8 +533,20 @@ export function resolveTargetProduct(
     return null;
   }
 
+  // ── PRIORIDAD DE CONTEXTO (Ajuste 4) ──
+  // Si el mensaje actual contiene una categoría, consulta de conjunto ("todos", "que tengas")
+  // o pregunta de catálogo/existencia ("¿tienes...?"), PROHIBIR terminantemente el fallback a contexto viejo (ej. JBL).
+  // Solo se permite fallback si es una referencia elíptica inequívoca hacia el producto previo (ej. "sus fotos", "y el video?").
+  const isElliptical = isEllipticalProductFollowUp(userMessageText);
+
+  const hasCategoryOrCollectiveMention = Object.values(CANONICAL_CATEGORY_TAXONOMY).some(tax =>
+    tax.categoryTerms.some(term => normalizedUserText.includes(normalizeText(term)))
+  ) || /\b(?:smartwatch|reloj|relojes|audifono|audifonos|audífonos|auricular|auriculares|parlante|parlantes|altavoz|lentes|gafas|cargador|cargadores)\b/i.test(normalizedUserText)
+    || /\b(?:todos|todas|que\s+tengas?|disponibles?)\b/i.test(normalizedUserText)
+    || /^(?:hola\s+)?(?:buenas\s+)?(?:tienes|tienen|hay|vendes|venden)\b/i.test(normalizedUserText);
+
   // GUARD DE CATEGORÍA: Si el usuario consultó por una categoría o grupo con múltiples candidatos,
-  // PROHIBIDO hacer fallback a un producto stale previo.
+  // retornar ambigüedad para que el sistema solicite aclaración al usuario en lugar de despachar medios.
   const categoryCheck = detectCategoryOrMultiProductQuery(userMessageText, availableProducts);
   if (categoryCheck.isAmbiguous) {
     return {
@@ -389,10 +556,14 @@ export function resolveTargetProduct(
     };
   }
 
+  if (hasCategoryOrCollectiveMention && !isElliptical) {
+    return null;
+  }
+
   // REGLA DE CONTEXTO: Solo recurrir a contexto previo si el usuario solicitó explícitamente multimedia.
   // Para referencias GENÉRICAS ("un producto que me interesa"), exigimos confirmedProductId (guardia de arriba).
   // Para solicitudes elípticas NO genéricas ("Fotos", "Video", "muéstrame"), lastConsultedProductId es suficiente.
-  if (isExplicitMedia) {
+  if (isExplicitMedia && isElliptical) {
     // 1. Prioridad: confirmedProductId explícito
     if (effectiveConfirmedId) {
       const confirmed = availableProducts.find(p => p.id === effectiveConfirmedId);
@@ -933,10 +1104,37 @@ export function resolveMultiProductMediaRequests({
         }
       }
     } else {
-      // 2. Si no menciona un producto unívoco, verificar si es una consulta de categoría ambigua (ej. "reloj")
-      const catCheck = detectCategoryOrMultiProductQuery(clause, availableProducts);
-      if (catCheck && catCheck.isAmbiguous && Array.isArray(catCheck.candidateProducts) && catCheck.candidateProducts.length > 1) {
-        ambiguousGroups.push(catCheck.candidateProducts);
+      // 2. Si no menciona un producto unívoco, verificar si es una consulta de categoría
+      const matchedCategoryProducts = resolveProductsByCategory(availableProducts, clause);
+      if (matchedCategoryProducts.length > 0) {
+        const clauseScope = detectTargetScope(clause) === 'all' ? 'all' : detectTargetScope(userMessageText);
+        if (clauseScope === 'all') {
+          for (const p of matchedCategoryProducts) {
+            if (!clauseResolved.some(r => r.product.id === p.id)) {
+              clauseResolved.push({
+                product: p,
+                clauseText: clause
+              });
+            }
+          }
+        } else {
+          if (matchedCategoryProducts.length > 1) {
+            ambiguousGroups.push(matchedCategoryProducts);
+          } else if (matchedCategoryProducts.length === 1) {
+            if (!clauseResolved.some(r => r.product.id === matchedCategoryProducts[0].id)) {
+              clauseResolved.push({
+                product: matchedCategoryProducts[0],
+                clauseText: clause
+              });
+            }
+          }
+        }
+      } else {
+        // 3. Si no coincide con la taxonomía, verificar con detectCategoryOrMultiProductQuery
+        const catCheck = detectCategoryOrMultiProductQuery(clause, availableProducts);
+        if (catCheck && catCheck.isAmbiguous && Array.isArray(catCheck.candidateProducts) && catCheck.candidateProducts.length > 1) {
+          ambiguousGroups.push(catCheck.candidateProducts);
+        }
       }
     }
   }
@@ -970,8 +1168,10 @@ export function resolveMultiProductMediaRequests({
     }
   }
 
-  // Si no hay múltiples productos ni combinación de producto explícito + ambigüedad:
-  if (clauseResolved.length + ambiguousGroups.length <= 1) {
+  const isGlobalScopeAll = detectTargetScope(userMessageText) === 'all';
+  // Si no hay múltiples productos ni combinación de producto explícito + ambigüedad,
+  // y tampoco es una solicitud de categoría totalizante (scope='all'):
+  if ((clauseResolved.length + ambiguousGroups.length <= 1) && !isGlobalScopeAll) {
     return null; // Caso monoproducto o sin producto; se procesa por el flujo estándar
   }
 

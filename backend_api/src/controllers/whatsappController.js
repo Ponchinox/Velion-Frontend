@@ -48,7 +48,9 @@ import {
   isProductExplicitlySpecifiedByUser,
   isGenericProductReference,
   isUserProductDisavowal,
-  resolveTargetProduct
+  resolveTargetProduct,
+  resolveProductsByCategory,
+  detectTargetScope
 } from '../services/productMediaOrchestrator.js';
 
 // ── HUMAN HANDOFF: ventana de pausa manual (30 minutos) ──────────────────────
@@ -74,21 +76,34 @@ export const REQUEST_HUMAN_HANDOFF_DECLARATION = {
 // ── DEFINICIÓN FORMAL DE FUNCTION TOOL: send_product_media ───────────────────
 export const SEND_PRODUCT_MEDIA_DECLARATION = {
   name: 'send_product_media',
-  description: 'Envía la imagen o video oficial del producto al cliente por WhatsApp. Úsala cuando el cliente solicite multimedia o cuando sea oportuno acompañar visualmente la información de un producto consultado. Para video, úsala únicamente ante solicitud explícita del cliente. Especifica productId y mediaType ("image" por defecto, "video" o "both").',
+  description: 'Envía la imagen o video oficial del producto o categoría al cliente por WhatsApp. Úsala cuando el cliente solicite multimedia o cuando sea oportuno acompañar visualmente la información de un producto consultado. Para video, úsala únicamente ante solicitud explícita del cliente. Especifica productId (o targetType="product") para un producto individual, o targetType="category" con targetValue y scope="all" para todos los modelos de una categoría.',
   parameters: {
     type: 'OBJECT',
     properties: {
       productId: {
         type: 'STRING',
-        description: 'El ID exacto del producto obtenido del catálogo o del estado comercial.'
+        description: 'El ID exacto del producto obtenido del catálogo o del estado comercial (para targetType="product").'
+      },
+      targetType: {
+        type: 'STRING',
+        enum: ['product', 'category'],
+        description: 'Tipo de objetivo: "product" para un producto individual, o "category" para una categoría o familia de productos.'
+      },
+      targetValue: {
+        type: 'STRING',
+        description: 'Nombre del producto o término de la categoría consultada (ej: "smartwatch", "audifonos").'
+      },
+      scope: {
+        type: 'STRING',
+        enum: ['single', 'all'],
+        description: 'Alcance de la consulta: "single" para un único elemento representativo, o "all" si el usuario pide explícitamente ver todos los productos de la categoría o grupo.'
       },
       mediaType: {
         type: 'STRING',
         enum: ['image', 'video', 'both'],
         description: 'Tipo de multimedia a enviar: "image" para foto/imagen, "video" para video demostrativo, o "both" si se solicitó explícitamente tanto foto como video.'
       }
-    },
-    required: ['productId']
+    }
   }
 };
 
@@ -3803,12 +3818,17 @@ ${catalogIndexCsv}
     // Capa 5 + 6 - Guardrails de formato/ventas y comandos (hardcoded, al final = maxima atencion)
     finalPrompt += `${globalGuardrails}\n\n${systemCommands}`;
 
-    // Directiva de máxima prioridad para solicitudes explícitas de fotos/imágenes o videos
     const activeConsultedId = currentCommercialState?.confirmedProductId || (currentCommercialState?.isProductConfirmed ? (currentCommercialState?.lastConsultedProductId || currentCommercialState?.productId) : null);
     const rawMediaIntent = detectProductMediaIntent(userMessageText);
     const isAmbiguousAVerPrompt = isStandaloneAVer(userMessageText) && !activeConsultedId;
     const detectedMediaIntent = isAmbiguousAVerPrompt ? null : rawMediaIntent;
-    if (isCategoryAmbiguous && (isExplicitProductMediaIntent(userMessageText) || rawMediaIntent)) {
+    const targetScope = detectTargetScope(userMessageText);
+
+    if (isCategoryAmbiguous && targetScope === 'all') {
+      if (!pendingMediaToSend) {
+        finalPrompt += `\n\n[INSTRUCCIÓN DE CATEGORÍA COMPLETA (SCOPE: ALL)]:\nEl usuario solicita ver todos los productos disponibles de la categoría ("${userMessageText.slice(0, 50)}"). Puedes llamar a la herramienta 'send_product_media' con targetType: "category", targetValue: "${categoryAmbiguity.candidateProducts?.[0]?.category || 'smartwatch'}", scope: "all", mediaType: "image".\n`;
+      }
+    } else if (isCategoryAmbiguous && (isExplicitProductMediaIntent(userMessageText) || rawMediaIntent)) {
       finalPrompt += `\n\n[INSTRUCCIÓN DE AMBIGÜEDAD DE PRODUCTOS / CATEGORÍA]:\nEl usuario solicita ver fotos o información de una categoría o grupo ("${userMessageText.slice(0, 50)}") con múltiples modelos disponibles en el catálogo. PROHIBIDO llamar a 'send_product_media' arbitrariamente para un modelo específico sin que el cliente lo haya elegido. PROHIBIDO preguntar ciudad, dirección, envío o pago. Pregunta amablemente al cliente cuál de los modelos desea ver.\n`;
     } else if (isExplicitProductMediaIntent(userMessageText) && !activeConsultedId) {
       // Directiva determinista para peticiones genéricas o sin producto confirmado
@@ -4390,6 +4410,174 @@ Atributos/Tags: ${Array.isArray(product.tags) ? product.tags.join(', ') : ''}
             hasMedia: false,
             reason: 'POST_SALE_NO_COMMERCIAL_MEDIA',
             message: 'El cliente realiza una consulta de soporte/postventa. No se debe enviar material publicitario.'
+          };
+        }
+
+        const targetType = args?.targetType || (productId ? 'product' : (args?.targetValue ? 'category' : 'product'));
+        const targetValue = typeof args?.targetValue === 'string' ? args.targetValue.trim() : '';
+        const rawScope = args?.scope;
+        const targetScope = (rawScope === 'all' || rawScope === 'single') ? rawScope : detectTargetScope(userMessageText);
+
+        if (targetType === 'category' || (!productId && targetValue)) {
+          console.log(`🏷️ [FC] send_product_media (Category) — Value: "${targetValue}", Scope: "${targetScope}", Type: "${requestedMediaType}"`);
+
+          const matchedProducts = resolveProductsByCategory(tenantAvailableProducts, targetValue || userMessageText);
+
+          if (!matchedProducts || matchedProducts.length === 0) {
+            console.warn(`⚠️ [FC] send_product_media: No se encontraron productos para categoría "${targetValue}".`);
+            toolReturnedMediaFailure = true;
+            return {
+              success: false,
+              hasMedia: false,
+              reason: 'NO_PRODUCTS_IN_CATEGORY',
+              message: `No se encontraron productos disponibles en el catálogo para la categoría "${targetValue}".`
+            };
+          }
+
+          // Si el scope NO es 'all' (ej. "¿Tienes smartwatch?"), requerir selección de modelo si hay más de 1 candidato
+          if (targetScope !== 'all' && matchedProducts.length > 1) {
+            console.warn(`🛑 [FC] send_product_media bloqueado por ambigüedad de categoría (${matchedProducts.length} modelos, scope=${targetScope}).`);
+            toolReturnedMediaFailure = true;
+            return {
+              success: false,
+              hasMedia: false,
+              reason: 'PRODUCT_SELECTION_REQUIRED',
+              candidateCount: matchedProducts.length,
+              candidateNames: matchedProducts.map(p => p.name),
+              message: `Existen varios productos disponibles en esta categoría (${matchedProducts.map(p => p.name).join(', ')}). Pregunta al cliente cuál modelo desea ver antes de enviar fotos.`
+            };
+          }
+
+          // Scope 'all' (o categoría con 1 solo producto): resolver medios canónicos
+          const allProductIds = matchedProducts.map(p => p.id);
+          if (pendingMediaToSend && Array.isArray(pendingMediaToSend.mediaRequests) &&
+              allProductIds.every(id => pendingMediaToSend.mediaRequests.some(r => r.productId === id))) {
+            console.log(`🤝 [FC - Coordination] send_product_media: Categoría "${targetValue}" ya programada completamente. Retornando éxito sin duplicar.`);
+            return {
+              success: true,
+              hasMedia: true,
+              alreadyQueued: true,
+              targetType: 'category',
+              targetValue,
+              scope: targetScope,
+              productCount: matchedProducts.length,
+              message: `La multimedia de los ${matchedProducts.length} productos de la categoría "${targetValue}" ya está programada para este turno.`
+            };
+          }
+
+          const categoryMediaRequests = [];
+          const allMediaItems = [];
+          const allMediaUrls = [];
+
+          for (const prod of matchedProducts) {
+            const canonicalMedia = getCanonicalProductMedia(prod);
+            const prodItems = [];
+            if (requestedMediaType === 'both' || requestedMediaType === 'video') {
+              if (canonicalMedia.hasVideo) {
+                prodItems.push({ type: 'video', url: canonicalMedia.videos[0], productId: prod.id, productName: prod.name });
+              }
+            }
+            if (requestedMediaType === 'both' || requestedMediaType === 'image') {
+              if (canonicalMedia.hasImage) {
+                prodItems.push({ type: 'image', url: canonicalMedia.images[0], productId: prod.id, productName: prod.name });
+              }
+            }
+            if (prodItems.length === 0 && canonicalMedia.hasImage) {
+              prodItems.push({ type: 'image', url: canonicalMedia.images[0], productId: prod.id, productName: prod.name });
+            }
+
+            for (const item of prodItems) {
+              if (!allMediaUrls.includes(item.url)) {
+                allMediaUrls.push(item.url);
+                allMediaItems.push(item);
+              }
+            }
+
+            categoryMediaRequests.push({
+              productId: prod.id,
+              productName: prod.name,
+              requestedType: requestedMediaType,
+              hasImage: canonicalMedia.hasImage,
+              hasVideo: canonicalMedia.hasVideo,
+              mediaItems: prodItems
+            });
+          }
+
+          if (allMediaItems.length === 0) {
+            console.warn(`⚠️ [FC] send_product_media: Productos de categoría "${targetValue}" no tienen medios registrados.`);
+            toolReturnedMediaFailure = true;
+            return {
+              success: false,
+              hasMedia: false,
+              reason: 'NO_MEDIA_REGISTERED',
+              message: `Los productos de la categoría "${targetValue}" no cuentan con fotos o videos registrados en el catálogo.`
+            };
+          }
+
+          if (pendingMediaToSend) {
+            const existingMediaItems = Array.isArray(pendingMediaToSend.mediaItems) ? pendingMediaToSend.mediaItems : [];
+            const existingUrls = Array.isArray(pendingMediaToSend.urls) ? pendingMediaToSend.urls : [];
+            const seenUrls = new Set(existingUrls);
+
+            const newItems = [];
+            for (const item of allMediaItems) {
+              if (!seenUrls.has(item.url)) {
+                newItems.push(item);
+                seenUrls.add(item.url);
+              }
+            }
+
+            pendingMediaToSend.mediaItems = [...existingMediaItems, ...newItems];
+            pendingMediaToSend.urls = Array.from(seenUrls);
+            pendingMediaToSend.url = pendingMediaToSend.urls[0] || null;
+            pendingMediaToSend.hasImage = pendingMediaToSend.hasImage || allMediaItems.some(i => i.type === 'image');
+            pendingMediaToSend.hasVideo = pendingMediaToSend.hasVideo || allMediaItems.some(i => i.type === 'video');
+            pendingMediaToSend.isMultiProduct = true;
+
+            if (!Array.isArray(pendingMediaToSend.mediaRequests)) {
+              pendingMediaToSend.mediaRequests = [
+                {
+                  productId: pendingMediaToSend.productId,
+                  productName: pendingMediaToSend.productName,
+                  mediaItems: existingMediaItems
+                }
+              ];
+            }
+            for (const req of categoryMediaRequests) {
+              if (!pendingMediaToSend.mediaRequests.some(r => r.productId === req.productId)) {
+                pendingMediaToSend.mediaRequests.push(req);
+              }
+            }
+          } else {
+            pendingMediaToSend = {
+              productId: matchedProducts[0].id,
+              productName: matchedProducts[0].name,
+              url: allMediaUrls[0] || null,
+              urls: allMediaUrls,
+              mediaItems: allMediaItems,
+              mediaType: requestedMediaType,
+              hasImage: allMediaItems.some(i => i.type === 'image'),
+              hasVideo: allMediaItems.some(i => i.type === 'video'),
+              isMultiProduct: matchedProducts.length > 1,
+              mediaRequests: categoryMediaRequests,
+              source: 'explicit_tool'
+            };
+          }
+
+          mediaSentInSession = true;
+          const fcMs = Date.now() - fcStart;
+          console.log(`✅ [FC] send_product_media (Category) completado en ${fcMs}ms. ${allMediaUrls.length} items preparados para ${matchedProducts.length} productos de "${targetValue}"`);
+
+          return {
+            success: true,
+            hasMedia: true,
+            targetType: 'category',
+            targetValue,
+            scope: targetScope,
+            productCount: matchedProducts.length,
+            productNames: matchedProducts.map(p => p.name),
+            mediaCount: allMediaUrls.length,
+            message: `Se han preparado las fotos oficiales de los ${matchedProducts.length} productos de la categoría "${targetValue}" (${matchedProducts.map(p => p.name).join(', ')}) y se enviarán al cliente por WhatsApp.`
           };
         }
 
