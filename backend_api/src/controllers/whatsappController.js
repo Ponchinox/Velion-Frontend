@@ -51,7 +51,8 @@ import {
   isNegativeProductIntent,
   resolveTargetProduct,
   resolveProductsByCategory,
-  detectTargetScope
+  detectTargetScope,
+  isEllipticalProductFollowUp
 } from '../services/productMediaOrchestrator.js';
 
 // ── HUMAN HANDOFF: ventana de pausa manual (30 minutos) ──────────────────────
@@ -213,6 +214,7 @@ export function isExplicitProductPhotoIntent(text) {
     /\b(?:mandame|enviame|pasa(?:me)?|comparte(?:me)?|(?:me\s+)?(?:puedes|podrias)\s+(?:mandar(?:me)?|enviar(?:me)?|pasar(?:me)?|compartir(?:me)?)|me\s+(?:mandas|envias|pasas|compartes))\b.*?\b(fotos?|imagen(?:es)?|pics?)\b/,
     /\b(mandame|enviame|pasa(?:me)?|comparte(?:me)?)\s+(?:otra\s+vez|de\s+nuevo)\b/,
     /\b(?:quiero|deseo|puedo)\s+(?:verlo|verla|verlos|verlas)\b/,
+    /\b(?:quiero|deseo|puedo|podria)\s+ver\b/,
     /\b(?:quiero|deseo|puedo)?\s*ver\s+(?:el\s+producto|la\s+foto|la\s+imagen|una?\s+(?:foto|imagen)|fotos?|imagenes?)\b/,
     /\b(?:quiero|deseo|puedo)\b.*?\b(fotos?|imagen(?:es)?)\b/,
     /\bcomo\s+se\s+ve\b/,
@@ -316,7 +318,7 @@ export function enforceMediaAuthority(text, hasPendingMedia, { hasVideo = false,
   // Colección limpia de patrones para detectar afirmaciones de entrega o envío de foto/imagen o video
   const falseMediaPatterns = [
     /(?:claro(?:\s+que\s+s[ií])?,?\s*)?(?:aqu[ií]\s+(?:tienes|te\s+(?:muestro|comparto|dejo|adjunto|env[ií]o))|aqu[ií]\s+est[aá])\s+(?:la\s+|esta\s+|una?\s+|el\s+|este\s+|un\s+)?(?:imagen|foto|fotograf[ií]a|video)(?:\s+del?\s+[^:.\n!,]+)?(?:\s*[:.¡!,])?/gi,
-    /(?:claro(?:\s+que\s+s[ií])?,?\s*)?te\s+(?:env[ií]o|mando|adjunto|comparto)\s+(?:la\s+|esta\s+|una?\s+|el\s+|este\s+|un\s+)?(?:imagen|foto|fotograf[ií]a|video)(?:\s+del?\s+[^:.\n!,]+)?(?:\s*[:.¡!,])?/gi,
+    /(?:claro(?:\s+que\s+s[ií])?,?\s*)?(?:ya\s+)?te\s+(?:env[ií]o|mando|adjunto|comparto|acabo\s+de\s+(?:enviar|mandar)|he\s+(?:enviado|mandado)|(?:envi[eé]|mand[eé]))\s+(?:la\s+|esta\s+|una?\s+|el\s+|este\s+|un\s+)?(?:imagen|foto|fotograf[ií]a|video)(?:\s+del?\s+[^:.\n!,]+)?(?:\s*[:.¡!,])?/gi,
     /(?:claro(?:\s+que\s+s[ií])?,?\s*)?(?:(?:voy\s+a\s+(?:enviarte|mandarte|compartirte)|d[eé]jame\s+(?:enviarte|mandarte|compartirte)|te\s+voy\s+a\s+(?:enviar|mandar|compartir)))\s+(?:la\s+|esta\s+|una?\s+|el\s+|este\s+|un\s+)?(?:imagen|foto|fotograf[ií]a|video)(?:\s+del?\s+[^:.\n!,]+)?(?:\s*[:.¡!,])?/gi,
     /(?:claro(?:\s+que\s+s[ií])?,?\s*)?mira\s+(?:esta\s+|la\s+|una?\s+|este\s+|el\s+|un\s+)?(?:imagen|foto|fotograf[ií]a|video)(?:\s+del?\s+[^:.\n!,]+)?(?:\s*[:.¡!,])?/gi
   ];
@@ -4390,6 +4392,23 @@ Atributos/Tags: ${Array.isArray(product.tags) ? product.tags.join(', ') : ''}
                   : 'image';
 
         console.log(`🖼️ [FC] send_product_media — ID: "${productId}", Type: "${requestedMediaType}"`);
+
+        // REGLA DE AUTORIDAD MULTIMEDIA: El cliente debe haber expresado intención multimedia en el turno actual
+        const hasMediaIntentInCurrentTurn = isExplicitProductPhotoIntent(userMessageText) ||
+          isExplicitProductVideoIntent(userMessageText) ||
+          isEllipticalProductFollowUp(userMessageText) ||
+          Boolean(detectProductMediaIntent(userMessageText));
+
+        if (!hasMediaIntentInCurrentTurn) {
+          console.warn(`🛑 [FC] send_product_media bloqueado: no existe intención multimedia válida en el turno actual ("${userMessageText}").`);
+          toolReturnedMediaFailure = true;
+          return {
+            success: false,
+            hasMedia: false,
+            reason: 'NO_MEDIA_INTENT_IN_CURRENT_TURN',
+            message: 'El cliente no solicitó fotos ni videos en este mensaje. Responde normalmente a su mensaje sin enviar multimedia.'
+          };
+        }
 
         // Guardia de desmentido o referencia genérica sin producto confirmado
         if (isUserProductDisavowal(userMessageText) || (isGenericProductReference(userMessageText) && !currentCommercialState?.confirmedProductId && !currentCommercialState?.isProductConfirmed)) {

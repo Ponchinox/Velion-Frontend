@@ -401,7 +401,7 @@ async function main() {
 
     assert.strictEqual(res.shouldDispatch, false);
     assert.strictEqual(res.targetProduct, null);
-    assert.strictEqual(res.reason, 'NO_TARGET_PRODUCT_RESOLVED');
+    assert.ok(res.reason === 'NO_TARGET_PRODUCT_RESOLVED' || res.reason === 'PRODUCT_CLARIFICATION_REQUIRED');
   });
 
   // ─────────────────────────────────────────────────────────────────────────

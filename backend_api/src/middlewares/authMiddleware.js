@@ -42,7 +42,8 @@ export default async function authMiddleware(req, res, next) {
       // Esto es CRÍTICO para que los controladores de productos, chats, etc.
       // operen sobre los datos reales del cliente y no los del superadmin.
       try {
-        const tenantAdmin = await prisma.user.findFirst({
+        const db = req.prismaClient || prisma;
+        const tenantAdmin = await db.user.findFirst({
           where: { tenantId: impersonatedTenantId, role: 'client' },
           select: { id: true },
         });

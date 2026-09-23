@@ -84,10 +84,19 @@ export async function getShopifyStatus(req, res) {
       },
     });
 
+    const hasAppConfig = Boolean(
+      process.env.SHOPIFY_CLIENT_ID?.trim() &&
+      process.env.SHOPIFY_CLIENT_SECRET?.trim()
+    );
+    const redirectUri = process.env.SHOPIFY_REDIRECT_URI?.trim() || `${process.env.APP_URL || 'http://localhost:3000'}/api/integrations/shopify/callback`;
+
     if (!integration) {
       return res.json({
         provider: 'SHOPIFY',
         status: 'DISCONNECTED',
+        stage: hasAppConfig ? 'READY_FOR_DEV_STORE' : 'CREDENTIALS_REQUIRED',
+        isConfigured: hasAppConfig,
+        redirectUri,
         shopDomain: null,
         scopes: [],
         accessTokenExpiresAt: null,
@@ -97,9 +106,14 @@ export async function getShopifyStatus(req, res) {
       });
     }
 
+    const isConnected = integration.status === 'CONNECTED';
+
     return res.json({
       provider: integration.provider,
       status: integration.status,
+      stage: isConnected ? 'LIVE_CONNECTION_CONFIRMED' : (hasAppConfig ? 'READY_FOR_DEV_STORE' : 'CREDENTIALS_REQUIRED'),
+      isConfigured: hasAppConfig,
+      redirectUri,
       shopDomain: integration.shopDomain,
       scopes: integration.scopes,
       accessTokenExpiresAt: integration.accessTokenExpiresAt,

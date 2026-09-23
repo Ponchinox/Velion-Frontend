@@ -206,11 +206,17 @@ export default function ShopifyIntegrationPage() {
               ) : isConnected ? (
                 <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-semibold bg-emerald-500/10 text-emerald-600 border border-emerald-500/20">
                   <CheckCircle size={13} weight="fill" />
-                  Conectado
+                  Conectado (LIVE_CONNECTION_CONFIRMED)
+                </span>
+              ) : (shopifyStatus?.stage === 'READY_FOR_DEV_STORE' || shopifyStatus?.isConfigured) ? (
+                <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-semibold bg-blue-500/10 text-blue-600 border border-blue-500/20">
+                  <ShieldCheck size={13} weight="fill" />
+                  Listo para Dev Store (READY_FOR_DEV_STORE)
                 </span>
               ) : (
-                <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-semibold bg-slate-100 text-slate-600 border border-slate-200">
-                  No conectado
+                <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-semibold bg-amber-500/10 text-amber-700 border border-amber-500/20">
+                  <Warning size={13} weight="fill" />
+                  Credenciales Pendientes (CREDENTIALS_REQUIRED)
                 </span>
               )}
             </div>
@@ -303,6 +309,38 @@ export default function ShopifyIntegrationPage() {
                 <p className="text-lo leading-relaxed">
                   Para habilitar la sincronización de productos, precios y stock con Shopify, vincula el dominio de tu tienda.
                 </p>
+
+                {shopifyStatus && !shopifyStatus.isConfigured && (
+                  <div className="p-3.5 rounded-xl bg-amber-500/10 border border-amber-500/20 text-amber-900 space-y-2">
+                    <div className="flex items-center gap-1.5 font-bold text-amber-800 text-xs">
+                      <Warning size={15} weight="fill" className="text-amber-600 shrink-0" />
+                      <span>Configuración Previa de Shopify Partners Requerida</span>
+                    </div>
+                    <p className="text-2xs text-amber-800 leading-relaxed">
+                      Para conectar una <strong>Development Store</strong> en vivo, registre una App en Shopify Partners y configure en el archivo <code className="bg-white/70 px-1 py-0.5 rounded border border-amber-200">backend_api/.env</code>:
+                    </p>
+                    <div className="text-2xs font-mono bg-white/80 p-2 rounded-lg border border-amber-200/80 space-y-0.5 text-slate-800 select-all">
+                      <p>SHOPIFY_CLIENT_ID=&lt;tu_client_id&gt;</p>
+                      <p>SHOPIFY_CLIENT_SECRET=&lt;tu_client_secret&gt;</p>
+                      <p>SHOPIFY_REDIRECT_URI={shopifyStatus?.redirectUri || 'https://tu-dominio/api/integrations/shopify/callback'}</p>
+                    </div>
+                    <p className="text-2xs text-amber-700">
+                      <strong>Scopes oficiales:</strong> <code className="bg-white/70 px-1 py-0.5 rounded border border-amber-200">read_products, read_inventory, write_draft_orders</code>
+                    </p>
+                  </div>
+                )}
+
+                {shopifyStatus?.isConfigured && (
+                  <div className="p-3 rounded-xl bg-emerald-500/10 border border-emerald-500/20 text-emerald-900 text-2xs space-y-1">
+                    <p className="font-bold flex items-center gap-1.5 text-emerald-800">
+                      <ShieldCheck size={15} weight="fill" className="text-emerald-600" />
+                      <span>READY_FOR_DEV_STORE — Credenciales de App Activas</span>
+                    </p>
+                    <p className="text-emerald-700">
+                      Ingrese el subdominio de su Development Store (ej. <code className="bg-white/70 px-1 py-0.5 rounded">mitienda-dev.myshopify.com</code>) y pulse conectar para autorizar vía OAuth oficial.
+                    </p>
+                  </div>
+                )}
 
                 <form onSubmit={handleConnect} className="space-y-3">
                   <div>

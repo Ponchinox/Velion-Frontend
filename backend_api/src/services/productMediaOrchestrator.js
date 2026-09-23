@@ -101,6 +101,22 @@ const MEDIA_ACTION_TOKENS = new Set([
 ]);
 
 /**
+ * Tokens comunes, monedas, modificadores o palabras generales que NUNCA deben calificar
+ * como token distintivo único de marca/modelo por sí solos.
+ */
+const NON_DISTINGUISHING_TOKENS = new Set([
+  'sol', 'soles', 'dia', 'dias', 'mes', 'meses', 'ano', 'anos', 'hora', 'horas', 'minuto', 'minutos',
+  'pago', 'pagos', 'precio', 'precios', 'plata', 'dinero', 'oro', 'luz', 'vida', 'aire', 'agua', 'casa',
+  'modo', 'tipo', 'forma', 'punto', 'parte', 'tiempo', 'mano', 'caso', 'lado', 'cosa', 'cosas',
+  'rojo', 'azul', 'negro', 'blanco', 'verde', 'gris', 'rosa', 'color', 'colores',
+  'nuevo', 'nueva', 'nuevos', 'nuevas', 'bueno', 'buena', 'bien', 'mal',
+  'pro', 'max', 'mini', 'plus', 'lite', 'ultra',
+  'camara', 'pantalla', 'bateria', 'sonido', 'musica', 'llamadas', 'voz',
+  'paso', 'pasa', 'pasas', 'voy', 'va', 'vas', 'viene', 'vengo',
+  'uno', 'dos', 'tres', 'cuatro', 'cinco', 'seis', 'siete', 'ocho', 'nueve', 'diez'
+]);
+
+/**
  * Extrae tokens significativos descartando palabras vacías y tokens de 1 letra
  */
 export function extractSignificantTokens(text) {
@@ -277,6 +293,14 @@ export function isEllipticalProductFollowUp(text) {
   // Referencias pronominales directas hacia el producto previo
   const directPronominal = /\b(?:sus\s+fotos?|sus\s+videos?|su\s+foto|su\s+video|muestramelo|muestramela|mandamelo|mandamela|pasamelo|pasamela|verlo|verla|de\s+este|de\s+ese)\b/i;
   if (directPronominal.test(norm)) return true;
+
+  // Solicitudes explícitas de reenvío o petición de media sin producto nuevo:
+  // ej. "mándame la foto otra vez", "la foto de nuevo", "pásame el video de nuevo", "mándame la foto", "muéstrame el video"
+  const ellipticalMediaAction = /\b(?:mandame|muestrame|pasame|enviame|comparteme|ensename|ver|puedes\s+(?:mandar|mostrar|pasar|enviar)|tienes)\s+(?:la|el|las|los|una|un)?\s*(?:fotos?|imagenes?|videos?)\b/i;
+  if (ellipticalMediaAction.test(norm)) return true;
+
+  const repeatPattern = /\b(?:otra\s+vez|de\s+nuevo|nuevamente|repetir|otra\s+foto|otro\s+video|mas\s+fotos)\b/i;
+  if (repeatPattern.test(norm) && /\b(?:fotos?|imagenes?|videos?)\b/i.test(norm)) return true;
 
   // Frases cortas de multimedia elíptica: "y el video?", "y la foto?", "fotos", "video", "más fotos", "otra foto"
   const shortElliptical = /^(?:y\s+)?(?:el\s+video|la\s+foto|las\s+fotos|los\s+videos|fotos|foto|video|videos|mas\s+fotos|otra\s+foto)(?:\s+por\s+favor|\s+pf|\s+pls|\s*\?)?$/i;
@@ -457,9 +481,11 @@ export function resolveTargetProduct(
     }
 
     // Coincidencia por token distintivo único de marca o modelo (ej. "airpods", "geneva", "jbl")
-    // si dicho token tiene al menos 3 caracteres y ningún otro producto disponible lo posee
+    // si dicho token tiene al menos 3 caracteres, no es una palabra genérica/moneda/modificador común,
+    // y ningún otro producto disponible lo posee
     const hasUniqueDistinguishingToken = prodTokens.some(t => {
       if (t.length < 3) return false;
+      if (NON_DISTINGUISHING_TOKENS.has(t)) return false;
       const userMatched = Array.from(userTokens).some(ut => tokensMatch(ut, t));
       if (!userMatched) return false;
       return !availableProducts.some(other =>
@@ -563,7 +589,7 @@ export function resolveTargetProduct(
   // REGLA DE CONTEXTO: Solo recurrir a contexto previo si el usuario solicitó explícitamente multimedia.
   // Para referencias GENÉRICAS ("un producto que me interesa"), exigimos confirmedProductId (guardia de arriba).
   // Para solicitudes elípticas NO genéricas ("Fotos", "Video", "muéstrame"), lastConsultedProductId es suficiente.
-  if (isExplicitMedia && isElliptical) {
+  if (isExplicitMedia && (isElliptical || (isGeneric && effectiveConfirmedId))) {
     // 1. Prioridad: confirmedProductId explícito
     if (effectiveConfirmedId) {
       const confirmed = availableProducts.find(p => p.id === effectiveConfirmedId);
@@ -1082,10 +1108,18 @@ export function resolveMultiProductMediaRequests({
     return null;
   }
 
-  const globalIntent = detectProductMediaIntent(userMessageText) || 'image';
+  const globalIntent = detectProductMediaIntent(userMessageText);
 
   // Analizar por cláusulas
   const clauses = splitMessageIntoClauses(userMessageText);
+
+  // Si no hay intención de multimedia explícita a nivel de mensaje ni en ninguna cláusula,
+  // NO se debe tratar como un requerimiento de multimedia multiproducto (ej. comparaciones abiertas entre A y B)
+  const hasAnyMediaIntent = Boolean(globalIntent) || clauses.some(c => Boolean(detectProductMediaIntent(c)));
+  if (!hasAnyMediaIntent) {
+    return null;
+  }
+
   const clauseResolved = [];
   const ambiguousGroups = [];
 

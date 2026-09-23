@@ -131,7 +131,7 @@ export default function TenantDashboardPage() {
             <div className="col-span-1 md:col-span-2 space-y-3">
               <div className="flex justify-between items-end">
                 <div>
-                  <p className="text-xs text-lo font-semibold">Eficiencia del Bot</p>
+                  <p className="text-xs text-lo font-semibold">Mensajes enviados por Velion</p>
                   <p className="text-2xl font-bold text-indigo-700 font-mono">{botPct}%</p>
                 </div>
                 <span className="text-2xs text-muted font-mono font-bold">Total: {totalMsgs}</span>
@@ -144,6 +144,7 @@ export default function TenantDashboardPage() {
                   style={{ width: `${botPct}%` }}
                 />
               </div>
+              <p className="text-2xs text-muted">Porcentaje de mensajes enviados por Velion respecto al total de mensajes.</p>
             </div>
           </div>
         </div>
