@@ -48,6 +48,7 @@ import {
   isProductExplicitlySpecifiedByUser,
   isGenericProductReference,
   isUserProductDisavowal,
+  isNegativeProductIntent,
   resolveTargetProduct,
   resolveProductsByCategory,
   detectTargetScope
