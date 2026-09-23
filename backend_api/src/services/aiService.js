@@ -895,70 +895,74 @@ async function callGemini(
           }
 
           toolRounds++;
-          sessionUsage.toolCalls++;
-          const call = response.functionCalls[0];
-          geminiLog(`🛠️ [FC] Ronda ${toolRounds}/${MAX_TOOL_ROUNDS} - Herramienta: ${call.name}`);
+          const calls = response.functionCalls;
+          geminiLog(`🛠️ [FC] Ronda ${toolRounds}/${MAX_TOOL_ROUNDS} - Herramientas (${calls.length}): ${calls.map(c => c.name).join(', ')}`);
 
           if (typeof isSuperseded === 'function' && isSuperseded()) {
-            geminiWarn(`🛑 [SUPERSEDED] Generación obsoleta detectada antes de ejecutar tool ${call.name}. Abortando inmediatamente.`);
+            geminiWarn(`🛑 [SUPERSEDED] Generación obsoleta detectada antes de ejecutar tools. Abortando inmediatamente.`);
             const supersededErr = new Error('GENERATION_SUPERSEDED');
             supersededErr.isSuperseded = true;
             throw supersededErr;
           }
 
           try {
-            
-            let apiResponse;
-            const toolSignature = `${call.name}_${JSON.stringify(call.args || {})}`;
-            if (executedToolsCache.has(toolSignature)) {
-              geminiWarn(`⚠️ [FC] Tool ${call.name} ya fue ejecutada exitosamente en esta sesión. Evitando doble mutación.`);
-              apiResponse = executedToolsCache.get(toolSignature);
-            } else {
-              apiResponse = await toolsHandler(call.name, call.args);
-              const isToolSuccess = apiResponse &&
-                apiResponse.success !== false &&
-                !apiResponse.error &&
-                !apiResponse.reason;
-              if (isToolSuccess) {
-                executedToolsCache.set(toolSignature, apiResponse);
+            const funcResponseParts = [];
+
+            for (const call of calls) {
+              sessionUsage.toolCalls++;
+              let apiResponse;
+              const toolSignature = `${call.name}_${JSON.stringify(call.args || {})}`;
+              if (executedToolsCache.has(toolSignature)) {
+                geminiWarn(`⚠️ [FC] Tool ${call.name} ya fue ejecutada exitosamente en esta sesión. Evitando doble mutación.`);
+                apiResponse = executedToolsCache.get(toolSignature);
+              } else {
+                apiResponse = await toolsHandler(call.name, call.args);
+                const isToolSuccess = apiResponse &&
+                  apiResponse.success !== false &&
+                  !apiResponse.error &&
+                  !apiResponse.reason;
+                if (isToolSuccess) {
+                  executedToolsCache.set(toolSignature, apiResponse);
+                }
+                if (apiResponse?.handoffActive === true) {
+                  sessionState.handoffActivated = true;
+                }
               }
-              if (apiResponse?.handoffActive === true) {
-                sessionState.handoffActivated = true;
+
+              // ─── SUPERSEDED GENERATION FAST ABORT ───
+              if ((typeof isSuperseded === 'function' && isSuperseded()) || (apiResponse && (apiResponse.error === 'GENERATION_SUPERSEDED' || apiResponse.reason === 'GENERATION_SUPERSEDED' || apiResponse.superseded === true))) {
+                geminiWarn(`🛑 [SUPERSEDED] Tool ${call.name} retornó GENERATION_SUPERSEDED o generación quedó obsoleta. Abortando loop de tools y ejecución de IA inmediatamente.`);
+                const supersededErr = new Error('GENERATION_SUPERSEDED');
+                supersededErr.isSuperseded = true;
+                throw supersededErr;
+              }
+
+              funcResponseParts.push({
+                functionResponse: {
+                  id:       call.id,
+                  name:     call.name,
+                  response: apiResponse,
+                }
+              });
+
+              if (sessionState.handoffActivated) {
+                geminiLog(`👤 [FC] Handoff a humano activado durante tool ${call.name}. Deteniendo herramientas adicionales.`);
+                break;
               }
             }
 
-            // ─── SUPERSEDED GENERATION FAST ABORT ───
-            if ((typeof isSuperseded === 'function' && isSuperseded()) || (apiResponse && (apiResponse.error === 'GENERATION_SUPERSEDED' || apiResponse.reason === 'GENERATION_SUPERSEDED' || apiResponse.superseded === true))) {
-              geminiWarn(`🛑 [SUPERSEDED] Tool ${call.name} retornó GENERATION_SUPERSEDED o generación quedó obsoleta. Abortando loop de tools y ejecución de IA inmediatamente.`);
-              const supersededErr = new Error('GENERATION_SUPERSEDED');
-              supersededErr.isSuperseded = true;
-              throw supersededErr;
-            }
-
-            if (sessionState.handoffActivated) {
-              geminiLog(`👤 [FC] Handoff a humano activado durante tool ${call.name}. Deteniendo rondas adicionales.`);
-              break;
-            }
-
-
-            let modelContent = { role: 'model', parts: [{ functionCall: call }] };
+            let modelContent = { role: 'model', parts: calls.map(c => ({ functionCall: c })) };
             if (response.candidates && response.candidates.length > 0 && response.candidates[0].content) {
-              // Preseveramos el objeto devuelto por el modelo EXACTAMENTE como llegó,
-              // incluyendo thought y thoughtSignatures para Gemini 3.0+
               modelContent = JSON.parse(JSON.stringify(response.candidates[0].content));
             }
             contents.push(modelContent);
+            contents.push({ role: 'user', parts: funcResponseParts });
 
-            const funcResponsePart = {
-              functionResponse: {
-                id:       call.id,
-                name:     call.name,
-                response: apiResponse,
-              }
-            };
-            contents.push({ role: 'user', parts: [funcResponsePart] });
+            if (sessionState.handoffActivated) {
+              break;
+            }
 
-            geminiLog(`🛠️ [FC] Ronda ${toolRounds}/${MAX_TOOL_ROUNDS} completada. Generando siguiente paso...`);
+            geminiLog(`🛠️ [FC] Ronda ${toolRounds}/${MAX_TOOL_ROUNDS} completada (${funcResponseParts.length} respuestas). Generando siguiente paso...`);
             response = await executeWithTimeout(`Intento ${attempt} - Ronda Tool ${toolRounds}`);
 
             accumulateUsage(response);
@@ -978,7 +982,7 @@ async function callGemini(
             if (funcErr?.isSuperseded || funcErr?.message === 'GENERATION_SUPERSEDED') {
               throw funcErr;
             }
-            geminiWarn(`Error en toolsHandler o encadenamiento para ${call.name}: ${funcErr.message}`);
+            geminiWarn(`Error en toolsHandler o encadenamiento: ${funcErr.message}`);
             throw funcErr;
           }
         }

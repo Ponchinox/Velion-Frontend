@@ -1,4 +1,4 @@
-import { isExplicitProductVideoIntent, isExplicitProductPhotoIntent } from '../controllers/whatsappController.js';
+import { isExplicitProductVideoIntent, isExplicitProductPhotoIntent, detectProductMediaIntent } from '../controllers/whatsappController.js';
 
 const STOP_WORDS = new Set([
   'de', 'la', 'el', 'los', 'las', 'un', 'una', 'unos', 'unas',
@@ -299,6 +299,22 @@ export function resolveTargetProduct(
         matchedProducts.push(product);
         continue;
       }
+    }
+
+    // Coincidencia por token distintivo único de marca o modelo (ej. "airpods", "geneva", "jbl")
+    // si dicho token tiene al menos 3 caracteres y ningún otro producto disponible lo posee
+    const hasUniqueDistinguishingToken = prodTokens.some(t => {
+      if (t.length < 3) return false;
+      const userMatched = Array.from(userTokens).some(ut => tokensMatch(ut, t));
+      if (!userMatched) return false;
+      return !availableProducts.some(other =>
+        other.id !== product.id &&
+        extractSignificantTokens(other.name).some(ot => tokensMatch(ot, t))
+      );
+    });
+    if (hasUniqueDistinguishingToken) {
+      matchedProducts.push(product);
+      continue;
     }
   }
 
@@ -665,6 +681,413 @@ export function getCanonicalProductVideoUrl(product) {
 }
 
 /**
+ * Encuentra todos los productos del catálogo que son mencionados en el mensaje del usuario,
+ * ordenados por su posición de aparición en el texto.
+ */
+export function findMentionedProducts(userMessageText, availableProducts = []) {
+  if (!userMessageText || typeof userMessageText !== 'string' || !Array.isArray(availableProducts) || availableProducts.length === 0) {
+    return [];
+  }
+
+  const normalizedUserText = normalizeText(userMessageText);
+  const userTokens = new Set(extractSignificantTokens(userMessageText));
+  const found = [];
+
+  for (const product of availableProducts) {
+    if (!product || !product.name) continue;
+    const normalizedProdName = normalizeText(product.name);
+    const prodTokens = extractSignificantTokens(product.name);
+
+    let matchIndex = -1;
+    let matchLength = 0;
+
+    // A. Coincidencia exacta de substring
+    const subIdx = normalizedUserText.indexOf(normalizedProdName);
+    if (subIdx !== -1) {
+      matchIndex = subIdx;
+      matchLength = normalizedProdName.length;
+    } else if (prodTokens.length > 0 && prodTokens.every(t => Array.from(userTokens).some(ut => tokensMatch(ut, t)))) {
+      // B. Todos los tokens presentes
+      let firstIdx = Infinity;
+      let lastIdx = -1;
+      let lastTokenLen = 0;
+      for (const t of prodTokens) {
+        const idx = normalizedUserText.indexOf(t);
+        if (idx !== -1 && idx < firstIdx) firstIdx = idx;
+        if (idx !== -1 && idx > lastIdx) {
+          lastIdx = idx;
+          lastTokenLen = t.length;
+        }
+      }
+      matchIndex = firstIdx === Infinity ? 0 : firstIdx;
+      matchLength = lastIdx !== -1 ? (lastIdx + lastTokenLen - firstIdx) : prodTokens.map(t => t.length).reduce((a, b) => a + b, 0);
+    } else if (prodTokens.length >= 2) {
+      // C. >= 50% de los tokens
+      const matchingTokens = prodTokens.filter(t => Array.from(userTokens).some(ut => tokensMatch(ut, t)));
+      if (matchingTokens.length >= 2 && (matchingTokens.length / prodTokens.length >= 0.5)) {
+        let firstIdx = Infinity;
+        let lastIdx = -1;
+        let lastTokenLen = 0;
+        for (const t of matchingTokens) {
+          const idx = normalizedUserText.indexOf(t);
+          if (idx !== -1 && idx < firstIdx) firstIdx = idx;
+          if (idx !== -1 && idx > lastIdx) {
+            lastIdx = idx;
+            lastTokenLen = t.length;
+          }
+        }
+        matchIndex = firstIdx === Infinity ? 0 : firstIdx;
+        matchLength = lastIdx !== -1 ? (lastIdx + lastTokenLen - firstIdx) : matchingTokens.map(t => t.length).reduce((a, b) => a + b, 0);
+      }
+    }
+
+    // D. Token distintivo único (>= 3 chars)
+    if (matchIndex === -1) {
+      const distinctTokens = prodTokens.filter(t => {
+        if (t.length < 3) return false;
+        const userMatched = Array.from(userTokens).some(ut => tokensMatch(ut, t));
+        if (!userMatched) return false;
+        return !availableProducts.some(other =>
+          other.id !== product.id &&
+          extractSignificantTokens(other.name).some(ot => tokensMatch(ot, t))
+        );
+      });
+      if (distinctTokens.length > 0) {
+        let firstIdx = Infinity;
+        let lastIdx = -1;
+        let lastTokenLen = 0;
+        for (const t of distinctTokens) {
+          const idx = normalizedUserText.indexOf(t);
+          if (idx !== -1 && idx < firstIdx) firstIdx = idx;
+          if (idx !== -1 && idx > lastIdx) {
+            lastIdx = idx;
+            lastTokenLen = t.length;
+          }
+        }
+        matchIndex = firstIdx === Infinity ? 0 : firstIdx;
+        matchLength = lastIdx !== -1 ? (lastIdx + lastTokenLen - firstIdx) : distinctTokens[0].length;
+      }
+    }
+
+    if (matchIndex !== -1) {
+      found.push({
+        product,
+        _matchIndex: matchIndex,
+        _matchLength: matchLength
+      });
+    }
+  }
+
+  // Deduplicar productos idénticos
+  const uniqueFound = [];
+  for (const item of found) {
+    if (!uniqueFound.some(u => u.product.id === item.product.id)) {
+      uniqueFound.push(item);
+    }
+  }
+
+  // Ordenar por orden lógico de aparición en el mensaje (Regla 3)
+  uniqueFound.sort((a, b) => a._matchIndex - b._matchIndex);
+  return uniqueFound;
+}
+
+/**
+ * Busca el índice relativo en `inBetween` donde se produce la separación de cláusula entre dos productos.
+ */
+function findClauseBoundaryOffset(inBetween) {
+  if (!inBetween || typeof inBetween !== 'string') return -1;
+
+  // 1. Divisores fuertes explícitos: + o ;
+  const strongMatch = inBetween.search(/[+;]/);
+  if (strongMatch !== -1) return strongMatch;
+
+  // 2. Conjunciones coordinantes de contraste o adición
+  const coordMatch = inBetween.search(/\b(?:pero|ademas|además|tambien|también|mientras)\b/i);
+  if (coordMatch !== -1) return coordMatch;
+
+  // 3. Frase de medios que introduce el siguiente producto: e.g. "y foto de", ", video del", "y pasame"
+  const nextMediaMatch = inBetween.search(/(?:[,;]|\by\b)\s*(?:(?:quiero|deseo|mandame|mándame|enviame|envíame|pasame|pásame|ver|dame)\s+)?(?:un[as]?\s+|el\s+|la\s+|los\s+|las\s+)?(?:foto|video|imagen|ambos|fotos|videos|im[aá]genes)\b/i);
+  if (nextMediaMatch !== -1) return nextMediaMatch;
+
+  // 4. Fallback a "y" o coma, enmascarando expresiones compuestas como "foto y video"
+  const masked = inBetween.replace(/\b(fotos?|videos?|im[aá]genes?)\s+(?:y|\+)\s+(fotos?|videos?|im[aá]genes?)\b/gi, (m) => '_'.repeat(m.length));
+  const fallbackMatch = masked.search(/(?:[,;]|\by\b)/i);
+  if (fallbackMatch !== -1) return fallbackMatch;
+
+  return -1;
+}
+
+/**
+ * Extrae los segmentos de texto asociados a cada producto mencionado, respetando el orden lógico.
+ */
+export function extractProductSegments(userMessageText, matchedItems = []) {
+  if (!matchedItems || matchedItems.length <= 1) {
+    return [{ product: matchedItems[0]?.product, segmentText: userMessageText }];
+  }
+
+  const segments = [];
+  for (let i = 0; i < matchedItems.length; i++) {
+    const current = matchedItems[i];
+    const prev = i > 0 ? matchedItems[i - 1] : null;
+    const next = i < matchedItems.length - 1 ? matchedItems[i + 1] : null;
+
+    let start = 0;
+    if (prev) {
+      const prevEnd = prev._matchIndex + (prev._matchLength || prev.product.name.length);
+      const inBetween = userMessageText.slice(prevEnd, current._matchIndex);
+      const boundaryOffset = findClauseBoundaryOffset(inBetween);
+      start = boundaryOffset !== -1 ? prevEnd + boundaryOffset : prevEnd;
+    }
+
+    let end = userMessageText.length;
+    if (next) {
+      const currentEnd = current._matchIndex + (current._matchLength || current.product.name.length);
+      const inBetween = userMessageText.slice(currentEnd, next._matchIndex);
+      const boundaryOffset = findClauseBoundaryOffset(inBetween);
+      end = boundaryOffset !== -1 ? currentEnd + boundaryOffset : next._matchIndex;
+    }
+
+    segments.push({
+      product: current.product,
+      segmentText: userMessageText.slice(start, end).trim()
+    });
+  }
+  return segments;
+}
+
+/**
+ * Divide el mensaje en cláusulas manteniendo intactas expresiones compuestas como "foto y video".
+ */
+export function splitMessageIntoClauses(userMessageText) {
+  if (!userMessageText || typeof userMessageText !== 'string') return [];
+
+  const placeholders = [];
+  const protectedText = userMessageText.replace(
+    /\b(fotos?|videos?|im[aá]genes?)\s+(?:y|\+)\s+(fotos?|videos?|im[aá]genes?)\b/gi,
+    (match) => {
+      const ph = `__MEDIA_PAIR_${placeholders.length}__`;
+      placeholders.push({ ph, original: match });
+      return ph;
+    }
+  );
+
+  const rawClauses = protectedText.split(
+    /(?:[+;]|\b(?:pero|ademas|además|tambien|también|mientras)\b|(?:\by\b|[,])\s*(?=(?:(?:quiero|deseo|mandame|mándame|enviame|envíame|pasame|pásame|ver|dame)\s+)?(?:un[as]?\s+|el\s+|la\s+|los\s+|las\s+)?(?:foto|video|imagen|ambos|fotos|videos|im[aá]genes)\b)|(?:\by\b|[,])\s*(?=(?:los|las|el|la|de|del)\s+))/i
+  );
+
+  const clauses = [];
+  for (let clause of rawClauses) {
+    if (!clause) continue;
+    for (const { ph, original } of placeholders) {
+      clause = clause.replaceAll(ph, original);
+    }
+    const trimmed = clause.trim();
+    if (trimmed.length > 0) clauses.push(trimmed);
+  }
+
+  return clauses.length > 0 ? clauses : [userMessageText];
+}
+
+/**
+ * Resuelve requerimientos de multimedia cuando un mismo mensaje contiene varios productos.
+ *
+ * @param {object} params
+ * @param {string} params.userMessageText
+ * @param {Array<object>} params.availableProducts
+ * @param {object} [params.currentCommercialState]
+ * @returns {object|null}
+ */
+export function resolveMultiProductMediaRequests({
+  userMessageText,
+  availableProducts = [],
+  currentCommercialState = {}
+}) {
+  if (!userMessageText || typeof userMessageText !== 'string') return null;
+  if (!Array.isArray(availableProducts) || availableProducts.length === 0) return null;
+
+  // Guardia de desmentido o referencia genérica sin producto confirmado
+  if (isUserProductDisavowal(userMessageText)) return null;
+  if (isGenericProductReference(userMessageText) && !currentCommercialState?.confirmedProductId && !currentCommercialState?.isProductConfirmed) {
+    return null;
+  }
+
+  const globalIntent = detectProductMediaIntent(userMessageText) || 'image';
+
+  // Analizar por cláusulas
+  const clauses = splitMessageIntoClauses(userMessageText);
+  const clauseResolved = [];
+  const ambiguousGroups = [];
+
+  for (const clause of clauses) {
+    // 1. Revisar si la cláusula menciona algún producto explícito
+    const clauseMentioned = findMentionedProducts(clause, availableProducts);
+    if (clauseMentioned.length > 0) {
+      for (const m of clauseMentioned) {
+        const clauseNorm = normalizeText(clause);
+        const isNegated = /\b(no\s+(?:quiero|deseo|me\s+interesa|voy\s+a\s+llevar)|ya\s+no\s+quiero|descarto)\b/i.test(clauseNorm);
+        if (!isNegated && !clauseResolved.some(r => r.product.id === m.product.id)) {
+          clauseResolved.push({
+            product: m.product,
+            clauseText: clause
+          });
+        }
+      }
+    } else {
+      // 2. Si no menciona un producto unívoco, verificar si es una consulta de categoría ambigua (ej. "reloj")
+      const catCheck = detectCategoryOrMultiProductQuery(clause, availableProducts);
+      if (catCheck && catCheck.isAmbiguous && Array.isArray(catCheck.candidateProducts) && catCheck.candidateProducts.length > 1) {
+        ambiguousGroups.push(catCheck.candidateProducts);
+      }
+    }
+  }
+
+  // Si el análisis por cláusulas no encontró >= 2 items (productos + grupos ambiguos),
+  // intentar también con findMentionedProducts en todo el mensaje
+  if (clauseResolved.length + ambiguousGroups.length <= 1) {
+    const fullMentioned = findMentionedProducts(userMessageText, availableProducts);
+    if (fullMentioned.length > 1) {
+      const nonNegatedFull = [];
+      for (const item of fullMentioned) {
+        const prodNorm = normalizeText(item.product.name);
+        const relevantClause = clauses.find(c => normalizeText(c).includes(prodNorm)) || userMessageText;
+        const clauseNorm = normalizeText(relevantClause);
+        const isNegated = /\b(no\s+(?:quiero|deseo|me\s+interesa|voy\s+a\s+llevar)|ya\s+no\s+quiero|descarto)\b/i.test(clauseNorm);
+        if (!isNegated && !nonNegatedFull.some(u => u.product.id === item.product.id)) {
+          nonNegatedFull.push(item);
+        }
+      }
+
+      if (nonNegatedFull.length > 1) {
+        const segments = extractProductSegments(userMessageText, nonNegatedFull);
+        clauseResolved.length = 0;
+        for (let i = 0; i < nonNegatedFull.length; i++) {
+          clauseResolved.push({
+            product: nonNegatedFull[i].product,
+            clauseText: segments[i]?.segmentText || userMessageText
+          });
+        }
+      }
+    }
+  }
+
+  // Si no hay múltiples productos ni combinación de producto explícito + ambigüedad:
+  if (clauseResolved.length + ambiguousGroups.length <= 1) {
+    return null; // Caso monoproducto o sin producto; se procesa por el flujo estándar
+  }
+
+  // Si solo hay grupos ambiguos y ningún producto válido resuelto:
+  if (clauseResolved.length === 0 && ambiguousGroups.length > 0) {
+    return {
+      isMultiProduct: true,
+      shouldDispatch: false,
+      isAmbiguous: true,
+      reason: 'AMBIGUOUS_PRODUCT_SELECTION',
+      mediaRequests: [],
+      mediaItems: [],
+      urls: [],
+      url: null,
+      hasAmbiguousProducts: true,
+      ambiguousGroups
+    };
+  }
+
+  // Procesar cada producto válido en orden de aparición en el mensaje original (Regla 3)
+  const mediaRequests = [];
+  const allMediaItems = [];
+  const seenUrls = new Set();
+
+  for (const item of clauseResolved) {
+    let requestedType = detectProductMediaIntent(item.clauseText);
+    if (!requestedType) {
+      requestedType = globalIntent;
+    }
+
+    const canonical = getCanonicalProductMedia(item.product);
+    const productMediaItems = [];
+    const missingMedia = [];
+
+    if (requestedType === 'both') {
+      if (canonical.hasImage && canonical.hasVideo) {
+        if (!seenUrls.has(canonical.images[0])) {
+          productMediaItems.push({ type: 'image', url: canonical.images[0], productId: item.product.id, productName: item.product.name });
+          seenUrls.add(canonical.images[0]);
+        }
+        if (!seenUrls.has(canonical.videos[0])) {
+          productMediaItems.push({ type: 'video', url: canonical.videos[0], productId: item.product.id, productName: item.product.name });
+          seenUrls.add(canonical.videos[0]);
+        }
+      } else if (canonical.hasImage && !canonical.hasVideo) {
+        if (!seenUrls.has(canonical.images[0])) {
+          productMediaItems.push({ type: 'image', url: canonical.images[0], productId: item.product.id, productName: item.product.name });
+          seenUrls.add(canonical.images[0]);
+        }
+        missingMedia.push('video');
+      } else if (!canonical.hasImage && canonical.hasVideo) {
+        if (!seenUrls.has(canonical.videos[0])) {
+          productMediaItems.push({ type: 'video', url: canonical.videos[0], productId: item.product.id, productName: item.product.name });
+          seenUrls.add(canonical.videos[0]);
+        }
+        missingMedia.push('image');
+      } else {
+        missingMedia.push('image', 'video');
+      }
+    } else if (requestedType === 'video') {
+      if (canonical.hasVideo) {
+        if (!seenUrls.has(canonical.videos[0])) {
+          productMediaItems.push({ type: 'video', url: canonical.videos[0], productId: item.product.id, productName: item.product.name });
+          seenUrls.add(canonical.videos[0]);
+        }
+      } else {
+        missingMedia.push('video');
+      }
+    } else {
+      // requestedType === 'image'
+      if (canonical.hasImage) {
+        if (!seenUrls.has(canonical.images[0])) {
+          productMediaItems.push({ type: 'image', url: canonical.images[0], productId: item.product.id, productName: item.product.name });
+          seenUrls.add(canonical.images[0]);
+        }
+      } else {
+        missingMedia.push('image');
+      }
+    }
+
+    mediaRequests.push({
+      product: item.product,
+      productId: item.product.id,
+      productName: item.product.name,
+      requestedType,
+      hasImage: canonical.hasImage,
+      hasVideo: canonical.hasVideo,
+      missingMedia,
+      mediaItems: productMediaItems
+    });
+
+    allMediaItems.push(...productMediaItems);
+  }
+
+  const hasAnyVideo = allMediaItems.some(m => m.type === 'video');
+  const hasAnyImage = allMediaItems.some(m => m.type === 'image');
+  const allUrls = allMediaItems.map(m => m.url);
+
+  return {
+    isMultiProduct: true,
+    shouldDispatch: allMediaItems.length > 0,
+    mediaRequests,
+    mediaItems: allMediaItems,
+    urls: allUrls,
+    url: allUrls[0] || null,
+    mediaType: (hasAnyVideo && hasAnyImage) ? 'both' : (hasAnyVideo ? 'video' : 'image'),
+    hasImage: hasAnyImage,
+    hasVideo: hasAnyVideo,
+    hasAmbiguousProducts: ambiguousGroups.length > 0,
+    ambiguousGroups,
+    isExplicit: true,
+    reason: 'MULTI_PRODUCT_MEDIA_REQUEST'
+  };
+}
+
+/**
  * Orquestador principal de multimedia de producto.
  * Decide de forma determinista si se debe despachar una imagen, video o ambos para el turno actual.
  *
@@ -689,6 +1112,17 @@ export function orchestrateProductMedia({
   const isExplicitVideo = isExplicitProductVideoIntent(userMessageText);
   const isExplicitPhoto = isExplicitProductPhotoIntent(userMessageText);
   const isExplicitMedia = isExplicitVideo || isExplicitPhoto;
+
+  // ── MULTI-PRODUCT MEDIA DISPATCH CHECK ──
+  const multiResult = resolveMultiProductMediaRequests({
+    userMessageText,
+    availableProducts,
+    currentCommercialState
+  });
+
+  if (multiResult && multiResult.isMultiProduct) {
+    return multiResult;
+  }
 
   const targetProduct = resolveTargetProduct(userMessageText, availableProducts, currentProductId, {
     isExplicitMedia,
