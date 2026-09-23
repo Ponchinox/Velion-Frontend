@@ -157,6 +157,7 @@ export async function createProduct(req, res) {
 export async function getProducts(req, res) {
   try {
     const userId = req.user.userId || req.user.id;
+    let tenantId = req.user?.tenantId;
 
     if (!userId) {
       return res.status(401).json({ error: 'Usuario no autenticado o sesión inválida.' });
@@ -166,12 +167,76 @@ export async function getProducts(req, res) {
       return res.json([]);
     }
 
-    const products = await prisma.product.findMany({
+    // Si tenantId no vino en req.user, resolverlo desde el usuario
+    if (!tenantId) {
+      const user = await prisma.user.findUnique({
+        where: { id: userId },
+        select: { tenantId: true },
+      });
+      tenantId = user?.tenantId;
+    }
+
+    const nativeProducts = await prisma.product.findMany({
       where: { userId },
       orderBy: { createdAt: 'desc' },
     });
 
-    return res.json(products);
+    let externalProducts = [];
+    if (tenantId) {
+      const externals = await prisma.externalProduct.findMany({
+        where: { tenantId },
+        include: {
+          variants: true,
+          integration: {
+            select: {
+              shopDomain: true,
+              status: true,
+            },
+          },
+        },
+        orderBy: { createdAt: 'desc' },
+      });
+
+      externalProducts = externals.map((ep) => {
+        const firstVariant = ep.variants?.[0];
+        const minPrice = ep.variants?.length > 0
+          ? Math.min(...ep.variants.map((v) => v.price))
+          : 0;
+        const totalStock = ep.variants?.reduce((sum, v) => sum + (v.inventoryQuantity || 0), 0) || 0;
+        const rawShopifyId = ep.externalId ? ep.externalId.replace('gid://shopify/Product/', '') : '';
+        const adminUrl = ep.integration?.shopDomain && rawShopifyId
+          ? `https://${ep.integration.shopDomain}/admin/products/${rawShopifyId}`
+          : null;
+
+        return {
+          id: ep.id,
+          name: ep.title,
+          description: ep.description || '',
+          price: minPrice || firstVariant?.price || 0,
+          isAvailable: ep.isAvailable,
+          imageUrl: ep.imageUrl || ep.images?.[0] || null,
+          images: ep.images || [],
+          type: 'PHYSICAL_PRODUCT',
+          source: 'SHOPIFY',
+          isExternal: true,
+          readOnly: true,
+          sku: firstVariant?.sku || null,
+          stock: totalStock,
+          variantsCount: ep.variants?.length || 0,
+          shopDomain: ep.integration?.shopDomain || null,
+          adminUrl,
+          createdAt: ep.createdAt,
+          updatedAt: ep.updatedAt,
+        };
+      });
+    }
+
+    const allProducts = [
+      ...nativeProducts.map((p) => ({ ...p, source: 'VELION', isExternal: false, readOnly: false })),
+      ...externalProducts,
+    ];
+
+    return res.json(allProducts);
   } catch (error) {
     console.error('Error en getProducts:', error);
     return res.json([]);
@@ -247,6 +312,18 @@ export async function deleteProduct(req, res) {
       return res.status(401).json({ error: 'Usuario no autenticado o sesión inválida.' });
     }
 
+    // Proteger productos sincronizados de Shopify (Read-Only)
+    const isExternal = await prisma.externalProduct.findUnique({
+      where: { id },
+      select: { id: true, provider: true },
+    });
+    if (isExternal) {
+      return res.status(403).json({
+        error: 'Este producto se administra desde Shopify.',
+        code: 'READ_ONLY_EXTERNAL_PRODUCT',
+      });
+    }
+
     // 1. Obtener la información del producto antes de borrarlo
     const product = await prisma.product.findFirst({
       where: { id, userId },
@@ -316,6 +393,19 @@ export async function updateProduct(req, res) {
     if (!userId) {
       cleanupUploadedFiles(req);
       return res.status(401).json({ error: 'Usuario no autenticado o sesión inválida.' });
+    }
+
+    // Proteger productos sincronizados de Shopify (Read-Only)
+    const isExternal = await prisma.externalProduct.findUnique({
+      where: { id },
+      select: { id: true, provider: true },
+    });
+    if (isExternal) {
+      cleanupUploadedFiles(req);
+      return res.status(403).json({
+        error: 'Este producto se administra desde Shopify.',
+        code: 'READ_ONLY_EXTERNAL_PRODUCT',
+      });
     }
 
     const currentProduct = await prisma.product.findFirst({

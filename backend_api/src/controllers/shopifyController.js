@@ -103,6 +103,14 @@ export async function getShopifyStatus(req, res) {
         lastSyncedAt: null,
         syncStatus: 'IDLE',
         lastSyncError: null,
+        catalogMode: 'VELION_ONLY',
+        priceSource: 'VELION',
+        stockSource: 'VELION',
+        settings: {
+          catalogMode: 'VELION_ONLY',
+          priceSource: 'VELION',
+          stockSource: 'VELION',
+        },
       });
     }
 
@@ -123,6 +131,11 @@ export async function getShopifyStatus(req, res) {
       catalogMode: integration.catalogMode,
       priceSource: integration.priceSource,
       stockSource: integration.stockSource,
+      settings: {
+        catalogMode: integration.catalogMode || 'VELION_ONLY',
+        priceSource: integration.priceSource || 'VELION',
+        stockSource: integration.stockSource || 'VELION',
+      },
       externalOrderMode: integration.externalOrderMode,
       createdAt: integration.createdAt,
       updatedAt: integration.updatedAt,

@@ -51,11 +51,15 @@ export default function ShopifyIntegrationPage() {
       setLoading(true);
       const res = await integrationService.getShopifyStatus();
       setShopifyStatus(res);
-      if (res && res.settings) {
+      const loadedMode = res?.catalogMode || res?.settings?.catalogMode;
+      const loadedPrice = res?.priceSource || res?.settings?.priceSource;
+      const loadedStock = res?.stockSource || res?.settings?.stockSource;
+
+      if (loadedMode || loadedPrice || loadedStock) {
         setCatalogSettings({
-          catalogMode: res.settings.catalogMode || 'VELION_ONLY',
-          priceSource: res.settings.priceSource || 'VELION',
-          stockSource: res.settings.stockSource || 'VELION',
+          catalogMode: loadedMode || 'VELION_ONLY',
+          priceSource: loadedPrice || 'VELION',
+          stockSource: loadedStock || 'VELION',
         });
       }
     } catch (err) {
@@ -221,17 +225,17 @@ export default function ShopifyIntegrationPage() {
               ) : isConnected ? (
                 <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-semibold bg-emerald-500/10 text-emerald-600 border border-emerald-500/20">
                   <CheckCircle size={13} weight="fill" />
-                  Conectado (LIVE_CONNECTION_CONFIRMED)
+                  Conexión activa
                 </span>
               ) : (shopifyStatus?.stage === 'READY_FOR_DEV_STORE' || shopifyStatus?.isConfigured) ? (
                 <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-semibold bg-blue-500/10 text-blue-600 border border-blue-500/20">
                   <ShieldCheck size={13} weight="fill" />
-                  Listo para Dev Store (READY_FOR_DEV_STORE)
+                  Lista para conectar
                 </span>
               ) : (
                 <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-semibold bg-amber-500/10 text-amber-700 border border-amber-500/20">
                   <Warning size={13} weight="fill" />
-                  Credenciales Pendientes (CREDENTIALS_REQUIRED)
+                  Configuración requerida
                 </span>
               )}
             </div>
@@ -349,7 +353,7 @@ export default function ShopifyIntegrationPage() {
                   <div className="p-3 rounded-xl bg-emerald-500/10 border border-emerald-500/20 text-emerald-900 text-2xs space-y-1">
                     <p className="font-bold flex items-center gap-1.5 text-emerald-800">
                       <ShieldCheck size={15} weight="fill" className="text-emerald-600" />
-                      <span>READY_FOR_DEV_STORE — Credenciales de App Activas</span>
+                      <span>Lista para conectar — Credenciales de App Activas</span>
                     </p>
                     <p className="text-emerald-700">
                       Ingrese el subdominio de su Development Store (ej. <code className="bg-white/70 px-1 py-0.5 rounded">mitienda-dev.myshopify.com</code>) y pulse conectar para autorizar vía OAuth oficial.

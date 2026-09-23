@@ -14,6 +14,7 @@ import {
   Package,
   VideoCamera,
   PlayCircle,
+  ArrowSquareOut,
 } from '@phosphor-icons/react';
 import * as XLSX from 'xlsx';
 
@@ -150,6 +151,7 @@ export default function Products() {
   const [toast, setToast] = useState(null);
   const [productToDelete, setProductToDelete] = useState(null);
   const [isDeleting, setIsDeleting] = useState(false);
+  const [shopifyReadOnlyModal, setShopifyReadOnlyModal] = useState(null);
 
   // Referencia para la carga de archivos Excel
   const fileInputRef = useRef(null);
@@ -360,6 +362,10 @@ export default function Products() {
 
   const handleEdit = (prod) => {
     try {
+      if (prod.source === 'SHOPIFY' || prod.isExternal) {
+        setShopifyReadOnlyModal(prod);
+        return;
+      }
       setEditingProduct(prod);
       setName(prod.name || '');
       setDescription(prod.description || '');
@@ -747,7 +753,14 @@ export default function Products() {
                       <td className="px-6 py-3 font-semibold text-hi">
                         <div className="flex items-center gap-2">
                           <span className="block truncate max-w-[180px]">{prod.name}</span>
-                          {prod.type === 'SERVICE' ? (
+                          {prod.source === 'SHOPIFY' || prod.isExternal ? (
+                            <span
+                              title="Sincronizado desde Shopify"
+                              className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20 flex-shrink-0"
+                            >
+                              Shopify
+                            </span>
+                          ) : prod.type === 'SERVICE' ? (
                             <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium bg-purple-500/10 text-purple-600 dark:text-purple-400 border border-purple-500/20 flex-shrink-0">
                               Servicio
                             </span>
@@ -819,15 +832,25 @@ export default function Products() {
                         <div className="inline-flex gap-1">
                           <button
                             onClick={() => handleEdit(prod)}
-                            className="p-1.5 rounded text-muted hover:text-hi hover:bg-app transition-colors"
-                            title="Editar"
+                            className="p-1.5 rounded text-muted hover:text-hi hover:bg-app transition-colors cursor-pointer"
+                            title={prod.isExternal ? 'Ver información en Shopify' : 'Editar'}
                           >
                             <PencilSimple size={16} />
                           </button>
                           <button
-                            onClick={() => setProductToDelete(prod)}
-                            className="p-1.5 rounded text-muted hover:text-danger hover:bg-red-50 transition-colors cursor-pointer"
-                            title="Eliminar"
+                            onClick={() => {
+                              if (prod.isExternal) {
+                                showToast('Este producto se administra desde Shopify.', 'info');
+                                return;
+                              }
+                              setProductToDelete(prod);
+                            }}
+                            className={`p-1.5 rounded transition-colors ${
+                              prod.isExternal
+                                ? 'text-gray-300 dark:text-gray-600 cursor-not-allowed'
+                                : 'text-muted hover:text-danger hover:bg-red-50 cursor-pointer'
+                            }`}
+                            title={prod.isExternal ? 'Este producto se administra desde Shopify' : 'Eliminar'}
                           >
                             <Trash size={16} />
                           </button>
@@ -1232,6 +1255,73 @@ export default function Products() {
         cancelText="Cancelar"
         isLoading={isDeleting}
       />
+
+      {/* Modal de Solo Lectura para Producto Shopify */}
+      <Modal
+        isOpen={Boolean(shopifyReadOnlyModal)}
+        onClose={() => setShopifyReadOnlyModal(null)}
+        title="Producto de Shopify"
+        subtitle="Sincronizado automáticamente desde tu tienda conectada."
+        maxWidth="max-w-md"
+      >
+        <div className="space-y-4">
+          <div className="p-3 rounded-xl bg-amber-500/10 border border-amber-500/20 text-amber-800 text-xs flex items-start gap-2.5">
+            <WarningCircle size={18} weight="fill" className="text-amber-600 shrink-0 mt-0.5" />
+            <div>
+              <p className="font-bold">Este producto se administra desde Shopify.</p>
+              <p className="text-2xs text-amber-700 mt-0.5">
+                El precio, el stock y las variantes provienen directamente de tu tienda Shopify y son de solo lectura dentro de Velion.
+              </p>
+            </div>
+          </div>
+
+          <div className="bg-app/40 rounded-xl p-3 border border-line space-y-2 text-xs">
+            <div className="flex justify-between items-center py-1 border-b border-line/60">
+              <span className="text-lo">Nombre:</span>
+              <span className="font-bold text-hi text-right max-w-[220px] truncate">{shopifyReadOnlyModal?.name}</span>
+            </div>
+            <div className="flex justify-between items-center py-1 border-b border-line/60">
+              <span className="text-lo">Precio:</span>
+              <span className="font-bold font-mono text-emerald-600">S/. {(shopifyReadOnlyModal?.price || 0).toFixed(2)}</span>
+            </div>
+            <div className="flex justify-between items-center py-1 border-b border-line/60">
+              <span className="text-lo">Stock disponible:</span>
+              <span className="font-bold font-mono text-hi">{shopifyReadOnlyModal?.stock ?? '—'} unid.</span>
+            </div>
+            {shopifyReadOnlyModal?.sku && (
+              <div className="flex justify-between items-center py-1 border-b border-line/60">
+                <span className="text-lo">SKU:</span>
+                <span className="font-mono text-hi">{shopifyReadOnlyModal.sku}</span>
+              </div>
+            )}
+            <div className="flex justify-between items-center py-1">
+              <span className="text-lo">Variantes sincronizadas:</span>
+              <span className="font-bold text-hi">{shopifyReadOnlyModal?.variantsCount || 1}</span>
+            </div>
+          </div>
+
+          <div className="flex items-center justify-end gap-2 pt-2 border-t border-line">
+            <button
+              type="button"
+              onClick={() => setShopifyReadOnlyModal(null)}
+              className="px-4 py-2 rounded-lg border border-line text-xs font-semibold text-mid hover:text-hi hover:bg-app transition-colors cursor-pointer"
+            >
+              Cerrar
+            </button>
+            {shopifyReadOnlyModal?.adminUrl && (
+              <a
+                href={shopifyReadOnlyModal.adminUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold transition-all shadow-sm cursor-pointer"
+              >
+                <span>Administrar en Shopify</span>
+                <ArrowSquareOut size={14} weight="bold" />
+              </a>
+            )}
+          </div>
+        </div>
+      </Modal>
 
       {/* Toasts */}
       {toast && (
