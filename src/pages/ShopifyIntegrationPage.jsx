@@ -10,6 +10,9 @@ import {
   ShieldCheck,
   Warning,
   Storefront,
+  DotsThree,
+  Check,
+  X,
 } from '@phosphor-icons/react';
 import * as integrationService from '../services/integrationService';
 import ConfirmModal from '../components/ui/ConfirmModal';
@@ -29,6 +32,7 @@ export default function ShopifyIntegrationPage() {
   const [isSavingSettings, setIsSavingSettings] = useState(false);
   const [disconnectModalOpen, setDisconnectModalOpen] = useState(false);
   const [isDisconnecting, setIsDisconnecting] = useState(false);
+  const [actionMenuOpen, setActionMenuOpen] = useState(false);
 
   // Configuración editable
   const [catalogSettings, setCatalogSettings] = useState({
@@ -262,6 +266,18 @@ export default function ShopifyIntegrationPage() {
               </div>
             ) : isConnected ? (
               <div className="space-y-3.5 text-xs">
+                {/* Indicadores de Estado Activo */}
+                <div className="p-3 rounded-xl bg-app border border-line space-y-2">
+                  <div className="flex items-center gap-2 font-semibold text-emerald-600 dark:text-emerald-400">
+                    <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
+                    <span>Conexión activa</span>
+                  </div>
+                  <div className="flex items-center gap-2 text-2xs text-mid">
+                    <span className="w-2 h-2 rounded-full bg-emerald-500" />
+                    <span>Sincronización automática activa</span>
+                  </div>
+                </div>
+
                 <div>
                   <span className="text-lo block font-medium">Dominio de la tienda:</span>
                   <span className="text-hi font-mono font-bold text-sm break-all">
@@ -295,32 +311,55 @@ export default function ShopifyIntegrationPage() {
                   </div>
                 )}
 
-                <div className="pt-2 border-t border-line space-y-2">
-                  <button
-                    onClick={handleSync}
-                    disabled={isSyncing}
-                    className="w-full inline-flex items-center justify-center gap-2 py-2.5 px-4 rounded-xl bg-brand hover:bg-brand-hover text-white text-xs font-bold transition-all shadow-sm cursor-pointer disabled:opacity-50"
-                  >
-                    {isSyncing ? (
-                      <>
-                        <CircleNotch size={16} className="animate-spin" />
-                        Sincronizando...
-                      </>
-                    ) : (
-                      <>
-                        <ArrowsClockwise size={16} weight="bold" />
-                        Sincronizar ahora
-                      </>
-                    )}
-                  </button>
-
+                {/* Acciones: Desconectar tienda (Principal) y Forzar resincronización (Secundario) */}
+                <div className="pt-2 border-t border-line space-y-3">
                   <button
                     onClick={() => setDisconnectModalOpen(true)}
-                    className="w-full inline-flex items-center justify-center gap-2 py-2 px-4 rounded-xl bg-red-500/10 hover:bg-red-500/20 text-red-600 border border-red-500/20 text-xs font-bold transition-colors cursor-pointer"
+                    className="w-full inline-flex items-center justify-center gap-2 py-2.5 px-4 rounded-xl bg-red-500/10 hover:bg-red-500/20 text-red-600 dark:text-red-400 border border-red-500/20 text-xs font-bold transition-colors cursor-pointer"
                   >
                     <LinkBreak size={16} weight="bold" />
                     Desconectar tienda
                   </button>
+
+                  <div className="relative">
+                    <div className="flex items-center justify-between p-2 rounded-xl bg-app/50 border border-line">
+                      <span className="text-2xs text-lo font-medium">Sincronización manual</span>
+                      <div className="relative">
+                        <button
+                          type="button"
+                          onClick={() => setActionMenuOpen((prev) => !prev)}
+                          className="p-1.5 rounded-lg text-muted hover:text-hi hover:bg-card border border-transparent hover:border-line transition-all cursor-pointer"
+                          title="Más acciones"
+                        >
+                          <DotsThree size={18} weight="bold" />
+                        </button>
+
+                        {actionMenuOpen && (
+                          <div className="absolute right-0 bottom-full mb-1 w-52 bg-card border border-line rounded-xl shadow-lg p-1.5 z-20 space-y-1">
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setActionMenuOpen(false);
+                                handleSync();
+                              }}
+                              disabled={isSyncing}
+                              className="w-full flex items-center gap-2 px-3 py-2 text-left rounded-lg text-xs font-medium text-hi hover:bg-app transition-colors cursor-pointer disabled:opacity-50"
+                            >
+                              {isSyncing ? (
+                                <CircleNotch size={14} className="animate-spin text-brand" />
+                              ) : (
+                                <ArrowsClockwise size={14} />
+                              )}
+                              <span>Forzar resincronización</span>
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                    <p className="text-[11px] text-lo mt-1.5 leading-relaxed">
+                      La sincronización se realiza automáticamente cuando Shopify detecta cambios. Puedes forzar una resincronización completa si es necesario.
+                    </p>
+                  </div>
                 </div>
               </div>
             ) : (
@@ -415,6 +454,92 @@ export default function ShopifyIntegrationPage() {
                 </div>
               </div>
             )}
+          </div>
+
+          {/* Tarjeta: Datos utilizados de Shopify */}
+          <div className="bg-card rounded-2xl border border-line p-6 shadow-sm space-y-4">
+            <div className="border-b border-line pb-3">
+              <h2 className="text-sm font-bold text-hi flex items-center gap-2">
+                <ShieldCheck size={18} className="text-brand" weight="bold" />
+                <span>Datos utilizados de Shopify</span>
+              </h2>
+              <p className="text-2xs text-lo mt-0.5">
+                Transparencia según los permisos (scopes) oficiales otorgados.
+              </p>
+            </div>
+
+            <div className="space-y-4 text-xs">
+              {/* Lo que Velion puede acceder */}
+              <div className="space-y-2">
+                <p className="text-2xs font-bold uppercase tracking-wider text-emerald-600 dark:text-emerald-400">
+                  Velion puede acceder a:
+                </p>
+                <ul className="space-y-1.5 text-2xs text-mid">
+                  <li className="flex items-center gap-2">
+                    <Check size={13} weight="bold" className="text-emerald-500 shrink-0" />
+                    <span>Productos</span>
+                  </li>
+                  <li className="flex items-center gap-2">
+                    <Check size={13} weight="bold" className="text-emerald-500 shrink-0" />
+                    <span>Variantes</span>
+                  </li>
+                  <li className="flex items-center gap-2">
+                    <Check size={13} weight="bold" className="text-emerald-500 shrink-0" />
+                    <span>Nombres y descripciones</span>
+                  </li>
+                  <li className="flex items-center gap-2">
+                    <Check size={13} weight="bold" className="text-emerald-500 shrink-0" />
+                    <span>Imágenes / multimedia del catálogo</span>
+                  </li>
+                  <li className="flex items-center gap-2">
+                    <Check size={13} weight="bold" className="text-emerald-500 shrink-0" />
+                    <span>Precios</span>
+                  </li>
+                  <li className="flex items-center gap-2">
+                    <Check size={13} weight="bold" className="text-emerald-500 shrink-0" />
+                    <span>Disponibilidad e inventario</span>
+                  </li>
+                  <li className="flex items-center gap-2">
+                    <Check size={13} weight="bold" className="text-emerald-500 shrink-0" />
+                    <span>Información necesaria para crear Draft Orders cuando esa función se usa</span>
+                  </li>
+                </ul>
+              </div>
+
+              {/* Lo que Velion NO utiliza */}
+              <div className="space-y-2 pt-2 border-t border-line">
+                <p className="text-2xs font-bold uppercase tracking-wider text-muted">
+                  Velion NO utiliza actualmente:
+                </p>
+                <ul className="space-y-1.5 text-2xs text-lo">
+                  <li className="flex items-center gap-2">
+                    <X size={13} weight="bold" className="text-red-400 shrink-0" />
+                    <span>Perfil general del propietario</span>
+                  </li>
+                  <li className="flex items-center gap-2">
+                    <X size={13} weight="bold" className="text-red-400 shrink-0" />
+                    <span>Contraseña de Shopify</span>
+                  </li>
+                  <li className="flex items-center gap-2">
+                    <X size={13} weight="bold" className="text-red-400 shrink-0" />
+                    <span>Métodos de pago de la tienda</span>
+                  </li>
+                  <li className="flex items-center gap-2">
+                    <X size={13} weight="bold" className="text-red-400 shrink-0" />
+                    <span>Clientes completos mediante read_customers</span>
+                  </li>
+                  <li className="flex items-center gap-2">
+                    <X size={13} weight="bold" className="text-red-400 shrink-0" />
+                    <span>Historial general de pedidos mediante read_orders</span>
+                  </li>
+                </ul>
+              </div>
+
+              {/* Aviso institucional de fuente de verdad */}
+              <div className="p-3 rounded-xl bg-app border border-line text-[11px] text-lo leading-relaxed">
+                Shopify continúa siendo la fuente de verdad para los productos sincronizados. Las modificaciones de estos productos se realizan directamente desde Shopify.
+              </div>
+            </div>
           </div>
         </div>
 

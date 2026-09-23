@@ -706,6 +706,7 @@ export default function Products() {
                   <th scope="col" className="px-6 py-4">Descripción</th>
                   <th scope="col" className="px-6 py-4">Precio</th>
                   <th scope="col" className="px-6 py-4">Estado</th>
+                  <th scope="col" className="px-6 py-4">Origen</th>
                   <th scope="col" className="px-6 py-4 text-right">Acciones</th>
                 </tr>
               </thead>
@@ -752,22 +753,17 @@ export default function Products() {
                       {/* Columna Nombre */}
                       <td className="px-6 py-3 font-semibold text-hi">
                         <div className="flex items-center gap-2">
-                          <span className="block truncate max-w-[180px]">{prod.name}</span>
-                          {prod.source === 'SHOPIFY' || prod.isExternal ? (
-                            <span
-                              title="Sincronizado desde Shopify"
-                              className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20 flex-shrink-0"
-                            >
-                              Shopify
-                            </span>
-                          ) : prod.type === 'SERVICE' ? (
-                            <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium bg-purple-500/10 text-purple-600 dark:text-purple-400 border border-purple-500/20 flex-shrink-0">
-                              Servicio
-                            </span>
-                          ) : (
-                            <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium bg-slate-500/10 text-slate-600 dark:text-slate-400 border border-slate-500/20 flex-shrink-0">
-                              Físico
-                            </span>
+                          <span className="block truncate max-w-[200px]" title={prod.name}>{prod.name}</span>
+                          {prod.source !== 'SHOPIFY' && !prod.isExternal && (
+                            prod.type === 'SERVICE' ? (
+                              <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium bg-purple-500/10 text-purple-600 dark:text-purple-400 border border-purple-500/20 flex-shrink-0">
+                                Servicio
+                              </span>
+                            ) : (
+                              <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium bg-slate-500/10 text-slate-600 dark:text-slate-400 border border-slate-500/20 flex-shrink-0">
+                                Físico
+                              </span>
+                            )
                           )}
                         </div>
                       </td>
@@ -812,49 +808,108 @@ export default function Products() {
                         })()}
                       </td>
 
-                      {/* Columna Disponibilidad */}
+                      {/* Columna Estado */}
                       <td className="px-6 py-3">
-                        {prod.isAvailable ? (
-                          <div className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-emerald-50 text-emerald-700 text-2xs font-bold border border-emerald-200">
-                            <span className="w-1.5 h-1.5 rounded-full bg-emerald-600" />
-                            Disponible
-                          </div>
+                        {(() => {
+                          const isExternal = prod.source === 'SHOPIFY' || prod.isExternal;
+                          if (isExternal) {
+                            const isUntracked = prod.inventoryTracked === false;
+                            const isAvailable = isUntracked
+                              ? prod.isAvailable !== false
+                              : (prod.stock > 0 && prod.isAvailable !== false);
+
+                            if (isUntracked && isAvailable) {
+                              return (
+                                <div
+                                  title="Inventario no rastreado en Shopify"
+                                  className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-400 text-2xs font-bold border border-emerald-200 dark:border-emerald-800 cursor-help"
+                                >
+                                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-600" />
+                                  <span>Disponible</span>
+                                  <span className="text-[10px] text-emerald-600/80 font-normal">ℹ</span>
+                                </div>
+                              );
+                            }
+
+                            return isAvailable ? (
+                              <div className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-400 text-2xs font-bold border border-emerald-200 dark:border-emerald-800">
+                                <span className="w-1.5 h-1.5 rounded-full bg-emerald-600" />
+                                <span>Disponible</span>
+                              </div>
+                            ) : (
+                              <div className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-red-50 dark:bg-red-950/40 text-danger text-2xs font-bold border border-red-200 dark:border-red-800">
+                                <span className="w-1.5 h-1.5 rounded-full bg-danger" />
+                                <span>Agotado</span>
+                              </div>
+                            );
+                          }
+
+                          return prod.isAvailable ? (
+                            <div className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-400 text-2xs font-bold border border-emerald-200 dark:border-emerald-800">
+                              <span className="w-1.5 h-1.5 rounded-full bg-emerald-600" />
+                              Disponible
+                            </div>
+                          ) : (
+                            <div className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-red-50 dark:bg-red-950/40 text-danger text-2xs font-bold border border-red-200 dark:border-red-800">
+                              <span className="w-1.5 h-1.5 rounded-full bg-danger" />
+                              Agotado
+                            </div>
+                          );
+                        })()}
+                      </td>
+
+                      {/* Columna Origen */}
+                      <td className="px-6 py-3">
+                        {prod.source === 'SHOPIFY' || prod.isExternal ? (
+                          <span
+                            title="Sincronizado desde Shopify (Solo lectura)"
+                            className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-2xs font-bold bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/25"
+                          >
+                            <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
+                            Shopify
+                          </span>
                         ) : (
-                          <div className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-red-50 text-danger text-2xs font-bold border border-red-200">
-                            <span className="w-1.5 h-1.5 rounded-full bg-danger" />
-                            Agotado
-                          </div>
+                          <span
+                            title="Producto nativo de Velion"
+                            className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-2xs font-bold bg-purple-500/10 text-purple-600 dark:text-purple-400 border border-purple-500/25"
+                          >
+                            <span className="w-1.5 h-1.5 rounded-full bg-purple-500" />
+                            Velion
+                          </span>
                         )}
                       </td>
 
                       {/* Columna Acciones */}
                       <td className="px-6 py-3 text-right">
-                        <div className="inline-flex gap-1">
-                          <button
-                            onClick={() => handleEdit(prod)}
-                            className="p-1.5 rounded text-muted hover:text-hi hover:bg-app transition-colors cursor-pointer"
-                            title={prod.isExternal ? 'Ver información en Shopify' : 'Editar'}
+                        {prod.source === 'SHOPIFY' || prod.isExternal ? (
+                          <a
+                            href={prod.adminUrl || `https://${prod.shopDomain || 'admin.shopify.com'}/admin/products`}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-700 dark:text-emerald-400 border border-emerald-500/30 transition-all cursor-pointer whitespace-nowrap shadow-xs"
+                            title="Administrar en Shopify Admin (abre en pestaña nueva)"
                           >
-                            <PencilSimple size={16} />
-                          </button>
-                          <button
-                            onClick={() => {
-                              if (prod.isExternal) {
-                                showToast('Este producto se administra desde Shopify.', 'info');
-                                return;
-                              }
-                              setProductToDelete(prod);
-                            }}
-                            className={`p-1.5 rounded transition-colors ${
-                              prod.isExternal
-                                ? 'text-gray-300 dark:text-gray-600 cursor-not-allowed'
-                                : 'text-muted hover:text-danger hover:bg-red-50 cursor-pointer'
-                            }`}
-                            title={prod.isExternal ? 'Este producto se administra desde Shopify' : 'Eliminar'}
-                          >
-                            <Trash size={16} />
-                          </button>
-                        </div>
+                            <ArrowSquareOut size={14} weight="bold" />
+                            <span>Administrar en Shopify</span>
+                          </a>
+                        ) : (
+                          <div className="inline-flex gap-1 justify-end">
+                            <button
+                              onClick={() => handleEdit(prod)}
+                              className="p-1.5 rounded text-muted hover:text-hi hover:bg-app transition-colors cursor-pointer"
+                              title="Editar"
+                            >
+                              <PencilSimple size={16} />
+                            </button>
+                            <button
+                              onClick={() => setProductToDelete(prod)}
+                              className="p-1.5 rounded text-muted hover:text-danger hover:bg-red-50 dark:hover:bg-red-950/30 transition-colors cursor-pointer"
+                              title="Eliminar"
+                            >
+                              <Trash size={16} />
+                            </button>
+                          </div>
+                        )}
                       </td>
                     </tr>
                   );

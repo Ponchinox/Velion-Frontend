@@ -21,6 +21,7 @@ import {
   triggerShopifySync,
   updateShopifySettings,
 } from '../controllers/shopifyController.js';
+import { handleShopifyWebhook } from '../controllers/shopifyWebhookController.js';
 import {
   OAUTH_COOKIE_NAME,
   resolveOAuthCookieSecure,
@@ -49,5 +50,9 @@ router.get('/callback', handleShopifyCallback);
 router.post('/disconnect', authMiddleware, disconnectShopify);
 router.post('/sync', authMiddleware, triggerShopifySync);
 router.patch('/settings', authMiddleware, updateShopifySettings);
+
+// Webhooks oficiales de Shopify (autenticados por HMAC de Shopify + deduplicación)
+router.post('/webhook', handleShopifyWebhook);
+router.post('/webhooks', handleShopifyWebhook);
 
 export default router;

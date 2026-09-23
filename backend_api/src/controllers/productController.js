@@ -207,6 +207,7 @@ export async function getProducts(req, res) {
         const adminUrl = ep.integration?.shopDomain && rawShopifyId
           ? `https://${ep.integration.shopDomain}/admin/products/${rawShopifyId}`
           : null;
+        const inventoryTracked = totalStock > 0 || !ep.isAvailable;
 
         return {
           id: ep.id,
@@ -222,6 +223,7 @@ export async function getProducts(req, res) {
           readOnly: true,
           sku: firstVariant?.sku || null,
           stock: totalStock,
+          inventoryTracked,
           variantsCount: ep.variants?.length || 0,
           shopDomain: ep.integration?.shopDomain || null,
           adminUrl,
@@ -232,7 +234,7 @@ export async function getProducts(req, res) {
     }
 
     const allProducts = [
-      ...nativeProducts.map((p) => ({ ...p, source: 'VELION', isExternal: false, readOnly: false })),
+      ...nativeProducts.map((p) => ({ ...p, source: 'VELION', isExternal: false, readOnly: false, inventoryTracked: true })),
       ...externalProducts,
     ];
 

@@ -59,7 +59,8 @@ app.use(express.json({
   verify: (req, res, buf) => {
     if (req.originalUrl && (
       req.originalUrl.includes('/stripe/webhook') ||
-      req.originalUrl.includes('/api/whatsapp/meta/webhook')
+      req.originalUrl.includes('/api/whatsapp/meta/webhook') ||
+      req.originalUrl.includes('/api/integrations/shopify/webhook')
     )) {
       req.rawBody = buf;
     }

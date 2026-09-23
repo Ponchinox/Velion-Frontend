@@ -34,6 +34,7 @@ import {
   ShopifySyncConflictError,
   ShopifyIntegrationNotConnectedError,
 } from '../services/integrations/shopify/shopifyErrors.js';
+import { registerShopifyWebhooks } from '../services/integrations/shopify/shopifyWebhookService.js';
 
 /**
  * Helper para extraer una cookie específica del encabezado req.headers.cookie
@@ -297,6 +298,13 @@ export async function handleShopifyCallback(req, res) {
       tokenData,
     });
 
+    // Auto-registrar suscripciones a webhooks en Shopify
+    try {
+      await registerShopifyWebhooks(validatedState.tenantId);
+    } catch (whErr) {
+      console.warn('[Shopify Callback] No se pudieron registrar webhooks de inmediato:', whErr.message);
+    }
+
     // 7. Redirigir al frontend Vercel o destino validado
     let destination = validatedState.returnTo;
     const defaultFrontend = process.env.FRONTEND_URL || 'https://velion-agent.vercel.app';
@@ -384,6 +392,11 @@ export async function triggerShopifySync(req, res) {
 
   try {
     const result = await syncShopifyCatalog(tenantId);
+    // Asegurar registro de webhooks en Shopify
+    registerShopifyWebhooks(tenantId).catch((whErr) => {
+      console.warn('[Shopify Sync] No se pudieron registrar webhooks:', whErr.message);
+    });
+
     return res.json({
       success: true,
       productsSynced: result.productsSynced,
