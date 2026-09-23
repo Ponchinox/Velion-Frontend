@@ -1,3 +1,4 @@
+import './src/config/loadEnv.js';
 import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
@@ -39,8 +40,7 @@ import {
 } from './src/config/serverConfig.js';
 import { validateCriticalConfig } from './src/config/configValidator.js';
 
-// Cargar variables de entorno
-dotenv.config();
+// Variables de entorno cargadas al inicio mediante ./src/config/loadEnv.js
 
 // Validación fail-fast de seguridad crítica al iniciar
 validateCriticalConfig();

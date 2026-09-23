@@ -192,7 +192,7 @@ export function isExplicitProductPhotoIntent(text) {
 
   // 1b. Guardia: Si la frase solicita SOLO video explícitamente (sin mención de foto/imagen),
   // NO la clasificamos como intención de foto. Esto evita que "muéstrame el video" retorne both.
-  const isOnlyVideoRequest = /\b(muestrame|mandame|enviame|pasame|ensename|comparteme|comparte)\s+(?:el\s+|un\s+|los\s+)?videos?\b/.test(normalized)
+  const isOnlyVideoRequest = /\b(muestrame|mandame|enviame|pasame|ensename|comparteme|comparte|ver|quiero\s+ver|deseo\s+ver)\s+(?:el\s+|un\s+|los\s+)?videos?\b/.test(normalized)
     && !/\b(fotos?|imagen(?:es)?)\b/.test(normalized);
   if (isOnlyVideoRequest) {
     return false;
