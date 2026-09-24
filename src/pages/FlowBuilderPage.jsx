@@ -41,6 +41,7 @@ import {
   CheckCheck
 } from 'lucide-react';
 import * as flowService from '../services/flowService';
+import * as connectionService from '../services/connectionService';
 import { useUnsavedChanges } from '../context/UnsavedChangesContext';
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -452,6 +453,33 @@ function FlowBuilderInner() {
   const [isTestModalOpen, setIsTestModalOpen] = useState(false);
   const [paletteSearch, setPaletteSearch] = useState('');
   const [copiedTrigger, setCopiedTrigger] = useState(false);
+
+  // Estado real de conexión WhatsApp del tenant autenticado
+  const [whatsappStatus, setWhatsappStatus] = useState({ connected: false, phone: null, loading: false });
+
+  // Cargar estado real de WhatsApp al abrir el modal de prueba
+  useEffect(() => {
+    if (!isTestModalOpen) return;
+    let cancelled = false;
+    const fetchStatus = async () => {
+      setWhatsappStatus(prev => ({ ...prev, loading: true }));
+      try {
+        const data = await connectionService.getStatus();
+        if (cancelled) return;
+        const isConnected = data.status === 'open' || data.status === 'CONNECTED';
+        setWhatsappStatus({
+          connected: isConnected,
+          phone: data.phone || null,
+          loading: false,
+        });
+      } catch {
+        if (cancelled) return;
+        setWhatsappStatus({ connected: false, phone: null, loading: false });
+      }
+    };
+    fetchStatus();
+    return () => { cancelled = true; };
+  }, [isTestModalOpen]);
 
   const { isDirty, setIsDirty } = useUnsavedChanges();
 
@@ -1436,15 +1464,32 @@ function FlowBuilderInner() {
 
             {/* Pasos */}
             <div className="p-5 space-y-4">
-              <div className="flex items-center justify-between p-3 rounded-xl bg-emerald-50 border border-emerald-200 text-emerald-950">
-                <div className="flex items-center gap-2">
-                  <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-pulse" />
-                  <span className="text-xs font-bold">WhatsApp Conectado</span>
+              {whatsappStatus.loading ? (
+                <div className="flex items-center justify-center p-3 rounded-xl bg-slate-50 border border-slate-200 text-slate-500">
+                  <RefreshCw size={14} className="animate-spin mr-2" />
+                  <span className="text-xs font-bold">Verificando conexión…</span>
                 </div>
-                <span className="text-[11px] font-mono font-semibold text-emerald-800">
-                  +51 926 246 740
-                </span>
-              </div>
+              ) : whatsappStatus.connected ? (
+                <div className="flex items-center justify-between p-3 rounded-xl bg-emerald-50 border border-emerald-200 text-emerald-950">
+                  <div className="flex items-center gap-2">
+                    <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-pulse" />
+                    <span className="text-xs font-bold">WhatsApp Conectado</span>
+                  </div>
+                  <span className="text-[11px] font-mono font-semibold text-emerald-800">
+                    {whatsappStatus.phone || 'Número no disponible'}
+                  </span>
+                </div>
+              ) : (
+                <div className="flex items-center justify-between p-3 rounded-xl bg-amber-50 border border-amber-200 text-amber-950">
+                  <div className="flex items-center gap-2">
+                    <span className="w-2.5 h-2.5 rounded-full bg-amber-400" />
+                    <span className="text-xs font-bold">WhatsApp No Conectado</span>
+                  </div>
+                  <span className="text-[11px] font-semibold text-amber-700">
+                    Conecta en Ajustes → Conexiones
+                  </span>
+                </div>
+              )}
 
               <div className="space-y-2.5 text-xs text-slate-700">
                 <div className="flex items-start gap-2.5">
