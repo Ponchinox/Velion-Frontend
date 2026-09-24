@@ -572,8 +572,8 @@ async function main() {
     prisma.product.findMany = async ({ where }) => {
       assert.strictEqual(where.user.tenantId, testTenantId);
       return [
-        { id: 'uuid-phys', name: 'Libro Fisica', price: 60.00, promotionalPrice: null, category: 'Libros', type: 'PHYSICAL_PRODUCT' },
-        { id: 'uuid-serv', name: 'Intensivo UNI', price: 350.00, promotionalPrice: null, category: 'Educacion', type: 'SERVICE' }
+        { id: 'uuid-phys', name: 'Libro Fisica', price: 60.00, promotionalPrice: null, category: 'Libros', type: 'PHYSICAL_PRODUCT', isAvailable: true },
+        { id: 'uuid-serv', name: 'Intensivo UNI', price: 350.00, promotionalPrice: null, category: 'Educacion', type: 'SERVICE', isAvailable: true }
       ];
     };
 
@@ -581,9 +581,9 @@ async function main() {
       invalidateCatalogCache(testTenantId);
       const csv = await getCompactCatalogIndex(testTenantId);
 
-      assert.ok(csv.startsWith('ID,Nombre,Precio,Tipo,Categoria\n'), 'CSV debe comenzar con el header incluyendo columna Tipo');
-      assert.ok(csv.includes('uuid-phys,Libro Fisica,S/. 60,PHYSICAL_PRODUCT,Libros\n'), 'Debe incluir fila física con PHYSICAL_PRODUCT');
-      assert.ok(csv.includes('uuid-serv,Intensivo UNI,S/. 350,SERVICE,Educacion\n'), 'Debe incluir fila de servicio con SERVICE');
+      assert.ok(csv.startsWith('ID,Nombre,Precio,Tipo,Disponible,Categoria\n'), 'CSV debe comenzar con el header incluyendo columna Disponible');
+      assert.ok(csv.includes('uuid-phys,Libro Fisica,S/. 60,PHYSICAL_PRODUCT,Sí,Libros\n'), 'Debe incluir fila física con PHYSICAL_PRODUCT y Disponible=Sí');
+      assert.ok(csv.includes('uuid-serv,Intensivo UNI,S/. 350,SERVICE,Sí,Educacion\n'), 'Debe incluir fila de servicio con SERVICE y Disponible=Sí');
     } finally {
       prisma.product.findMany = origFindMany;
       invalidateCatalogCache(testTenantId);

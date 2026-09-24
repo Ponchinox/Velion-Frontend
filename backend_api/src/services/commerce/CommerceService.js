@@ -162,16 +162,16 @@ export class CommerceService {
    * @param {object} [config]
    * @returns {Promise<Array<object>>}
    */
-  async resolveCombinedCatalog(tenantId, config = null) {
+  async resolveCombinedCatalog(tenantId, config = null, options = {}) {
     const cfg = config || await this.getTenantConfig(tenantId);
     if (!cfg.isConnected) {
       // Degradar de forma segura a catálogo nativo
-      return this.nativeProvider.searchProducts(tenantId, { isAvailable: true });
+      return this.nativeProvider.searchProducts(tenantId, options);
     }
 
     const [nativeProducts, shopifyItems] = await Promise.all([
-      this.nativeProvider.searchProducts(tenantId, { isAvailable: true }),
-      this.shopifyCachedProvider.searchProducts(tenantId, { isAvailable: true })
+      this.nativeProvider.searchProducts(tenantId, options),
+      this.shopifyCachedProvider.searchProducts(tenantId, options)
     ]);
 
     // Mapear candidatos por normalizedSku
@@ -562,7 +562,7 @@ export class CommerceService {
    * Genera el índice de catálogo en formato CSV para el prompt de la IA.
    *
    * Formato canónico estricto:
-   * "ID,Nombre,Precio,Tipo,Categoria\n"
+   * "ID,Nombre,Precio,Tipo,Disponible,Categoria\n"
    *
    * @param {string} tenantId - ID del tenant (obligatorio)
    * @param {object} [options]
@@ -589,25 +589,28 @@ export class CommerceService {
       return this.nativeProvider.getCompactCatalogCsv(tenantId, options);
     }
 
-    const resolvedItems = await this.resolveCombinedCatalog(tenantId, config);
-    const availableItems = resolvedItems.filter(item => Boolean(item.isAvailable));
+    const resolvedItems = await this.resolveCombinedCatalog(tenantId, config, options);
+    const itemsToInclude = (options.isAvailable !== undefined)
+      ? resolvedItems.filter(item => Boolean(item.isAvailable) === Boolean(options.isAvailable))
+      : resolvedItems;
 
-    if (!availableItems || availableItems.length === 0) {
-      return "ID,Nombre,Precio,Tipo,Categoria\nNo hay productos disponibles actualmente.";
+    if (!itemsToInclude || itemsToInclude.length === 0) {
+      return "ID,Nombre,Precio,Tipo,Disponible,Categoria\nNo hay productos en el catálogo actualmente.";
     }
 
-    let csv = "ID,Nombre,Precio,Tipo,Categoria\n";
-    for (const item of availableItems) {
+    let csv = "ID,Nombre,Precio,Tipo,Disponible,Categoria\n";
+    for (const item of itemsToInclude) {
       const priceToUse = (item.promotionalPrice && item.promotionalPrice > 0) ? item.promotionalPrice : item.price;
       const id = sanitizeForCsv(item.id);
       const name = sanitizeForCsv(item.name);
       const prodType = item.type === 'SERVICE' ? 'SERVICE' : 'PHYSICAL_PRODUCT';
+      const availableStr = item.isAvailable ? 'Sí' : 'No';
       const cat = sanitizeForCsv(item.category || 'General');
       const curr = item.currencyCode || (item.source === 'SHOPIFY' ? config.shopCurrency : config.nativeCurrency) || 'PEN';
       const formattedPrice = (curr && curr !== 'PEN')
         ? `${curr} ${priceToUse}`
         : (curr === 'PEN' ? `S/. ${priceToUse}` : `${priceToUse}`);
-      csv += `${id},${name},${formattedPrice},${prodType},${cat}\n`;
+      csv += `${id},${name},${formattedPrice},${prodType},${availableStr},${cat}\n`;
     }
 
     return csv;

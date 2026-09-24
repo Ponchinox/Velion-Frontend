@@ -196,9 +196,9 @@ await runTest('TEST 1: VELION_ONLY genera catálogo nativo con paridad total', a
   const csv = await service.getCompactCatalogCsv('tenant-test');
   const lines = csv.trim().split('\n');
 
-  assert.strictEqual(lines[0], 'ID,Nombre,Precio,Tipo,Categoria');
+  assert.strictEqual(lines[0], 'ID,Nombre,Precio,Tipo,Disponible,Categoria');
   assert.strictEqual(lines.length, 2);
-  assert.ok(lines[1].startsWith('nat-prod-1,Audífonos Bluetooth Velion,S/. 150,PHYSICAL_PRODUCT,Audio'));
+  assert.ok(lines[1].startsWith('nat-prod-1,Audífonos Bluetooth Velion,S/. 150,PHYSICAL_PRODUCT,Sí,Audio'));
 });
 
 await runTest('TEST 2: VELION_ONLY no expone ítems shopify: incluso si existen en la BD', async () => {
@@ -214,7 +214,7 @@ await runTest('TEST 3: SHOPIFY_ONLY con status=CONNECTED resuelve variante Shopi
   const service = new CommerceService(mockDb);
 
   const csv = await service.getCompactCatalogCsv('tenant-test');
-  assert.ok(csv.includes('shopify:var-uuid-sh1,Mochila Urbana Shopify,USD 89,PHYSICAL_PRODUCT,Accesorios'));
+  assert.ok(csv.includes('shopify:var-uuid-sh1,Mochila Urbana Shopify,USD 89,PHYSICAL_PRODUCT,Sí,Accesorios'));
   assert.ok(!csv.includes('nat-prod-1'), 'No debe incluir productos nativos en SHOPIFY_ONLY');
 });
 

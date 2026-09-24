@@ -237,7 +237,7 @@ export class VelionNativeProvider extends CommerceProvider {
   /**
    * Genera el índice de catálogo compacto en formato CSV para el system prompt del agente.
    * Mantiene paridad byte-for-byte con el formato generado por catalogCacheService:
-   * "ID,Nombre,Precio,Tipo,Categoria\n"
+   * "ID,Nombre,Precio,Tipo,Disponible,Categoria\n"
    *
    * @param {string} tenantId
    * @param {object} [options]
@@ -245,40 +245,46 @@ export class VelionNativeProvider extends CommerceProvider {
    */
   async getCompactCatalogCsv(tenantId, options = {}) {
     if (!this._validateTenantId(tenantId)) {
-      return "ID,Nombre,Precio,Tipo,Categoria\nNo hay productos disponibles actualmente.";
+      return "ID,Nombre,Precio,Tipo,Disponible,Categoria\nNo hay productos en el catálogo actualmente.";
     }
 
     const currencyCode = await this.getTenantCurrency(tenantId);
 
+    const where = {
+      user: { tenantId: tenantId.trim() }
+    };
+    if (options.isAvailable !== undefined) {
+      where.isAvailable = Boolean(options.isAvailable);
+    }
+
     const products = await this.db.product.findMany({
-      where: {
-        user: { tenantId: tenantId.trim() },
-        isAvailable: true
-      },
+      where,
       select: {
         id: true,
         name: true,
         price: true,
         promotionalPrice: true,
         category: true,
-        type: true
+        type: true,
+        isAvailable: true
       },
       orderBy: { name: 'asc' }
     });
 
     if (!products || products.length === 0) {
-      return "ID,Nombre,Precio,Tipo,Categoria\nNo hay productos disponibles actualmente.";
+      return "ID,Nombre,Precio,Tipo,Disponible,Categoria\nNo hay productos en el catálogo actualmente.";
     }
 
-    let csv = "ID,Nombre,Precio,Tipo,Categoria\n";
+    let csv = "ID,Nombre,Precio,Tipo,Disponible,Categoria\n";
     for (const p of products) {
       const priceToUse = (p.promotionalPrice && p.promotionalPrice > 0) ? p.promotionalPrice : p.price;
       const id = sanitizeForCsv(p.id);
       const name = sanitizeForCsv(p.name);
       const prodType = p.type === 'SERVICE' ? 'SERVICE' : 'PHYSICAL_PRODUCT';
+      const availableStr = p.isAvailable ? 'Sí' : 'No';
       const cat = sanitizeForCsv(p.category || 'General');
       const formattedPrice = currencyCode === 'PEN' ? `S/. ${priceToUse}` : `${currencyCode} ${priceToUse}`;
-      csv += `${id},${name},${formattedPrice},${prodType},${cat}\n`;
+      csv += `${id},${name},${formattedPrice},${prodType},${availableStr},${cat}\n`;
     }
 
     return csv;

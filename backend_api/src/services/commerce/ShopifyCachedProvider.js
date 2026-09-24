@@ -286,7 +286,7 @@ export class ShopifyCachedProvider extends CommerceProvider {
   /**
    * Genera el índice de catálogo compacto en formato CSV para el prompt de la IA.
    * Mantiene estricta compatibilidad con el encabezado canónico:
-   * "ID,Nombre,Precio,Tipo,Categoria\n"
+   * "ID,Nombre,Precio,Tipo,Disponible,Categoria\n"
    *
    * @param {string} tenantId
    * @param {object} [options]
@@ -294,26 +294,27 @@ export class ShopifyCachedProvider extends CommerceProvider {
    */
   async getCompactCatalogCsv(tenantId, options = {}) {
     if (!this._validateTenantId(tenantId)) {
-      return "ID,Nombre,Precio,Tipo,Categoria\nNo hay productos disponibles actualmente.";
+      return "ID,Nombre,Precio,Tipo,Disponible,Categoria\nNo hay productos en el catálogo actualmente.";
     }
 
-    const items = await this.searchProducts(tenantId, { isAvailable: true });
+    const items = await this.searchProducts(tenantId, options);
     if (!items || items.length === 0) {
-      return "ID,Nombre,Precio,Tipo,Categoria\nNo hay productos disponibles actualmente.";
+      return "ID,Nombre,Precio,Tipo,Disponible,Categoria\nNo hay productos en el catálogo actualmente.";
     }
 
     const currencyCode = await this.getShopCurrency(tenantId);
-    let csv = "ID,Nombre,Precio,Tipo,Categoria\n";
+    let csv = "ID,Nombre,Precio,Tipo,Disponible,Categoria\n";
     for (const item of items) {
       const id = sanitizeForCsv(item.id);
       const name = sanitizeForCsv(item.name);
       const priceToUse = item.price;
       const prodType = 'PHYSICAL_PRODUCT';
+      const availableStr = item.isAvailable ? 'Sí' : 'No';
       const cat = sanitizeForCsv(item.category || 'General');
       const formattedPrice = (currencyCode && currencyCode !== 'PEN')
         ? `${currencyCode} ${priceToUse}`
         : (currencyCode === 'PEN' ? `S/. ${priceToUse}` : `${priceToUse}`);
-      csv += `${id},${name},${formattedPrice},${prodType},${cat}\n`;
+      csv += `${id},${name},${formattedPrice},${prodType},${availableStr},${cat}\n`;
     }
 
     return csv;

@@ -292,20 +292,24 @@ await runTest('TEST 7: Variante con título real compone correctamente el displa
   assert.strictEqual(item.name, 'Camiseta Velion - Medium');
 });
 
-await runTest('TEST 8: getCompactCatalogCsv genera cabecera exacta y formato canónico', async () => {
+await runTest('TEST 8: getCompactCatalogCsv genera cabecera exacta con columna Disponible y formato canónico', async () => {
   const mockDb = createMockDb();
   const provider = new ShopifyCachedProvider(mockDb);
 
   const csv = await provider.getCompactCatalogCsv('tenant-alpha');
   const lines = csv.trim().split('\n');
 
-  assert.strictEqual(lines[0], 'ID,Nombre,Precio,Tipo,Categoria', 'Cabecera exacta requerida');
+  assert.strictEqual(lines[0], 'ID,Nombre,Precio,Tipo,Disponible,Categoria', 'Cabecera exacta requerida');
   assert.ok(lines.length >= 2, 'Debe contener filas de datos');
 
-  // Solo variantes disponibles (var-uuid-1 y var-uuid-2-m; var-uuid-2-l tiene availableForSale=false)
-  assert.ok(lines.some(l => l.startsWith('shopify:var-uuid-1,Snowboard Minimal,USD 250,PHYSICAL_PRODUCT,Deportes')));
-  assert.ok(lines.some(l => l.startsWith('shopify:var-uuid-2-m,Camiseta Velion - Medium,USD 49.9,PHYSICAL_PRODUCT,Ropa')));
-  assert.ok(!lines.some(l => l.includes('var-uuid-2-l')), 'Variante no disponible no debe aparecer en CSV');
+  // Variantes disponibles y no disponibles con su respectiva marca
+  assert.ok(lines.some(l => l.startsWith('shopify:var-uuid-1,Snowboard Minimal,USD 250,PHYSICAL_PRODUCT,Sí,Deportes')));
+  assert.ok(lines.some(l => l.startsWith('shopify:var-uuid-2-m,Camiseta Velion - Medium,USD 49.9,PHYSICAL_PRODUCT,Sí,Ropa')));
+  assert.ok(lines.some(l => l.startsWith('shopify:var-uuid-2-l,Camiseta Velion - Large,USD 49.9,PHYSICAL_PRODUCT,No,Ropa')), 'Variante no disponible debe aparecer con Disponible=No');
+
+  // Con filtro explícito { isAvailable: true }
+  const csvOnlyAvail = await provider.getCompactCatalogCsv('tenant-alpha', { isAvailable: true });
+  assert.ok(!csvOnlyAvail.includes('var-uuid-2-l'), 'Con isAvailable=true no debe incluir variante no disponible');
 });
 
 await runTest('TEST 9: searchProducts con filtro de categoría y texto', async () => {

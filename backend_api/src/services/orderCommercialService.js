@@ -369,6 +369,26 @@ async function _syncCommercialOrderInternal(params, lockMeta = {}) {
     console.log(`ℹ️ [Order Commercial] Tenant sin shipping config: normalizando stage de SHIPPING_COORDINATED a DETAILS_PROVIDED (preservando shippingCity="${updatedState.shippingCity || ''}")`);
     updatedState.currentStage = 'DETAILS_PROVIDED';
   }
+
+  // ── EARLY OUT-OF-STOCK GUARD PARA PRODUCT_SELECTED CONFIRMADO ──
+  if (updatedState.productId && updatedState.customerConfirmed === true && updatedState.currentStage === 'PRODUCT_SELECTED') {
+    const commerceSvc = (prismaClient && prismaClient !== prisma)
+      ? new CommerceService(prismaClient)
+      : commerceService;
+    let prodCheck = null;
+    try {
+      prodCheck = await commerceSvc.getProduct(tenant.id, updatedState.productId);
+    } catch {}
+    if (prodCheck && prodCheck.isAvailable === false) {
+      console.warn(`🛑 [Order Guard - Stock] Rechazando selección confirmada de producto agotado "${updatedState.productId}".`);
+      return {
+        error: 'PRODUCT_OUT_OF_STOCK',
+        message: 'Este producto está agotado actualmente.',
+        state: currentCommercialState
+      };
+    }
+  }
+
   const triggerStages = ['PAYMENT_PENDING', 'PAYMENT_VERIFIED', 'COMPLETED'];
 
   if (triggerStages.includes(updatedState.currentStage)) {
@@ -555,12 +575,27 @@ async function _syncCommercialOrderInternal(params, lockMeta = {}) {
               promotionalPrice: true,
               promoStartDate: true,
               promoEndDate: true,
-              type: true
+              type: true,
+              isAvailable: true
             }
           });
           if (verifiedProduct) {
             productPrice = getCanonicalProductPrice(verifiedProduct);
           }
+        }
+
+        const isNativeAvailable = verifiedProduct ? (verifiedProduct.isAvailable !== false) : false;
+        const isItemAvailable = isShopifyOrder
+          ? Boolean(resolvedCommerceItem?.isAvailable)
+          : isNativeAvailable;
+
+        if (verifiedProduct && !isItemAvailable) {
+          console.warn(`🛑 [Order Guard - Stock] Rechazando compra de producto agotado "${updatedState.productId}" (${updatedState.productName || verifiedProduct?.name || ''}).`);
+          return {
+            error: 'PRODUCT_OUT_OF_STOCK',
+            message: 'Este producto está agotado actualmente.',
+            state: currentCommercialState
+          };
         }
 
         const isConfirmed = Boolean(updatedState.customerConfirmed === true);
@@ -586,14 +621,14 @@ async function _syncCommercialOrderInternal(params, lockMeta = {}) {
           // 1. Normalizar cantidad a 1 internamente si no fue especificada o es menor a 1
           finalQuantity = (isQtyValid && parsedQty >= 1) ? parsedQty : 1;
           // 2. NO exige shipping destination ni logística de envíos
-          // 3. Exige: customerConfirmed + producto válido del tenant + método de pago real configurado
-          canCreateOrder = isConfirmed && hasValidProduct && isPaymentValidForOrder;
+          // 3. Exige: customerConfirmed + producto válido del tenant + método de pago real configurado + producto disponible
+          canCreateOrder = isConfirmed && hasValidProduct && isItemAvailable && isPaymentValidForOrder;
         } else {
           // BIFURCACIÓN PHYSICAL_PRODUCT:
-          // Requiere confirmación explícita + cantidad válida + destino (ciudad/dirección) + método de pago
+          // Requiere confirmación explícita + cantidad válida + destino (ciudad/dirección) + método de pago + producto disponible
           const hasShippingDestination = Boolean(updatedState.shippingCity || updatedState.shippingAddress);
           const hasLogistics = hasShippingDestination && isPaymentValidForOrder;
-          canCreateOrder = isConfirmed && isQtyValid && hasValidProduct && hasLogistics;
+          canCreateOrder = isConfirmed && isQtyValid && hasValidProduct && isItemAvailable && hasLogistics;
         }
 
         if (canCreateOrder) {
@@ -818,7 +853,7 @@ async function _syncCommercialOrderInternal(params, lockMeta = {}) {
             id: args.productId.trim(),
             user: { tenantId: tenant.id }
           },
-          select: { id: true, name: true, price: true, promotionalPrice: true, promoStartDate: true, promoEndDate: true, type: true }
+          select: { id: true, name: true, price: true, promotionalPrice: true, promoStartDate: true, promoEndDate: true, type: true, isAvailable: true }
         });
 
         if (!verifiedNewProduct) {
@@ -826,6 +861,15 @@ async function _syncCommercialOrderInternal(params, lockMeta = {}) {
           console.warn(`⚠️ [Order Security] Producto rechazado en orden ${orderId}: ID "${args.productId}" no existe o no pertenece al tenant ${tenant.id.slice(0, 8)}`);
           return {
             error: 'El producto solicitado no está disponible o no existe.',
+            state: currentCommercialState
+          };
+        }
+
+        if (verifiedNewProduct.isAvailable === false) {
+          console.warn(`🛑 [Order Guard - Stock] Rechazando cambio a producto agotado "${args.productId}" en orden ${orderId}.`);
+          return {
+            error: 'PRODUCT_OUT_OF_STOCK',
+            message: 'Este producto está agotado actualmente.',
             state: currentCommercialState
           };
         }

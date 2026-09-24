@@ -244,25 +244,32 @@ async function main() {
     assert.strictEqual(priceData.hasActivePromo, true);
   });
 
-  // ── TEST 8: Generación de catálogo compacto CSV ──────────────────────────────
-  await runTest('TEST 8: getCompactCatalogCsv — genera índice filtrado por isAvailable=true', async () => {
+  // ── TEST 8: Generación de catálogo compacto CSV con columna Disponible ───────
+  await runTest('TEST 8: getCompactCatalogCsv — genera índice con columna Disponible', async () => {
     const csv = await provider.getCompactCatalogCsv('tenant-a-uuid');
-    assert.ok(csv.startsWith('ID,Nombre,Precio,Tipo,Categoria\n'), 'Debe contener la cabecera exacta');
+    assert.ok(csv.startsWith('ID,Nombre,Precio,Tipo,Disponible,Categoria\n'), 'Debe contener la cabecera exacta');
     assert.ok(csv.includes('Smartwatch Velion X1'), 'Debe incluir producto disponible A1');
     assert.ok(csv.includes('Polo Velion Pima'), 'Debe incluir producto disponible A2');
-    assert.ok(!csv.includes('Audífonos Pro Studio'), 'NO debe incluir producto agotado A3');
+    assert.ok(csv.includes('Audífonos Pro Studio'), 'SÍ debe incluir producto agotado A3 con Disponible=No');
+    assert.ok(csv.includes(',No,Audio'), 'Producto agotado debe indicar No en Disponible');
     assert.ok(!csv.includes('Laptop Gamer Alien B'), 'NO debe incluir producto de Tenant B');
+
+    // Con filtro isAvailable=true explícito
+    const csvOnlyAvail = await provider.getCompactCatalogCsv('tenant-a-uuid', { isAvailable: true });
+    assert.ok(!csvOnlyAvail.includes('Audífonos Pro Studio'), 'NO debe incluir producto agotado si isAvailable=true');
   });
 
-  // ── TEST 9: Paridad exacta de formato CSV con lógica anterior ─────────────────
-  await runTest('TEST 9: Paridad byte-for-byte del CSV generado', async () => {
+  // ── TEST 9: Paridad exacta de formato CSV canónico ────────────────────────────
+  await runTest('TEST 9: Paridad byte-for-byte del CSV generado con Disponible', async () => {
     const csv = await provider.getCompactCatalogCsv('tenant-a-uuid');
     const lines = csv.trim().split('\n');
-    assert.strictEqual(lines[0], 'ID,Nombre,Precio,Tipo,Categoria');
-    // Línea 1 ordenada por nombre: Polo Velion Pima (P < S)
-    assert.ok(lines[1].includes('prod-a2,Polo Velion Pima,S/. 69,PHYSICAL_PRODUCT,Ropa'));
-    // Línea 2 ordenada por nombre: Smartwatch Velion X1
-    assert.ok(lines[2].includes('prod-a1,Smartwatch Velion X1,S/. 199,PHYSICAL_PRODUCT,Tecnología'));
+    assert.strictEqual(lines[0], 'ID,Nombre,Precio,Tipo,Disponible,Categoria');
+    // Línea 1 ordenada por nombre: Audífonos Pro Studio (A < P)
+    assert.ok(lines[1].includes('prod-a3-agotado,Audífonos Pro Studio,S/. 350,PHYSICAL_PRODUCT,No,Audio'));
+    // Línea 2 ordenada por nombre: Polo Velion Pima (P < S)
+    assert.ok(lines[2].includes('prod-a2,Polo Velion Pima,S/. 69,PHYSICAL_PRODUCT,Sí,Ropa'));
+    // Línea 3 ordenada por nombre: Smartwatch Velion X1
+    assert.ok(lines[3].includes('prod-a1,Smartwatch Velion X1,S/. 199,PHYSICAL_PRODUCT,Sí,Tecnología'));
   });
 
   // ── TEST 10: Compatibilidad con productMediaOrchestrator ─────────────────────
