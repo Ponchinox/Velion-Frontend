@@ -21,8 +21,8 @@ import Modal from '../components/ui/Modal';
 /* ─── Normalización de teléfono ─── */
 function normalizePhone(raw) {
   const digits = (raw || '').replace(/\D/g, '');
-  // Recortar prefijo Perú (+51) si el número resultante tiene 11 dígitos
-  if (digits.startsWith('51') && digits.length === 11) return digits.slice(2);
+  // Regla Perú: 11 dígitos que inician con 519 equivalen a los 9 dígitos locales que inician con 9
+  if (digits.startsWith('519') && digits.length === 11) return digits.slice(2);
   return digits;
 }
 
@@ -423,14 +423,29 @@ export default function ContactosPage() {
       return Promise.reject(new Error('DUPLICATE')); // evita que ContactFormModal se cierre
     }
 
-    // Sin duplicado → crear normalmente
-    const savedContact = await contactService.createContact({
-      name,
-      phone: normalizedPhone,
-      lastInteraction: 'Hace un momento',
-    });
-    setContacts(prev => [savedContact, ...prev]);
-    showToast('Contacto creado correctamente');
+    // Sin duplicado en memoria → crear normalmente
+    try {
+      const savedContact = await contactService.createContact({
+        name,
+        phone: normalizedPhone,
+        lastInteraction: 'Hace un momento',
+      });
+      setContacts(prev => [savedContact, ...prev]);
+      showToast('Contacto creado correctamente');
+    } catch (err) {
+      const duplicateInfo = err?.data?.existingContact || err?.existingContact;
+      if (err?.status === 409 || err?.data?.code === 'DUPLICATE_CONTACT' || duplicateInfo) {
+        setPendingOverwrite({
+          name,
+          phone: normalizedPhone,
+          existingId: duplicateInfo?.id || duplicate?.id,
+          existingName: duplicateInfo?.name || duplicate?.name || 'Contacto existente',
+        });
+        return Promise.reject(new Error('DUPLICATE'));
+      }
+      showToast(err?.data?.error || err?.message || 'Error al crear el contacto', 'error');
+      throw err;
+    }
   };
 
   // ── Confirmar sobrescritura de duplicado ──────────────────────────────────
@@ -456,10 +471,18 @@ export default function ContactosPage() {
   // ── Editar contacto ───────────────────────────────────────────────────────
   const handleEditContact = async ({ name, phone }) => {
     if (!contactToEdit) return;
-    const updated = await contactService.updateContact(contactToEdit.id, { name, phone });
-    setContacts(prev => prev.map(c => c.id === contactToEdit.id ? updated : c));
-    showToast('Contacto actualizado correctamente');
-    setContactToEdit(null);
+    try {
+      const updated = await contactService.updateContact(contactToEdit.id, { name, phone });
+      setContacts(prev => prev.map(c => c.id === contactToEdit.id ? updated : c));
+      showToast('Contacto actualizado correctamente');
+      setContactToEdit(null);
+    } catch (err) {
+      if (err?.status === 409 || err?.data?.code === 'DUPLICATE_CONTACT') {
+        showToast(err?.data?.error || 'El número ingresado ya pertenece a otro contacto.', 'error');
+        return;
+      }
+      showToast('Error al actualizar el contacto', 'error');
+    }
   };
 
   const handleConfirmDeleteContact = async () => {

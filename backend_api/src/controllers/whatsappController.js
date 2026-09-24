@@ -28,6 +28,10 @@ import {
   extractAuthoritativeIdentityPair,
   persistAuthoritativeIdentityMapping,
 } from '../services/whatsappIdentityService.js';
+import {
+  findEquivalentContact,
+  getPeruPhoneEquivalents
+} from '../services/phoneEquivalenceService.js';
 import { saveInboundMedia, generateMediaAccessToken, MEDIA_SIZE_LIMITS } from '../services/mediaStorageService.js';
 import { decryptText } from '../utils/cryptoUtils.js';
 import {
@@ -2590,8 +2594,9 @@ async function _processWebhookEvent(body, isMeta, provider, io, query, headers) 
     const fallbackName = `Cliente +${cleanPhone}`;
     const initialName = (!isOutgoing && extractedName !== 'Cliente Desconocido') ? extractedName : fallbackName;
 
-    let contact = await prisma.contact.findFirst({
-      where: { tenantId: tenant.id, phone: cleanPhone }
+    let contact = await findEquivalentContact(prisma, {
+      tenantId: tenant.id,
+      phone: cleanPhone
     });
     if (!contact) {
       contact = await prisma.contact.create({
@@ -3176,6 +3181,21 @@ async function processBufferedMessage(bufferKey) {
         }
       }
     });
+
+    if (!customer) {
+      const peruInfo = getPeruPhoneEquivalents(cleanJid);
+      if (peruInfo.isPeru) {
+        const altPhone = cleanJid === peruInfo.local ? peruInfo.international : peruInfo.local;
+        customer = await prisma.customer.findUnique({
+          where: {
+            tenantId_phone: {
+              tenantId: tenant.id,
+              phone: altPhone
+            }
+          }
+        });
+      }
+    }
 
     if (!customer) {
       customer = await prisma.customer.create({

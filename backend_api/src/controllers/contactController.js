@@ -1,15 +1,10 @@
 import prisma from '../db.js';
-
-/**
- * Normaliza un número de teléfono:
- * - Elimina todo lo que no sea dígito
- * - Si empieza con 51 y tiene 11 dígitos (código Perú), lo recorta a 9 dígitos
- */
-function normalizePhone(raw) {
-  const digits = (raw || '').replace(/\D/g, '');
-  if (digits.startsWith('51') && digits.length === 11) return digits.slice(2);
-  return digits;
-}
+import {
+  findEquivalentContact,
+  getPeruPhoneEquivalents,
+  cleanPhoneDigits,
+  normalizePhone
+} from '../services/phoneEquivalenceService.js';
 
 /**
  * Obtiene todos los contactos pertenecientes al Tenant del usuario autenticado
@@ -34,10 +29,14 @@ export async function getContacts(req, res) {
     ]);
 
     const formatted = contacts.map(c => {
-      const cleanPhone = (c.phone || '').replace(/\D/g, '');
+      const cleanPhone = cleanPhoneDigits(c.phone);
+      const peruInfo = getPeruPhoneEquivalents(cleanPhone);
       const matchingCustomer = customers.find(cust => {
-        const custPhone = (cust.phone || '').replace(/\D/g, '');
-        return custPhone.endsWith(cleanPhone) || cleanPhone.endsWith(custPhone);
+        const custPhone = cleanPhoneDigits(cust.phone);
+        if (!custPhone || !cleanPhone) return false;
+        if (custPhone === cleanPhone) return true;
+        if (peruInfo.isPeru && peruInfo.allVariants.includes(custPhone)) return true;
+        return false;
       });
 
       // Fuente unificada de verdad
@@ -74,10 +73,27 @@ export async function createContact(req, res) {
       return res.status(400).json({ error: 'Faltan campos requeridos (name, phone).' });
     }
 
+    // Comprobar colisión por teléfono exacto o equivalente Perú
+    const duplicate = await findEquivalentContact(prisma, { tenantId, phone });
+    if (duplicate) {
+      return res.status(409).json({
+        error: `Ya existe un contacto (${duplicate.name}) con este número o su equivalente.`,
+        code: 'DUPLICATE_CONTACT',
+        existingContact: {
+          id: duplicate.id,
+          name: duplicate.name,
+          phone: duplicate.phone
+        }
+      });
+    }
+
+    const clean = cleanPhoneDigits(phone);
+    const normalizedToStore = normalizePhone(clean) || clean;
+
     const contact = await prisma.contact.create({
       data: {
-        name,
-        phone,
+        name: name.trim(),
+        phone: normalizedToStore,
         category: category || 'Nuevos Leads',
         tags: tags || [],
         lastInteraction: lastInteraction || null,
@@ -189,13 +205,15 @@ export async function toggleBotPause(req, res) {
 
       // 3. Actualizar Customers asociados (por tenantId)
       if (cleanPhone) {
+        const peruInfo = getPeruPhoneEquivalents(cleanPhone);
+        const candidatePhones = [contact.phone, cleanPhone];
+        if (peruInfo.isPeru) {
+          candidatePhones.push(peruInfo.local, peruInfo.international);
+        }
         await tx.customer.updateMany({
           where: {
             tenantId,
-            OR: [
-              { phone: contact.phone },
-              { phone: { contains: cleanPhone } }
-            ]
+            phone: { in: Array.from(new Set(candidatePhones.filter(Boolean))) }
           },
           data: { isBotPaused: newBotPausedState },
         });
@@ -224,8 +242,8 @@ export async function toggleBotPause(req, res) {
 
 /**
  * Actualiza nombre y/o teléfono de un contacto.
- * Si el teléfono cambia, actualiza también el registro Customer correspondiente
- * para que el enrutamiento de WhatsApp siga funcionando con el número nuevo.
+ * Si el teléfono cambia, comprueba colisiones e impide colisionar con otro Contact.
+ * Actualiza también el registro Customer correspondiente.
  */
 export async function updateContact(req, res) {
   try {
@@ -249,18 +267,41 @@ export async function updateContact(req, res) {
     const rawPhone   = phone || existing.phone;
     const finalPhone = normalizePhone(rawPhone) || existing.phone;
 
+    // Si el teléfono se proporcionó, validar que no colisione con otro Contact del mismo Tenant
+    if (phone) {
+      const duplicate = await findEquivalentContact(prisma, {
+        tenantId,
+        phone: finalPhone,
+        excludeContactId: id
+      });
+      if (duplicate) {
+        return res.status(409).json({
+          error: `El número ingresado ya pertenece a otro contacto (${duplicate.name}).`,
+          code: 'DUPLICATE_CONTACT',
+          existingContact: {
+            id: duplicate.id,
+            name: duplicate.name,
+            phone: duplicate.phone
+          }
+        });
+      }
+    }
+
     const updated = await prisma.$transaction(async (tx) => {
       // Si el teléfono cambió, actualizar Customer para mantener el enrutamiento de WhatsApp
       if (finalPhone !== existing.phone) {
+        const existingPeru = getPeruPhoneEquivalents(existing.phone);
+        const candidateOldPhones = [existing.phone];
+        if (existingPeru.isPeru) {
+          candidateOldPhones.push(existingPeru.local, existingPeru.international);
+        }
         await tx.customer.updateMany({
-          where: { tenantId, phone: existing.phone },
+          where: {
+            tenantId,
+            phone: { in: Array.from(new Set(candidateOldPhones.filter(Boolean))) }
+          },
           data:  { phone: finalPhone },
         });
-        // Intentar actualizar también la variante con prefijo 51 por si acaso
-        await tx.customer.updateMany({
-          where: { tenantId, phone: `51${existing.phone}` },
-          data:  { phone: finalPhone },
-        }).catch(() => {});
       }
 
       return tx.contact.update({
