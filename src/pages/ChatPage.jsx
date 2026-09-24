@@ -16,6 +16,7 @@ import {
   ClipboardText,
   FileText,
   DownloadSimple,
+  CircleNotch,
 } from '@phosphor-icons/react';
 import * as chatService from '../services/chatService';
 import * as contactService from '../services/contactService';
@@ -78,6 +79,9 @@ function getChatTimestamp(chat) {
 
 /* ─── Icono de Estado de Mensaje (Ticks) ─── */
 function StatusIcon({ status }) {
+  if (status === 'sending') {
+    return <CircleNotch size={12} className="animate-spin text-white/70 inline-block" title="Enviando..." />;
+  }
   if (status === 'read') {
     return <Checks size={13} className="text-sky-300 inline-block" weight="bold" title="Leído (Meta)" />;
   }
@@ -111,6 +115,11 @@ function resolveMediaUrl(relativeOrAbsoluteUrl) {
 /* ─── Renderizador Multimedia Inteligente (Legacy text URLs) ─── */
 function renderMessageContent(text, onImageClick) {
   if (!text) return null;
+
+  // Guardia de seguridad: NUNCA renderizar millones de caracteres base64 en texto plano
+  if (typeof text === 'string' && text.startsWith('data:') && text.includes(';base64,')) {
+    return <p className="text-xs text-muted italic">[Archivo multimedia]</p>;
+  }
 
   const imageRegex = /(https?:\/\/[^\s]+?\.(?:png|jpg|jpeg|gif|webp)(?:\?[^\s]*)?|https?:\/\/res\.cloudinary\.com\/[^\s]+)/gi;
   const match = text.match(imageRegex);
@@ -232,11 +241,11 @@ function BubbleMedia({ msg, onImageClick }) {
   if (mediaType === 'audio') {
     const isClient = msg.from === 'client';
     return (
-      <div className="my-1 w-full min-w-[220px]">
+      <div className="my-1 w-full min-w-[280px]">
         <audio
           controls
           preload="metadata"
-          className="w-full h-10 rounded-lg outline-none"
+          className="w-full h-11 rounded-lg outline-none min-w-[280px]"
           style={{ colorScheme: isClient ? 'auto' : 'light' }}
           src={mediaSrc}
           onError={handleMediaError}
@@ -595,16 +604,19 @@ function Bubble({ msg, onImageClick }) {
   const hasStructuredMedia = Boolean(msg.mediaType || msg.mediaUrl || msg.image || msg.mediaStatus === 'unavailable' || msg.mediaStatus === 'error');
   const displayText = msg.caption || msg.text || '';
   const isAudio = msg.mediaType === 'audio';
+  const isFailed = msg.status === 'failed';
 
   return (
     <div className={`flex ${isClient ? 'justify-start' : 'justify-end'}`}>
       <div
         className={`
           max-w-[85%] sm:max-w-[70%] md:max-w-[60%] rounded-2xl px-4 py-2.5 shadow-card break-words
-          ${isAudio ? 'w-[280px] sm:w-[320px] max-w-[90%]' : ''}
+          ${isAudio ? 'w-[340px] sm:w-[380px] min-w-[300px] max-w-[95%]' : ''}
           ${isClient
             ? 'bg-white dark:bg-white/10 text-hi rounded-tl-sm'
-            : 'bg-brand text-white rounded-tr-sm'
+            : isFailed
+              ? 'bg-rose-600/90 text-white rounded-tr-sm border border-rose-400/40'
+              : 'bg-brand text-white rounded-tr-sm'
           }
         `}
       >
@@ -620,8 +632,16 @@ function Bubble({ msg, onImageClick }) {
             : renderMessageContent(displayText, onImageClick)
         )}
 
+        {/* Notificación de envío fallido honesto */}
+        {isFailed && (
+          <div className="text-[11px] text-rose-100 flex items-center gap-1 mt-1 font-medium bg-black/10 px-2 py-0.5 rounded">
+            <WarningCircle size={13} weight="bold" className="flex-shrink-0" />
+            <span>{msg.error || 'No se pudo enviar el archivo.'}</span>
+          </div>
+        )}
+
         {/* Fallback de seguridad absoluto: nunca burbuja vacía */}
-        {!displayText && !hasStructuredMedia && (
+        {!displayText && !hasStructuredMedia && !isFailed && (
           <p className="text-xs text-muted italic">Mensaje sin contenido visible</p>
         )}
 
@@ -760,15 +780,25 @@ function ConversationPanel({
     }
   };
 
-  const handleFileChange = (e, type) => {
-    const file = e.target.files[0];
+  const handleFileChange = (e, explicitType = null) => {
+    const file = e.target.files?.[0];
     if (!file) return;
+
+    let determinedType = explicitType;
+    if (!determinedType || determinedType === 'image') {
+      if (file.type.startsWith('video/')) determinedType = 'video';
+      else if (file.type.startsWith('audio/')) determinedType = 'audio';
+      else if (file.type.startsWith('image/')) determinedType = 'image';
+      else determinedType = 'document';
+    }
+
     const reader = new FileReader();
     reader.onloadend = () => {
-      setAttachment({ file, base64: reader.result, name: file.name, type });
+      setAttachment({ file, base64: reader.result, name: file.name, type: determinedType });
     };
     reader.readAsDataURL(file);
     setShowAttachMenu(false);
+    e.target.value = '';
   };
 
   return (
@@ -935,20 +965,33 @@ function ConversationPanel({
       {attachment && (
         <div className="px-4 py-2.5 bg-app border-t border-line flex items-center justify-between gap-3 flex-shrink-0 animate-in fade-in duration-200">
           <div className="flex items-center gap-3">
-            {attachment.type === 'image' ? (
+            {attachment.type === 'image' && (
               <img
                 src={attachment.base64}
                 alt="Previsualización"
                 className="w-12 h-12 object-cover rounded-lg border border-line"
               />
-            ) : (
-              <div className="w-12 h-12 bg-brand/10 text-brand rounded-lg flex items-center justify-center font-bold text-xs">
+            )}
+            {attachment.type === 'video' && (
+              <div className="w-12 h-12 bg-purple-500/10 text-purple-600 rounded-lg flex items-center justify-center font-bold text-xs border border-purple-200 dark:border-purple-800">
+                MP4
+              </div>
+            )}
+            {attachment.type === 'document' && (
+              <div className="w-12 h-12 bg-brand/10 text-brand rounded-lg flex items-center justify-center font-bold text-xs border border-brand/20">
                 DOC
+              </div>
+            )}
+            {attachment.type === 'audio' && (
+              <div className="w-12 h-12 bg-emerald-500/10 text-emerald-600 rounded-lg flex items-center justify-center font-bold text-xs border border-emerald-200">
+                AUD
               </div>
             )}
             <div className="min-w-0">
               <p className="text-xs font-semibold text-hi truncate max-w-[200px]">{attachment.name}</p>
-              <p className="text-[10px] text-muted capitalize">{attachment.type === 'image' ? 'Imagen' : 'Documento'}</p>
+              <p className="text-[10px] text-muted capitalize">
+                {attachment.type === 'image' ? 'Imagen' : attachment.type === 'video' ? 'Video' : attachment.type === 'audio' ? 'Audio' : 'Documento'}
+              </p>
             </div>
           </div>
           <button
@@ -982,7 +1025,7 @@ function ConversationPanel({
 
         <div className="flex items-end gap-2">
           {/* Inputs de archivos ocultos */}
-          <input ref={fileInputRef} type="file" accept="image/*,video/*" className="hidden" onChange={(e) => handleFileChange(e, 'image')} />
+          <input ref={fileInputRef} type="file" accept="image/*,video/*" className="hidden" onChange={(e) => handleFileChange(e)} />
           <input ref={docInputRef} type="file" accept=".pdf,.doc,.docx,.xls,.xlsx,.txt" className="hidden" onChange={(e) => handleFileChange(e, 'document')} />
 
           <button
@@ -1426,17 +1469,30 @@ export default function ChatPage() {
     const now = new Date();
     const timeStr = now.toLocaleTimeString('es', { hour: '2-digit', minute: '2-digit' });
     const nowIso = now.toISOString();
+    const tempId = `temp-${Date.now()}`;
 
     const tempMsg = {
-      id: `temp-${Date.now()}`,
+      id: tempId,
       from: 'business',
-      text: attachment && attachment.type === 'image' ? '' : text,
+      text: text || '',
+      caption: text || null,
+      mediaType: attachment ? attachment.type : null,
+      fileName: attachment ? attachment.name : null,
+      mediaUrl: attachment && (attachment.type === 'image' || attachment.type === 'video') ? attachment.base64 : null,
       image: attachment && attachment.type === 'image' ? attachment.base64 : undefined,
       time: timeStr,
-      status: 'sent',
+      status: 'sending',
     };
 
     setActiveChatMessages(prev => [...prev, tempMsg]);
+
+    const prefixMap = {
+      image: '📸 Imagen',
+      video: '🎥 Video',
+      audio: '🎙️ Audio',
+      document: `📄 ${attachment?.name || 'Documento'}`
+    };
+    const lastMsgText = attachment ? (prefixMap[attachment.type] || '📎 Archivo') : text;
 
     // Actualizar sidebar y reordenar (el chat activo siempre sube al tope al enviar)
     setChats(prev => {
@@ -1444,7 +1500,7 @@ export default function ChatPage() {
         c.id === activeChatId
           ? {
               ...c,
-              lastMsg: attachment ? (attachment.type === 'image' ? '📸 Imagen' : '📄 Documento') : text,
+              lastMsg: lastMsgText,
               time: timeStr,
               lastMessageAt: nowIso,
               _sortTs: now.getTime(),
@@ -1455,14 +1511,36 @@ export default function ChatPage() {
     });
 
     try {
-      await chatService.sendDirectMessage({
+      const res = await chatService.sendDirectMessage({
         chatId: activeChatId,
         text,
         remoteJid: activeChat?.phone,
-        media: attachment ? { base64: attachment.base64, name: attachment.name, type: attachment.type } : null,
+        media: attachment ? {
+          base64: attachment.base64,
+          name: attachment.name,
+          type: attachment.type,
+          mimeType: attachment.file?.type
+        } : null,
       });
+
+      if (res && res.id) {
+        setActiveChatMessages(prev => prev.map(m => m.id === tempId ? {
+          ...m,
+          id: res.id,
+          status: res.status || 'sent',
+          externalId: res.externalId || m.externalId,
+          mediaUrl: res.mediaUrl || m.mediaUrl,
+          mediaType: res.mediaType || m.mediaType,
+          fileName: res.fileName || m.fileName,
+        } : m));
+      }
     } catch (error) {
       console.error('Error enviando mensaje:', error);
+      setActiveChatMessages(prev => prev.map(m => m.id === tempId ? {
+        ...m,
+        status: 'failed',
+        error: error.message || 'No se pudo enviar el archivo.'
+      } : m));
     }
   };
 

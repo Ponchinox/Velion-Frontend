@@ -87,9 +87,9 @@ export function verifyMediaAccessToken(token, expectedMessageId) {
 // Límites de tamaño en bytes por tipo de archivo
 export const MEDIA_SIZE_LIMITS = {
   image: 10 * 1024 * 1024,      // 10 MB
-  video: 25 * 1024 * 1024,      // 25 MB
-  audio: 10 * 1024 * 1024,      // 10 MB
-  document: 20 * 1024 * 1024,   // 20 MB
+  video: 64 * 1024 * 1024,      // 64 MB (Límite estándar WhatsApp)
+  audio: 16 * 1024 * 1024,      // 16 MB
+  document: 50 * 1024 * 1024,   // 50 MB
   sticker: 2 * 1024 * 1024,     // 2 MB
   default: 20 * 1024 * 1024,    // 20 MB
 };

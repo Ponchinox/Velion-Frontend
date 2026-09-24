@@ -155,7 +155,9 @@ import {
   resolveMediaPath,
   PRIVATE_MEDIA_ROOT,
   generateMediaAccessToken,
-  sanitizeDisplayFileName
+  sanitizeDisplayFileName,
+  saveInboundMedia,
+  getMediaTypeFromMime
 } from '../services/mediaStorageService.js';
 
 /**
@@ -549,28 +551,57 @@ export async function sendDirectMessage(req, res) {
       }
     }
 
-    let messageContent = text;
+    let messageContent = text || '';
     let msgId = null;
     let gatewaySuccess = false;
+    let savedMedia = null;
 
     if (media && media.base64) {
-      // Enviar multimedia a través del Gateway
+      // 1. Decodificar y guardar durablemente mediante mediaStorageService (aislado por tenant)
+      const matches = String(media.base64).match(/^data:([^;]+);base64,(.+)$/);
+      const detectedMime = matches ? matches[1].toLowerCase() : (media.mimeType || 'application/octet-stream');
+      const rawBase64 = matches ? matches[2] : media.base64;
+      const buffer = Buffer.from(rawBase64, 'base64');
+
+      let category = media.type;
+      if (!category || category === 'file') {
+        category = getMediaTypeFromMime(detectedMime);
+      }
+
+      try {
+        savedMedia = await saveInboundMedia({
+          buffer,
+          mimeType: detectedMime,
+          tenantId,
+          originalName: media.name,
+          mediaCategory: category
+        });
+      } catch (storageErr) {
+        console.error('❌ [Live Chat Direct] Error persistiendo media en mediaStorageService:', storageErr.message);
+        return res.status(400).json({ error: `Archivo no permitido o excede el límite de tamaño: ${storageErr.message}` });
+      }
+
+      // 2. Enviar multimedia a través del Gateway con clean rawBase64 y metadata real
       try {
         msgId = await gatewaySendMedia({
           tenantId,
           to: cleanNumber,
-          url: media.base64,
+          url: rawBase64,
           caption: text || undefined,
-          mediaType: media.type === 'image' ? 'image' : 'document',
+          mediaType: savedMedia.mediaType,
+          mimeType: savedMedia.mimeType,
+          fileName: savedMedia.safeFileName,
           isAutomated: false
         });
         gatewaySuccess = true;
-        console.log(`📤 [Live Chat Direct] Archivo multimedia enviado vía Gateway a +${cleanNumber} (msgId: ${msgId})`);
+        console.log(`📤 [Live Chat Direct] Archivo multimedia (${savedMedia.mediaType}) enviado vía Gateway a +${cleanNumber} (msgId: ${msgId})`);
       } catch (gatewayErr) {
-        console.error('❌ [Live Chat Direct] Error enviando media vía Gateway:', gatewayErr.message);
+        console.error('❌ [Live Chat Direct] Error enviando media vía Gateway:', gatewayErr.response?.data || gatewayErr.message);
+        gatewaySuccess = false;
       }
 
-      messageContent = media.type === 'image' ? media.base64 : `[Documento]: ${media.name}`;
+      // El contenido textual NUNCA debe contener base64
+      messageContent = text || (savedMedia.mediaType === 'document' ? savedMedia.safeFileName : '');
     } else {
       // Enviar mensaje de texto a través del Gateway
       try {
@@ -583,20 +614,30 @@ export async function sendDirectMessage(req, res) {
         gatewaySuccess = true;
         console.log(`📤 [Live Chat Direct] Mensaje enviado vía Gateway a +${cleanNumber} (msgId: ${msgId})`);
       } catch (gatewayErr) {
-        console.error('❌ [Live Chat Direct] Error enviando texto vía Gateway:', gatewayErr.message);
+        console.error('❌ [Live Chat Direct] Error enviando texto vía Gateway:', gatewayErr.response?.data || gatewayErr.message);
+        gatewaySuccess = false;
       }
     }
 
+    const finalStatus = gatewaySuccess ? 'sent' : 'failed';
     const now = new Date();
+
     const [message] = await prisma.$transaction([
       prisma.message.create({
         data: {
           content: messageContent,
+          caption: text || null,
           senderRole: 'agent',
-          status: 'sent',
+          status: finalStatus,
           externalId: msgId || null,
           chatId: chat.id,
           tenantId,
+          mediaPath: savedMedia ? savedMedia.relativePath : null,
+          mediaType: savedMedia ? savedMedia.mediaType : null,
+          mimeType: savedMedia ? savedMedia.mimeType : null,
+          fileName: savedMedia ? savedMedia.safeFileName : null,
+          mediaSize: savedMedia ? savedMedia.size : null,
+          mediaStatus: savedMedia ? 'ready' : null,
         },
       }),
       prisma.chat.update({
@@ -617,19 +658,34 @@ export async function sendDirectMessage(req, res) {
       });
     }
 
+    let mediaToken = null;
+    let mediaUrl = null;
+    if (message.mediaPath) {
+      mediaToken = generateMediaAccessToken({ messageId: message.id, tenantId: message.tenantId });
+      mediaUrl = `/api/chats/media/${message.id}?mt=${mediaToken}`;
+    }
+
     const ioInstance = req.io || global.io;
     if (ioInstance && tenantId) {
       const payload = {
         chatId: chat.id,
         remoteJid: number,
-        text: messageContent,
+        text: message.content,
+        caption: message.caption || null,
         type: 'outgoing',
         from: 'business',
         senderRole: 'agent',
-        mediaType: media ? media.type : undefined,
-        status: 'sent',
+        mediaType: message.mediaType || undefined,
+        mediaUrl,
+        mediaToken,
+        mimeType: message.mimeType || null,
+        fileName: message.fileName || null,
+        mediaSize: message.mediaSize || null,
+        mediaStatus: message.mediaStatus || null,
+        status: message.status,
         externalId: msgId || null,
         messageId: message.id,
+        id: message.id,
         createdAt: message.createdAt.toISOString(),
         lastMessageAt: message.createdAt.toISOString(),
         timestamp: message.createdAt
@@ -637,15 +693,30 @@ export async function sendDirectMessage(req, res) {
       ioInstance.to(`tenant:${tenantId}`).emit('new_whatsapp_message', payload);
     }
 
-
-    return res.status(201).json({
+    const responsePayload = {
       id: message.id,
       from: 'business',
       text: message.content,
+      caption: message.caption,
       status: message.status,
       externalId: message.externalId,
+      mediaType: message.mediaType,
+      mediaUrl,
+      mediaToken,
+      mimeType: message.mimeType,
+      fileName: message.fileName,
+      mediaSize: message.mediaSize,
       time: message.createdAt.toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' }),
-    });
+    };
+
+    if (!gatewaySuccess) {
+      return res.status(502).json({
+        error: 'No se pudo entregar el mensaje al proveedor de WhatsApp.',
+        ...responsePayload
+      });
+    }
+
+    return res.status(201).json(responsePayload);
   } catch (error) {
     console.error('Error en sendDirectMessage:', error);
     return res.status(500).json({ error: 'Error al enviar el mensaje.' });

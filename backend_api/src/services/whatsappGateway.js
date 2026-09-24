@@ -233,7 +233,7 @@ export async function sendText(opts) {
  * Detecta automáticamente si es video por extensión o parámetro mediaType.
  */
 export async function sendMedia(opts) {
-  let { tenantId, provider, instance, apiKey, metaPhoneNumberId, metaAccessToken, to, url, caption, mediaType, isAutomated, origin } = opts || {};
+  let { tenantId, provider, instance, apiKey, metaPhoneNumberId, metaAccessToken, to, url, caption, mediaType, isAutomated, origin, mimetype, mimeType, fileName } = opts || {};
 
   if (!tenantId && instance) {
     const match = String(instance).match(/^bot_prod_([0-9a-fA-F-]+)/);
@@ -280,9 +280,14 @@ export async function sendMedia(opts) {
     cleanTo = cleanTo.replace(/\D/g, '');
   }
 
-  // Detectar si es video según mediaType o extensión de URL
-  const lowerUrl = url.toLowerCase();
+  // Si url contiene un data URI scheme (data:...;base64,...), extraer solo el base64 limpio
+  const cleanMedia = typeof url === 'string' ? url.replace(/^data:[^;]+;base64,/, '') : url;
+
+  // Deducir clasificación canónica de medio
+  const lowerUrl = typeof url === 'string' ? url.toLowerCase() : '';
+  const cleanMime = (mimeType || mimetype || '').toLowerCase();
   const isVideo = mediaType === 'video' ||
+    cleanMime.startsWith('video/') ||
     lowerUrl.startsWith('data:video/') ||
     lowerUrl.includes('video/mp4') ||
     lowerUrl.includes('video/webm') ||
@@ -291,6 +296,41 @@ export async function sendMedia(opts) {
     lowerUrl.includes('.webm') ||
     lowerUrl.includes('.m4v') ||
     lowerUrl.includes('/video/upload/');
+
+  const isAudio = mediaType === 'audio' ||
+    cleanMime.startsWith('audio/') ||
+    lowerUrl.startsWith('data:audio/') ||
+    lowerUrl.includes('.ogg') ||
+    lowerUrl.includes('.mp3') ||
+    lowerUrl.includes('.m4a');
+
+  const isDocument = mediaType === 'document' ||
+    cleanMime.includes('pdf') ||
+    cleanMime.includes('application/') ||
+    cleanMime.includes('text/') ||
+    lowerUrl.startsWith('data:application/') ||
+    lowerUrl.includes('.pdf') ||
+    lowerUrl.includes('.doc') ||
+    lowerUrl.includes('.docx');
+
+  let determinedMediaType = 'image';
+  if (isVideo) determinedMediaType = 'video';
+  else if (isDocument) determinedMediaType = 'document';
+  else if (isAudio) determinedMediaType = 'audio';
+
+  const effectiveMime = mimeType || mimetype || (
+    determinedMediaType === 'video' ? 'video/mp4' :
+    determinedMediaType === 'audio' ? 'audio/ogg' :
+    determinedMediaType === 'document' ? 'application/pdf' :
+    'image/jpeg'
+  );
+
+  const effectiveFileName = fileName || (
+    determinedMediaType === 'video' ? 'video.mp4' :
+    determinedMediaType === 'audio' ? 'audio.ogg' :
+    determinedMediaType === 'document' ? 'documento.pdf' :
+    'imagen.jpg'
+  );
 
   if (provider === 'META') {
     const rawToken = metaAccessToken || process.env.META_ACCESS_TOKEN;
@@ -303,9 +343,16 @@ export async function sendMedia(opts) {
       return null;
     }
     try {
-      const payload = isVideo
-        ? { messaging_product: 'whatsapp', to: cleanTo, type: 'video', video: { link: url, caption: caption || '' } }
-        : { messaging_product: 'whatsapp', to: cleanTo, type: 'image', image: { link: url, caption: caption || '' } };
+      let payload;
+      if (determinedMediaType === 'video') {
+        payload = { messaging_product: 'whatsapp', to: cleanTo, type: 'video', video: { link: url, caption: caption || '' } };
+      } else if (determinedMediaType === 'document') {
+        payload = { messaging_product: 'whatsapp', to: cleanTo, type: 'document', document: { link: url, caption: caption || '', filename: effectiveFileName } };
+      } else if (determinedMediaType === 'audio') {
+        payload = { messaging_product: 'whatsapp', to: cleanTo, type: 'audio', audio: { link: url } };
+      } else {
+        payload = { messaging_product: 'whatsapp', to: cleanTo, type: 'image', image: { link: url, caption: caption || '' } };
+      }
 
       const res = await axios.post(
         `https://graph.facebook.com/${graphVersion}/${phoneId}/messages`,
@@ -317,10 +364,10 @@ export async function sendMedia(opts) {
         if (msgId) markMessageAsSentByAi(msgId, { tenantId, origin: origin || 'ai' });
         if (caption) markMessageAsSentByAi(caption, { tenantId, origin: origin || 'ai' });
       }
-      console.log(`[WA Gateway META] ${isVideo ? 'Video' : 'Imagen'} enviado a ${cleanTo} (msgId: ${msgId})`);
+      console.log(`[WA Gateway META] Multimedia (${determinedMediaType}) enviado a ${cleanTo} (msgId: ${msgId})`);
       return msgId;
     } catch (err) {
-      console.error(`[WA Gateway META] Error al enviar ${isVideo ? 'video' : 'imagen'} a ${cleanTo}:`, err.response?.data || err.message);
+      console.error(`[WA Gateway META] Error al enviar multimedia (${determinedMediaType}) a ${cleanTo}:`, err.response?.data || err.message);
       throw err;
     }
   }
@@ -328,36 +375,38 @@ export async function sendMedia(opts) {
   const evoUrl = process.env.EVOLUTION_API_URL || 'http://localhost:8080';
   const evoInstance = instance || getEvoInstanceName(tenantId || '');
 
-  // Reintento automático ante errores transitorios para Evolution API (1 inicial + 2 retries = 3 intentos máx.)
-  //
-  // NOTA SOBRE DUPLICADOS Y TIMEOUT AMBIGUO:
-  // Si Evolution API recibe y procesa el multimedia pero la conexión HTTP se corta o agota
-  // el timeout antes de que el cliente reciba la confirmación HTTP 200 con key.id, un reintento
-  // posterior podría provocar el envío duplicado del mensaje multimedia al usuario.
-  // Este es un riesgo inherente al transporte HTTP sin idempotencia persistente en el gateway.
-  // Sin embargo, en cuanto Evolution confirma la recepción con msgId, la función retorna inmediatamente
-  // evitando cualquier duplicado posterior tras una respuesta exitosa.
   const MAX_MEDIA_RETRIES = 2;
   const BASE_MEDIA_RETRY_DELAY_MS = Number(process.env.GATEWAY_MEDIA_RETRY_DELAY_MS) || 1500;
 
   for (let attempt = 1; attempt <= MAX_MEDIA_RETRIES + 1; attempt++) {
     try {
+      const evoPayload = {
+        number: cleanTo,
+        mediatype: determinedMediaType,
+        media: cleanMedia,
+        caption: caption || ''
+      };
+
+      if (determinedMediaType === 'document') {
+        evoPayload.fileName = effectiveFileName;
+        evoPayload.mimetype = effectiveMime;
+      } else if (determinedMediaType === 'audio') {
+        evoPayload.mimetype = effectiveMime;
+      } else if (determinedMediaType === 'video') {
+        evoPayload.mimetype = effectiveMime;
+      }
+
       const res = await axios.post(
         `${evoUrl}/message/sendMedia/${evoInstance}`,
-        {
-          number: cleanTo,
-          mediatype: isVideo ? 'video' : 'image',
-          media: url,
-          caption: caption || ''
-        },
-        { ...getEvoHeaders(apiKey), timeout: 5000 }
+        evoPayload,
+        { ...getEvoHeaders(apiKey), timeout: 45000 }
       );
       const msgId = res.data?.key?.id || null;
       if (isAutomated) {
         if (msgId) markMessageAsSentByAi(msgId, { tenantId, origin: origin || 'ai' });
         if (caption) markMessageAsSentByAi(caption, { tenantId, origin: origin || 'ai' });
       }
-      console.log(`[WA Gateway EVOLUTION] ${isVideo ? 'Video' : 'Imagen'} enviado a ${cleanTo} (msgId: ${msgId})`);
+      console.log(`[WA Gateway EVOLUTION] Multimedia (${determinedMediaType}) enviado a ${cleanTo} (msgId: ${msgId})`);
       return msgId;
     } catch (err) {
       const status = err.response?.status;
