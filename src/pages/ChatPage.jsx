@@ -230,11 +230,14 @@ function BubbleMedia({ msg, onImageClick }) {
   }
 
   if (mediaType === 'audio') {
+    const isClient = msg.from === 'client';
     return (
-      <div className="my-1 w-full max-w-[280px]">
+      <div className="my-1 w-full min-w-[220px]">
         <audio
           controls
-          className="w-full my-1"
+          preload="metadata"
+          className="w-full h-10 rounded-lg outline-none"
+          style={{ colorScheme: isClient ? 'auto' : 'light' }}
           src={mediaSrc}
           onError={handleMediaError}
         >
@@ -591,12 +594,14 @@ function Bubble({ msg, onImageClick }) {
   const isClient = msg.from === 'client';
   const hasStructuredMedia = Boolean(msg.mediaType || msg.mediaUrl || msg.image || msg.mediaStatus === 'unavailable' || msg.mediaStatus === 'error');
   const displayText = msg.caption || msg.text || '';
+  const isAudio = msg.mediaType === 'audio';
 
   return (
     <div className={`flex ${isClient ? 'justify-start' : 'justify-end'}`}>
       <div
         className={`
-          max-w-[75%] sm:max-w-[60%] rounded-2xl px-4 py-2.5 shadow-card break-words
+          max-w-[85%] sm:max-w-[70%] md:max-w-[60%] rounded-2xl px-4 py-2.5 shadow-card break-words
+          ${isAudio ? 'w-[280px] sm:w-[320px] max-w-[90%]' : ''}
           ${isClient
             ? 'bg-white dark:bg-white/10 text-hi rounded-tl-sm'
             : 'bg-brand text-white rounded-tr-sm'
