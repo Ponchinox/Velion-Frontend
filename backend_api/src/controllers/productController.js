@@ -116,17 +116,46 @@ export async function createProduct(req, res) {
     // 3. Video demostrativo
     const videoUrl = req.files?.video?.[0]?.path || req.body.videoUrl || null;
 
-    const parsedPromoPrice = (promotionalPrice !== undefined && promotionalPrice !== '' && promotionalPrice !== 'null' && promotionalPrice !== null) 
-      ? parseFloat(promotionalPrice) 
-      : null;
-    const parsedPromoStart = (promoStartDate && promoStartDate !== 'null') ? new Date(promoStartDate) : null;
-    const parsedPromoEnd = (promoEndDate && promoEndDate !== 'null') ? new Date(promoEndDate) : null;
+    const parsedPrice = parseFloat(price);
+    if (isNaN(parsedPrice) || parsedPrice <= 0) {
+      cleanupUploadedFiles(req);
+      return res.status(400).json({ error: 'El precio del producto debe ser un número mayor a 0.' });
+    }
+
+    let parsedPromoPrice = null;
+    if (promotionalPrice !== undefined && promotionalPrice !== '' && promotionalPrice !== 'null' && promotionalPrice !== null) {
+      parsedPromoPrice = parseFloat(promotionalPrice);
+      if (isNaN(parsedPromoPrice) || parsedPromoPrice <= 0) {
+        cleanupUploadedFiles(req);
+        return res.status(400).json({ error: 'El precio promocional debe ser mayor a 0.' });
+      }
+      if (parsedPromoPrice >= parsedPrice) {
+        cleanupUploadedFiles(req);
+        return res.status(400).json({ error: 'El precio promocional debe ser menor al precio normal.' });
+      }
+    }
+
+    const parsedPromoStart = (promoStartDate && promoStartDate !== 'null' && promoStartDate !== '') ? new Date(promoStartDate) : null;
+    const parsedPromoEnd = (promoEndDate && promoEndDate !== 'null' && promoEndDate !== '') ? new Date(promoEndDate) : null;
+
+    if (parsedPromoStart && isNaN(parsedPromoStart.getTime())) {
+      cleanupUploadedFiles(req);
+      return res.status(400).json({ error: 'Fecha de inicio de promoción no válida.' });
+    }
+    if (parsedPromoEnd && isNaN(parsedPromoEnd.getTime())) {
+      cleanupUploadedFiles(req);
+      return res.status(400).json({ error: 'Fecha de fin de promoción no válida.' });
+    }
+    if (parsedPromoStart && parsedPromoEnd && parsedPromoEnd < parsedPromoStart) {
+      cleanupUploadedFiles(req);
+      return res.status(400).json({ error: 'La fecha de fin no puede ser anterior a la fecha de inicio.' });
+    }
 
     const product = await prisma.product.create({
       data: {
         name,
         description: description || null,
-        price: parseFloat(price),
+        price: parsedPrice,
         isAvailable: isAvailable !== undefined ? (isAvailable === true || isAvailable === 'true') : true,
         imageUrl,
         images: Array.isArray(images) ? images.slice(0, 4) : [],
@@ -419,20 +448,66 @@ export async function updateProduct(req, res) {
       return res.status(404).json({ error: 'Producto no encontrado o no autorizado para su modificación.' });
     }
 
+    const targetPrice = price !== undefined ? parseFloat(price) : currentProduct.price;
+    if (price !== undefined && (isNaN(targetPrice) || targetPrice <= 0)) {
+      cleanupUploadedFiles(req);
+      return res.status(400).json({ error: 'El precio del producto debe ser un número mayor a 0.' });
+    }
+
+    let parsedPromoPrice = undefined;
+    if (promotionalPrice !== undefined) {
+      if (promotionalPrice === '' || promotionalPrice === null || promotionalPrice === 'null') {
+        parsedPromoPrice = null;
+      } else {
+        const promoVal = parseFloat(promotionalPrice);
+        if (isNaN(promoVal) || promoVal <= 0) {
+          cleanupUploadedFiles(req);
+          return res.status(400).json({ error: 'El precio promocional debe ser mayor a 0.' });
+        }
+        if (promoVal >= targetPrice) {
+          cleanupUploadedFiles(req);
+          return res.status(400).json({ error: 'El precio promocional debe ser menor al precio normal.' });
+        }
+        parsedPromoPrice = promoVal;
+      }
+    } else if (price !== undefined && currentProduct.promotionalPrice !== null) {
+      if (currentProduct.promotionalPrice >= targetPrice) {
+        cleanupUploadedFiles(req);
+        return res.status(400).json({ error: 'El precio promocional actual no puede ser mayor o igual al nuevo precio normal.' });
+      }
+    }
+
+    let effectiveStart = currentProduct.promoStartDate;
+    let effectiveEnd = currentProduct.promoEndDate;
+
+    if (promoStartDate !== undefined) {
+      effectiveStart = (promoStartDate === '' || promoStartDate === null || promoStartDate === 'null') ? null : new Date(promoStartDate);
+      if (effectiveStart && isNaN(effectiveStart.getTime())) {
+        cleanupUploadedFiles(req);
+        return res.status(400).json({ error: 'Fecha de inicio de promoción no válida.' });
+      }
+    }
+    if (promoEndDate !== undefined) {
+      effectiveEnd = (promoEndDate === '' || promoEndDate === null || promoEndDate === 'null') ? null : new Date(promoEndDate);
+      if (effectiveEnd && isNaN(effectiveEnd.getTime())) {
+        cleanupUploadedFiles(req);
+        return res.status(400).json({ error: 'Fecha de fin de promoción no válida.' });
+      }
+    }
+
+    if (effectiveStart && effectiveEnd && effectiveEnd < effectiveStart) {
+      cleanupUploadedFiles(req);
+      return res.status(400).json({ error: 'La fecha de fin no puede ser anterior a la fecha de inicio.' });
+    }
+
     const dataToUpdate = {
       ...(name && { name }),
       ...(description !== undefined && { description: description || null }),
-      ...(price !== undefined && { price: parseFloat(price) }),
+      ...(price !== undefined && { price: targetPrice }),
       ...(isAvailable !== undefined && { isAvailable: (isAvailable === true || isAvailable === 'true') }),
-      ...(promotionalPrice !== undefined && { 
-        promotionalPrice: (promotionalPrice === '' || promotionalPrice === null || promotionalPrice === 'null') ? null : parseFloat(promotionalPrice) 
-      }),
-      ...(promoStartDate !== undefined && { 
-        promoStartDate: (promoStartDate === '' || promoStartDate === null || promoStartDate === 'null') ? null : new Date(promoStartDate) 
-      }),
-      ...(promoEndDate !== undefined && { 
-        promoEndDate: (promoEndDate === '' || promoEndDate === null || promoEndDate === 'null') ? null : new Date(promoEndDate) 
-      }),
+      ...(promotionalPrice !== undefined && { promotionalPrice: parsedPromoPrice }),
+      ...(promoStartDate !== undefined && { promoStartDate: effectiveStart }),
+      ...(promoEndDate !== undefined && { promoEndDate: effectiveEnd }),
     };
 
     if (type !== undefined && type !== null && String(type).trim() !== '') {

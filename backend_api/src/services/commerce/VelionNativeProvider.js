@@ -1,4 +1,5 @@
 import { CommerceProvider } from './CommerceProvider.js';
+import { isPromotionActive, getCanonicalProductPrice, resolveEffectivePrice } from './canonicalPricing.js';
 import prisma from '../../db.js';
 
 /**
@@ -212,32 +213,20 @@ export class VelionNativeProvider extends CommerceProvider {
       return { price: 0, promotionalPrice: null, effectivePrice: 0, hasActivePromo: false, currencyCode: 'PEN' };
     }
 
-    const now = new Date();
-    let hasActivePromo = false;
-
-    if (product.promotionalPrice && product.promotionalPrice > 0) {
-      const start = product.promoStartDate ? new Date(product.promoStartDate) : null;
-      const end = product.promoEndDate ? new Date(product.promoEndDate) : null;
-      if ((!start || now >= start) && (!end || now <= end)) {
-        hasActivePromo = true;
-      }
-    }
-
-    const effectivePrice = hasActivePromo ? product.promotionalPrice : product.price;
+    const priceInfo = resolveEffectivePrice(product, new Date());
 
     return {
-      price: product.price,
-      promotionalPrice: hasActivePromo ? product.promotionalPrice : null,
-      effectivePrice: effectivePrice,
-      hasActivePromo: hasActivePromo,
+      price: priceInfo.price,
+      promotionalPrice: priceInfo.promotionalPrice,
+      effectivePrice: priceInfo.effectivePrice,
+      hasActivePromo: priceInfo.hasActivePromo,
       currencyCode: product.currencyCode || 'PEN'
     };
   }
 
   /**
    * Genera el índice de catálogo compacto en formato CSV para el system prompt del agente.
-   * Mantiene paridad byte-for-byte con el formato generado por catalogCacheService:
-   * "ID,Nombre,Precio,Tipo,Disponible,Categoria\n"
+   * "ID,Nombre,PrecioActual,PrecioNormal,Promocion,Disponible,Categoria\n"
    *
    * @param {string} tenantId
    * @param {object} [options]
@@ -245,7 +234,7 @@ export class VelionNativeProvider extends CommerceProvider {
    */
   async getCompactCatalogCsv(tenantId, options = {}) {
     if (!this._validateTenantId(tenantId)) {
-      return "ID,Nombre,Precio,Tipo,Disponible,Categoria\nNo hay productos en el catálogo actualmente.";
+      return "ID,Nombre,PrecioActual,PrecioNormal,Promocion,Disponible,Categoria\nNo hay productos en el catálogo actualmente.";
     }
 
     const currencyCode = await this.getTenantCurrency(tenantId);
@@ -264,6 +253,8 @@ export class VelionNativeProvider extends CommerceProvider {
         name: true,
         price: true,
         promotionalPrice: true,
+        promoStartDate: true,
+        promoEndDate: true,
         category: true,
         type: true,
         isAvailable: true
@@ -272,19 +263,21 @@ export class VelionNativeProvider extends CommerceProvider {
     });
 
     if (!products || products.length === 0) {
-      return "ID,Nombre,Precio,Tipo,Disponible,Categoria\nNo hay productos en el catálogo actualmente.";
+      return "ID,Nombre,PrecioActual,PrecioNormal,Promocion,Disponible,Categoria\nNo hay productos en el catálogo actualmente.";
     }
 
-    let csv = "ID,Nombre,Precio,Tipo,Disponible,Categoria\n";
+    const now = new Date();
+    const prefix = currencyCode === 'PEN' ? 'S/. ' : (currencyCode ? `${currencyCode} ` : '');
+    let csv = "ID,Nombre,PrecioActual,PrecioNormal,Promocion,Disponible,Categoria\n";
     for (const p of products) {
-      const priceToUse = (p.promotionalPrice && p.promotionalPrice > 0) ? p.promotionalPrice : p.price;
+      const priceDetails = resolveEffectivePrice(p, now);
       const id = sanitizeForCsv(p.id);
       const name = sanitizeForCsv(p.name);
-      const prodType = p.type === 'SERVICE' ? 'SERVICE' : 'PHYSICAL_PRODUCT';
       const availableStr = p.isAvailable ? 'Sí' : 'No';
       const cat = sanitizeForCsv(p.category || 'General');
-      const formattedPrice = currencyCode === 'PEN' ? `S/. ${priceToUse}` : `${currencyCode} ${priceToUse}`;
-      csv += `${id},${name},${formattedPrice},${prodType},${availableStr},${cat}\n`;
+      const formattedActual = `${prefix}${priceDetails.effectivePrice}`;
+      const formattedNormal = `${prefix}${priceDetails.price}`;
+      csv += `${id},${name},${formattedActual},${formattedNormal},${priceDetails.promoDescription},${availableStr},${cat}\n`;
     }
 
     return csv;

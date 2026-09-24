@@ -454,6 +454,28 @@ export default function Products() {
     e.preventDefault();
     if (!name || price === '') return;
 
+    const numPrice = parseFloat(price);
+    if (isNaN(numPrice) || numPrice <= 0) {
+      showToast('El precio del producto debe ser mayor a 0.', 'error');
+      return;
+    }
+
+    if (hasPromo) {
+      const numPromo = parseFloat(promotionalPrice);
+      if (!promotionalPrice || isNaN(numPromo) || numPromo <= 0) {
+        showToast('El precio promocional debe ser mayor a 0.', 'error');
+        return;
+      }
+      if (numPromo >= numPrice) {
+        showToast('El precio promocional debe ser menor al precio normal.', 'error');
+        return;
+      }
+      if (promoStartDate && promoEndDate && new Date(promoEndDate) < new Date(promoStartDate)) {
+        showToast('La fecha de fin no puede ser anterior a la fecha de inicio.', 'error');
+        return;
+      }
+    }
+
     setSaving(true);
     const token = localStorage.getItem('sa_token');
     const formData = new FormData();

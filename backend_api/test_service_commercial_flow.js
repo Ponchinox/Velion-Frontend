@@ -581,9 +581,9 @@ async function main() {
       invalidateCatalogCache(testTenantId);
       const csv = await getCompactCatalogIndex(testTenantId);
 
-      assert.ok(csv.startsWith('ID,Nombre,Precio,Tipo,Disponible,Categoria\n'), 'CSV debe comenzar con el header incluyendo columna Disponible');
-      assert.ok(csv.includes('uuid-phys,Libro Fisica,S/. 60,PHYSICAL_PRODUCT,Sí,Libros\n'), 'Debe incluir fila física con PHYSICAL_PRODUCT y Disponible=Sí');
-      assert.ok(csv.includes('uuid-serv,Intensivo UNI,S/. 350,SERVICE,Sí,Educacion\n'), 'Debe incluir fila de servicio con SERVICE y Disponible=Sí');
+      assert.ok(csv.startsWith('ID,Nombre,PrecioActual,PrecioNormal,Promocion,Disponible,Categoria\n'), 'CSV debe comenzar con el header incluyendo columna Disponible');
+      assert.ok(csv.includes('uuid-phys,Libro Fisica,S/. 60,S/. 60,Sin oferta vigente,Sí,Libros\n'), 'Debe incluir fila física con Disponible=Sí');
+      assert.ok(csv.includes('uuid-serv,Intensivo UNI,S/. 350,S/. 350,Sin oferta vigente,Sí,Educacion\n'), 'Debe incluir fila de servicio con Disponible=Sí');
     } finally {
       prisma.product.findMany = origFindMany;
       invalidateCatalogCache(testTenantId);

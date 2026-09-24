@@ -3,22 +3,17 @@ import { cancelFollowUpOnOrderEvent } from './followUpService.js';
 import { CommerceService, commerceService } from './commerce/CommerceService.js';
 import shopifyDraftOrderService from './integrations/shopify/shopifyDraftOrderService.js';
 
-/**
- * Calcula el precio canónico vigente de un producto (respetando promociones por fecha).
- * NUNCA utiliza `budget` ni parámetros del LLM.
- */
-export function getCanonicalProductPrice(product) {
-  if (!product) return 0;
-  if (product.promotionalPrice && product.promotionalPrice > 0) {
-    const now = new Date();
-    const start = product.promoStartDate ? new Date(product.promoStartDate) : null;
-    const end = product.promoEndDate ? new Date(product.promoEndDate) : null;
-    if ((!start || now >= start) && (!end || now <= end)) {
-      return product.promotionalPrice;
-    }
-  }
-  return product.price;
-}
+import { 
+  getCanonicalProductPrice, 
+  isPromotionActive, 
+  resolveEffectivePrice 
+} from './commerce/canonicalPricing.js';
+
+export {
+  getCanonicalProductPrice,
+  isPromotionActive,
+  resolveEffectivePrice
+};
 
 /**
  * Limpia los campos efímeros del borrador de compra en commercialState.

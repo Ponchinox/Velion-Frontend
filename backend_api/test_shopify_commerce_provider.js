@@ -299,13 +299,13 @@ await runTest('TEST 8: getCompactCatalogCsv genera cabecera exacta con columna D
   const csv = await provider.getCompactCatalogCsv('tenant-alpha');
   const lines = csv.trim().split('\n');
 
-  assert.strictEqual(lines[0], 'ID,Nombre,Precio,Tipo,Disponible,Categoria', 'Cabecera exacta requerida');
+  assert.strictEqual(lines[0], 'ID,Nombre,PrecioActual,PrecioNormal,Promocion,Disponible,Categoria', 'Cabecera exacta requerida');
   assert.ok(lines.length >= 2, 'Debe contener filas de datos');
 
   // Variantes disponibles y no disponibles con su respectiva marca
-  assert.ok(lines.some(l => l.startsWith('shopify:var-uuid-1,Snowboard Minimal,USD 250,PHYSICAL_PRODUCT,Sí,Deportes')));
-  assert.ok(lines.some(l => l.startsWith('shopify:var-uuid-2-m,Camiseta Velion - Medium,USD 49.9,PHYSICAL_PRODUCT,Sí,Ropa')));
-  assert.ok(lines.some(l => l.startsWith('shopify:var-uuid-2-l,Camiseta Velion - Large,USD 49.9,PHYSICAL_PRODUCT,No,Ropa')), 'Variante no disponible debe aparecer con Disponible=No');
+  assert.ok(lines.some(l => l.startsWith('shopify:var-uuid-1,Snowboard Minimal,USD 250,USD 250,Sin oferta vigente,Sí,Deportes')));
+  assert.ok(lines.some(l => l.startsWith('shopify:var-uuid-2-m,Camiseta Velion - Medium,USD 49.9,USD 49.9,Sin oferta vigente,Sí,Ropa')));
+  assert.ok(lines.some(l => l.startsWith('shopify:var-uuid-2-l,Camiseta Velion - Large,USD 49.9,USD 49.9,Sin oferta vigente,No,Ropa')), 'Variante no disponible debe aparecer con Disponible=No');
 
   // Con filtro explícito { isAvailable: true }
   const csvOnlyAvail = await provider.getCompactCatalogCsv('tenant-alpha', { isAvailable: true });

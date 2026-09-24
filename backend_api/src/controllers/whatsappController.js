@@ -12,6 +12,7 @@ import {
 } from '../services/whatsappGateway.js';
 import { getCompactCatalogIndex } from '../services/catalogCacheService.js';
 import { commerceService } from '../services/commerce/CommerceService.js';
+import { resolveEffectivePrice, isPromotionActive } from '../services/commerce/canonicalPricing.js';
 import { evaluateAiBudgetGuard } from '../services/aiBudgetGuardService.js';
 import {
   markMessageAsSentByAi as _trackerMarkAi,
@@ -3813,6 +3814,9 @@ Estado Comercial Actual: ${JSON.stringify(effectiveCommercialState)}
 
 <catalog_index>
 [ATENCION: LOS DATOS A CONTINUACION SON EL INDICE COMPLETO DE PRODUCTOS Y SERVICIOS DE LA TIENDA.
+- 'PrecioActual' es el precio de venta vigente para compras hoy.
+- 'PrecioNormal' es el precio regular de lista.
+- 'Promocion' indica si hay una oferta vigente o si no la hay. PROHIBIDO anunciar u ofrecer promociones que figuren como 'Sin oferta vigente' o inventar descuentos no listados aquí.
 - La columna 'Disponible' indica si el producto cuenta con stock actual para venta ('Sí') o si está agotado ('No').
 - SI EL CLIENTE PREGUNTA POR UN PRODUCTO CON Disponible='No': Reconoce que sí forma parte de nuestro catálogo pero aclara amablemente que actualmente se encuentra AGOTADO o no disponible. NUNCA digas que no existe si figura en este índice.
 - SI EL CLIENTE INTENTA COMPRAR UN PRODUCTO CON Disponible='No': Indícale amablemente que está agotado y que no es posible procesar la compra. Ofrece alternativas disponibles de la misma categoría. PROHIBIDO crear órdenes para productos agotados.
@@ -4289,14 +4293,14 @@ Pregunta con amabilidad y naturalidad al cliente de qué producto desea recibir 
              // or we should add tenant check. Since ID is uuid, guessing is hard.
           }
 
-          const hoy = new Date();
-          let precioTexto = `S/. ${product.price.toFixed(2)}`;
-          if (product.promotionalPrice) {
-            const start = product.promoStartDate ? new Date(product.promoStartDate) : null;
-            const end   = product.promoEndDate   ? new Date(product.promoEndDate)   : null;
-            if ((!start || hoy >= start) && (!end || hoy <= end)) {
-              precioTexto = `Precio Normal: S/. ${product.price.toFixed(2)} - PRECIO PROMO: S/. ${product.promotionalPrice.toFixed(2)}`;
-            }
+          const priceInfo = resolveEffectivePrice(product, new Date());
+          const curr = (product.currencyCode === 'USD') ? 'USD' : 'S/.';
+          let precioTexto = `${curr} ${priceInfo.price.toFixed(2)}`;
+          if (priceInfo.hasActivePromo) {
+            const endNote = priceInfo.promoEndDate
+              ? ` (hasta ${new Date(priceInfo.promoEndDate).toLocaleDateString('es-PE', { day: '2-digit', month: '2-digit' })})`
+              : '';
+            precioTexto = `Precio Normal: ${curr} ${priceInfo.price.toFixed(2)} - PRECIO PROMO: ${curr} ${priceInfo.promotionalPrice.toFixed(2)}${endNote}`;
           }
 
           const tienePortada = product.imageUrl ? 'Sí' : 'No';

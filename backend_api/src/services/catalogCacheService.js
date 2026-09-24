@@ -26,7 +26,7 @@ export async function getCompactCatalogIndex(tenantId) {
     console.error(`❌ [CatalogCache] Error al obtener catálogo para tenant ${tenantId}:`, error.message);
     // En caso de error, si hay caché viejo, devolverlo para no caerse
     if (cached) return cached.csv;
-    return "ID,Nombre,Precio,Tipo,Categoria\nError al cargar catálogo.";
+    return "ID,Nombre,PrecioActual,PrecioNormal,Promocion,Disponible,Categoria\nError al cargar catálogo.";
   }
 }
 

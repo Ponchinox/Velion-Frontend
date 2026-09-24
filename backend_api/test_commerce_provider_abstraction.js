@@ -247,7 +247,7 @@ async function main() {
   // ── TEST 8: Generación de catálogo compacto CSV con columna Disponible ───────
   await runTest('TEST 8: getCompactCatalogCsv — genera índice con columna Disponible', async () => {
     const csv = await provider.getCompactCatalogCsv('tenant-a-uuid');
-    assert.ok(csv.startsWith('ID,Nombre,Precio,Tipo,Disponible,Categoria\n'), 'Debe contener la cabecera exacta');
+    assert.ok(csv.startsWith('ID,Nombre,PrecioActual,PrecioNormal,Promocion,Disponible,Categoria\n'), 'Debe contener la cabecera exacta');
     assert.ok(csv.includes('Smartwatch Velion X1'), 'Debe incluir producto disponible A1');
     assert.ok(csv.includes('Polo Velion Pima'), 'Debe incluir producto disponible A2');
     assert.ok(csv.includes('Audífonos Pro Studio'), 'SÍ debe incluir producto agotado A3 con Disponible=No');
@@ -263,13 +263,14 @@ async function main() {
   await runTest('TEST 9: Paridad byte-for-byte del CSV generado con Disponible', async () => {
     const csv = await provider.getCompactCatalogCsv('tenant-a-uuid');
     const lines = csv.trim().split('\n');
-    assert.strictEqual(lines[0], 'ID,Nombre,Precio,Tipo,Disponible,Categoria');
+    assert.strictEqual(lines[0], 'ID,Nombre,PrecioActual,PrecioNormal,Promocion,Disponible,Categoria');
     // Línea 1 ordenada por nombre: Audífonos Pro Studio (A < P)
-    assert.ok(lines[1].includes('prod-a3-agotado,Audífonos Pro Studio,S/. 350,PHYSICAL_PRODUCT,No,Audio'));
+    assert.ok(lines[1].includes('prod-a3-agotado,Audífonos Pro Studio,S/. 350,S/. 350,Sin oferta vigente,No,Audio'));
     // Línea 2 ordenada por nombre: Polo Velion Pima (P < S)
-    assert.ok(lines[2].includes('prod-a2,Polo Velion Pima,S/. 69,PHYSICAL_PRODUCT,Sí,Ropa'));
+    assert.ok(lines[2].includes('prod-a2,Polo Velion Pima,S/. 69,S/. 89,'));
+    assert.ok(lines[2].includes(',Sí,Ropa'));
     // Línea 3 ordenada por nombre: Smartwatch Velion X1
-    assert.ok(lines[3].includes('prod-a1,Smartwatch Velion X1,S/. 199,PHYSICAL_PRODUCT,Sí,Tecnología'));
+    assert.ok(lines[3].includes('prod-a1,Smartwatch Velion X1,S/. 199,S/. 199,Sin oferta vigente,Sí,Tecnología'));
   });
 
   // ── TEST 10: Compatibilidad con productMediaOrchestrator ─────────────────────

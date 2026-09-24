@@ -1,5 +1,6 @@
 import { VelionNativeProvider } from './VelionNativeProvider.js';
 import { ShopifyCachedProvider } from './ShopifyCachedProvider.js';
+import { resolveEffectivePrice, isPromotionActive, getCanonicalProductPrice } from './canonicalPricing.js';
 import prisma from '../../db.js';
 
 /**
@@ -595,22 +596,35 @@ export class CommerceService {
       : resolvedItems;
 
     if (!itemsToInclude || itemsToInclude.length === 0) {
-      return "ID,Nombre,Precio,Tipo,Disponible,Categoria\nNo hay productos en el catálogo actualmente.";
+      return "ID,Nombre,PrecioActual,PrecioNormal,Promocion,Disponible,Categoria\nNo hay productos en el catálogo actualmente.";
     }
 
-    let csv = "ID,Nombre,Precio,Tipo,Disponible,Categoria\n";
+    const now = new Date();
+    let csv = "ID,Nombre,PrecioActual,PrecioNormal,Promocion,Disponible,Categoria\n";
     for (const item of itemsToInclude) {
-      const priceToUse = (item.promotionalPrice && item.promotionalPrice > 0) ? item.promotionalPrice : item.price;
+      const isShopify = item.source === 'SHOPIFY';
+      const curr = item.currencyCode || (isShopify ? config.shopCurrency : config.nativeCurrency) || 'PEN';
+      const prefix = (curr && curr !== 'PEN') ? `${curr} ` : (curr === 'PEN' ? 'S/. ' : '');
+
+      let priceDetails;
+      if (isShopify) {
+        priceDetails = {
+          price: item.price,
+          effectivePrice: item.price,
+          promoDescription: 'Sin oferta vigente'
+        };
+      } else {
+        priceDetails = resolveEffectivePrice(item, now);
+      }
+
       const id = sanitizeForCsv(item.id);
       const name = sanitizeForCsv(item.name);
-      const prodType = item.type === 'SERVICE' ? 'SERVICE' : 'PHYSICAL_PRODUCT';
       const availableStr = item.isAvailable ? 'Sí' : 'No';
       const cat = sanitizeForCsv(item.category || 'General');
-      const curr = item.currencyCode || (item.source === 'SHOPIFY' ? config.shopCurrency : config.nativeCurrency) || 'PEN';
-      const formattedPrice = (curr && curr !== 'PEN')
-        ? `${curr} ${priceToUse}`
-        : (curr === 'PEN' ? `S/. ${priceToUse}` : `${priceToUse}`);
-      csv += `${id},${name},${formattedPrice},${prodType},${availableStr},${cat}\n`;
+      const formattedActual = `${prefix}${priceDetails.effectivePrice}`;
+      const formattedNormal = `${prefix}${priceDetails.price}`;
+
+      csv += `${id},${name},${formattedActual},${formattedNormal},${priceDetails.promoDescription},${availableStr},${cat}\n`;
     }
 
     return csv;

@@ -1,4 +1,6 @@
 import prisma from '../db.js';
+import { commerceService } from '../services/commerce/CommerceService.js';
+import { isPromotionActive } from '../services/commerce/canonicalPricing.js';
 
 /**
  * Obtiene métricas agregadas en tiempo real para el Dashboard del Tenant actual
@@ -13,6 +15,63 @@ export async function getTenantMetrics(req, res) {
     const now = new Date();
     const startOfDay = new Date();
     startOfDay.setHours(0, 0, 0, 0);
+
+    // Consultar configuración comercial del tenant para gobernanza de catálogo
+    const tenantConfig = await commerceService.getTenantConfig(tenantId);
+    const catalogMode = tenantConfig?.catalogMode || 'VELION_ONLY';
+
+    let totalProductsPromise;
+    if (catalogMode === 'VELION_ONLY') {
+      totalProductsPromise = prisma.product.count({
+        where: { user: { tenantId } }
+      });
+    } else if (catalogMode === 'SHOPIFY_ONLY') {
+      totalProductsPromise = prisma.externalProduct.count({
+        where: { tenantId }
+      });
+    } else {
+      // COMBINED: Catálogo unificado a nivel PRODUCTO
+      // Deduplica colisiones 1:1 por SKU si existen
+      totalProductsPromise = (async () => {
+        const [nativeProducts, externalProducts] = await Promise.all([
+          prisma.product.findMany({
+            where: { user: { tenantId } },
+            select: { normalizedSku: true }
+          }),
+          prisma.externalProduct.findMany({
+            where: { tenantId },
+            select: { id: true, variants: { select: { normalizedSku: true } } }
+          })
+        ]);
+
+        const nativeSkus = new Set(nativeProducts.map(p => p.normalizedSku).filter(Boolean));
+        const collidingExternalProductIds = new Set();
+        for (const ep of externalProducts) {
+          for (const v of ep.variants) {
+            if (v.normalizedSku && nativeSkus.has(v.normalizedSku)) {
+              collidingExternalProductIds.add(ep.id);
+            }
+          }
+        }
+        return nativeProducts.length + (externalProducts.length - collidingExternalProductIds.size);
+      })();
+    }
+
+    // Promociones vigentes y activas hoy (Velion Nativo)
+    const activePromosPromise = (catalogMode === 'SHOPIFY_ONLY')
+      ? Promise.resolve(0)
+      : prisma.product.findMany({
+          where: {
+            user: { tenantId },
+            promotionalPrice: { not: null, gt: 0 }
+          },
+          select: {
+            price: true,
+            promotionalPrice: true,
+            promoStartDate: true,
+            promoEndDate: true
+          }
+        }).then(prods => prods.filter(p => isPromotionActive(p, now)).length);
 
     // Ejecutar consultas en paralelo para mejorar el tiempo de respuesta
     const [
@@ -65,45 +124,10 @@ export async function getTenantMetrics(req, res) {
           status: 'closed'
         }
       }),
-      // 7. Total de productos en catálogo (relacionados vía User del Tenant)
-      prisma.product.count({
-        where: {
-          user: { tenantId }
-        }
-      }),
+      // 7. Total de productos en catálogo unificado
+      totalProductsPromise,
       // 8. Promociones vigentes y activas hoy
-      prisma.product.count({
-        where: {
-          user: { tenantId },
-          promotionalPrice: { not: null },
-          OR: [
-            {
-              AND: [
-                { promoStartDate: { lte: now } },
-                { promoEndDate: { gte: now } }
-              ]
-            },
-            {
-              AND: [
-                { promoStartDate: null },
-                { promoEndDate: null }
-              ]
-            },
-            {
-              AND: [
-                { promoStartDate: null },
-                { promoEndDate: { gte: now } }
-              ]
-            },
-            {
-              AND: [
-                { promoStartDate: { lte: now } },
-                { promoEndDate: null }
-              ]
-            }
-          ]
-        }
-      }),
+      activePromosPromise,
       // 9. Notificaciones recientes (Alertas)
       prisma.alert.findMany({
         where: { tenantId },

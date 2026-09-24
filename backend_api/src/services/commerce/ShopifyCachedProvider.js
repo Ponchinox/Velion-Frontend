@@ -294,27 +294,30 @@ export class ShopifyCachedProvider extends CommerceProvider {
    */
   async getCompactCatalogCsv(tenantId, options = {}) {
     if (!this._validateTenantId(tenantId)) {
-      return "ID,Nombre,Precio,Tipo,Disponible,Categoria\nNo hay productos en el catálogo actualmente.";
+      return "ID,Nombre,PrecioActual,PrecioNormal,Promocion,Disponible,Categoria\nNo hay productos en el catálogo actualmente.";
     }
 
     const items = await this.searchProducts(tenantId, options);
     if (!items || items.length === 0) {
-      return "ID,Nombre,Precio,Tipo,Disponible,Categoria\nNo hay productos en el catálogo actualmente.";
+      return "ID,Nombre,PrecioActual,PrecioNormal,Promocion,Disponible,Categoria\nNo hay productos en el catálogo actualmente.";
     }
 
     const currencyCode = await this.getShopCurrency(tenantId);
-    let csv = "ID,Nombre,Precio,Tipo,Disponible,Categoria\n";
+    const prefix = (currencyCode && currencyCode !== 'PEN')
+      ? `${currencyCode} `
+      : (currencyCode === 'PEN' ? 'S/. ' : '');
+
+    let csv = "ID,Nombre,PrecioActual,PrecioNormal,Promocion,Disponible,Categoria\n";
     for (const item of items) {
       const id = sanitizeForCsv(item.id);
       const name = sanitizeForCsv(item.name);
       const priceToUse = item.price;
-      const prodType = 'PHYSICAL_PRODUCT';
       const availableStr = item.isAvailable ? 'Sí' : 'No';
       const cat = sanitizeForCsv(item.category || 'General');
-      const formattedPrice = (currencyCode && currencyCode !== 'PEN')
-        ? `${currencyCode} ${priceToUse}`
-        : (currencyCode === 'PEN' ? `S/. ${priceToUse}` : `${priceToUse}`);
-      csv += `${id},${name},${formattedPrice},${prodType},${availableStr},${cat}\n`;
+      const formattedActual = `${prefix}${priceToUse}`;
+      const formattedNormal = `${prefix}${priceToUse}`;
+      const promoStr = 'Sin oferta vigente';
+      csv += `${id},${name},${formattedActual},${formattedNormal},${promoStr},${availableStr},${cat}\n`;
     }
 
     return csv;
