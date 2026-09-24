@@ -191,18 +191,20 @@ async function runNode(targetNode, activeFlow, customer, instance, visitedNodeId
       }
     }
   }
+  else if (targetNode.type === 'conditionNode') {
+    const question = targetNode.data?.label || '';
+    const options = Array.isArray(targetNode.data?.options) ? targetNode.data.options : [];
+    let textToSend = question;
+    if (options.length > 0) {
+      textToSend = `${question}\n\n` + options.map(opt => `👉 *${opt}*`).join('\n');
+    }
+    if (textToSend.trim()) {
+      await sendFlowMessage(customer, textToSend.trim(), instance, prismaClient);
+    }
+  }
 
   // 2. Determinar salidas y siguiente avance
   const outgoingEdges = edges.filter(e => e.source === targetNode.id);
-
-  if (outgoingEdges.length === 0) {
-    await db.customer.update({
-      where: { id: customer.id },
-      data: { currentFlowId: null, currentNodeId: null }
-    });
-    console.log(`🎉 [Flow Engine] Flujo finalizado en nodo final "${targetNode.id}"`);
-    return;
-  }
 
   // Si es un nodo de condición o posee bifurcaciones (múltiples salidas), frenar y esperar input
   if (targetNode.type === 'conditionNode' || outgoingEdges.length > 1) {
@@ -211,6 +213,15 @@ async function runNode(targetNode, activeFlow, customer, instance, visitedNodeId
       data: { currentFlowId: activeFlow.id, currentNodeId: targetNode.id }
     });
     console.log(`⏳ [Flow Engine] Posicionado en nodo de decisión "${targetNode.id}". Esperando respuesta.`);
+    return;
+  }
+
+  if (outgoingEdges.length === 0) {
+    await db.customer.update({
+      where: { id: customer.id },
+      data: { currentFlowId: null, currentNodeId: null }
+    });
+    console.log(`🎉 [Flow Engine] Flujo finalizado en nodo final "${targetNode.id}"`);
     return;
   }
 
@@ -271,12 +282,10 @@ export async function executeFlowContext(customer, incomingText, instance, prism
       // Ejecutar recursivamente a partir del nodo inicial con Set de visitados fresco
       await runNode(startNode, matchingFlow, customer, instance, new Set(), prismaClient);
 
-      // Re-leer el estado del cliente para verificar si el flujo sigue activo o fue abortado
-      const updatedCustomer = await db.customer.findUnique({ where: { id: customer.id } });
-      if (!updatedCustomer?.currentFlowId) {
-        // El flujo terminó o fue abortado (ciclo/fin de rama) → ceder el control a la IA
-        return false;
-      }
+      // Si el mensaje activó un flujo y ejecutó su acción inicial, este mensaje fue MANEJADO
+      // por la automatización. Retornar true evita que whatsappController invoque la IA en este mismo turno.
+      // Si el flujo terminó (currentFlowId quedó en null), el cliente ya está limpio
+      // y el SIGUIENTE mensaje del usuario volverá de forma natural a la IA.
       return true;
     }
   }
