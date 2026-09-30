@@ -11,6 +11,7 @@ import {
   FileText,
   CheckSquareOffset,
   SpinnerGap,
+  PushPin,
 } from '@phosphor-icons/react';
 import {
   formatStatus,
@@ -19,6 +20,7 @@ import {
   formatCreatedByType,
   formatDueDate,
   formatDateTime,
+  isTaskOverdue,
 } from '../../utils/operationalFormatters';
 
 /**
@@ -33,10 +35,13 @@ export default function OperationalCard({
   onComplete,
   onCancel,
   onArchive,
+  onPin,
+  onUnpin,
 }) {
   const isTask = item.type === 'TASK';
   const isNote = item.type === 'NOTE';
   const isDisabled = isProcessing || isAnyProcessing;
+  const isOverdue = isTaskOverdue(item);
 
   // Badges visuales de estado
   const renderStatusBadge = () => {
@@ -92,6 +97,20 @@ export default function OperationalCard({
     }
   };
 
+  // Badge visual de vencimiento dinámico
+  const renderOverdueBadge = () => {
+    if (!isOverdue) return null;
+    return (
+      <span
+        className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-semibold bg-rose-50 text-rose-700 border border-rose-200"
+        title="Tarea vencida"
+      >
+        <span className="w-1.5 h-1.5 rounded-full bg-rose-600 animate-pulse" />
+        Vencida
+      </span>
+    );
+  };
+
   // Badges de prioridad
   const renderPriorityBadge = () => {
     if (!item.priority) return null;
@@ -118,6 +137,8 @@ export default function OperationalCard({
         relative rounded-xl border p-4 transition-all duration-fast
         ${item.status === 'COMPLETED' || item.status === 'CANCELED' || item.status === 'ARCHIVED'
           ? 'bg-app/40 border-line text-mid opacity-80'
+          : isOverdue
+          ? 'bg-card border-rose-200 shadow-card hover:border-rose-300'
           : 'bg-card border-line shadow-card hover:border-line-strong'
         }
       `}
@@ -140,10 +161,17 @@ export default function OperationalCard({
           </span>
 
           {isTask && renderPriorityBadge()}
+          {isNote && item.isPinned && (
+            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-bold bg-amber-500/15 text-amber-700 dark:text-amber-400 border border-amber-500/30">
+              <PushPin size={11} weight="fill" />
+              Fijada
+            </span>
+          )}
         </div>
 
-        <div className="flex items-center gap-1.5">
+        <div className="flex items-center gap-1.5 flex-wrap">
           {renderStatusBadge()}
+          {renderOverdueBadge()}
         </div>
       </div>
 
@@ -165,9 +193,12 @@ export default function OperationalCard({
         )}
 
         {isTask && formattedDueDate && (
-          <div className="flex items-center gap-1.5 text-mid font-medium">
-            <CalendarBlank size={13} className="text-brand flex-shrink-0" />
-            <span>Vence: <strong className="text-hi">{formattedDueDate}</strong></span>
+          <div className={`flex items-center gap-1.5 font-medium ${isOverdue ? 'text-rose-700' : 'text-mid'}`}>
+            <CalendarBlank size={13} className={`${isOverdue ? 'text-rose-600' : 'text-brand'} flex-shrink-0`} />
+            <span>
+              {isOverdue ? 'Vencida: ' : 'Vence: '}
+              <strong className={isOverdue ? 'text-rose-800 font-semibold' : 'text-hi'}>{formattedDueDate}</strong>
+            </span>
           </div>
         )}
 
@@ -258,16 +289,41 @@ export default function OperationalCard({
 
         {/* Nota ACTIVE */}
         {isNote && item.status === 'ACTIVE' && (
-          <button
-            onClick={() => onArchive(item)}
-            disabled={isDisabled}
-            className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-semibold bg-app hover:bg-line text-lo hover:text-hi border border-line transition-all cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
-            title="Archivar nota"
-            aria-label="Archivar nota"
-          >
-            {isProcessing ? <SpinnerGap size={12} className="animate-spin" /> : <Archive size={12} />}
-            Archivar
-          </button>
+          <>
+            {item.isPinned ? (
+              <button
+                onClick={() => onUnpin && onUnpin(item)}
+                disabled={isDisabled}
+                className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-semibold bg-amber-500/10 hover:bg-amber-500/20 text-amber-600 dark:text-amber-400 border border-amber-500/20 transition-all cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+                title="Desfijar nota"
+                aria-label="Desfijar nota"
+              >
+                {isProcessing ? <SpinnerGap size={12} className="animate-spin" /> : <PushPin size={12} weight="fill" />}
+                Desfijar
+              </button>
+            ) : (
+              <button
+                onClick={() => onPin && onPin(item)}
+                disabled={isDisabled}
+                className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-semibold bg-app hover:bg-line text-lo hover:text-hi border border-line transition-all cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+                title="Fijar nota en la parte superior"
+                aria-label="Fijar nota"
+              >
+                {isProcessing ? <SpinnerGap size={12} className="animate-spin" /> : <PushPin size={12} />}
+                Fijar
+              </button>
+            )}
+            <button
+              onClick={() => onArchive(item)}
+              disabled={isDisabled}
+              className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-semibold bg-app hover:bg-line text-lo hover:text-hi border border-line transition-all cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+              title="Archivar nota"
+              aria-label="Archivar nota"
+            >
+              {isProcessing ? <SpinnerGap size={12} className="animate-spin" /> : <Archive size={12} />}
+              Archivar
+            </button>
+          </>
         )}
 
         {/* Estados terminales / read-only */}

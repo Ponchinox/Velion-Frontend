@@ -230,74 +230,192 @@ export function validateOperationalInput(input) {
 }
 
 /**
- * Ordenamiento determinista y transitivo de tareas:
- * 1. Jerarquía de estados: IN_PROGRESS (0) -> PENDING (1) -> COMPLETED (2) -> CANCELED (3)
- * 2. Para tareas activas (IN_PROGRESS y PENDING):
- *    - Tareas con fecha antes que sin fecha
- *    - Fecha ascendente
- *    - Si coinciden en fecha: tarea con hora antes que sin hora; si ambas tienen hora, hora ascendente
- * 3. Fallback createdAt descendente (más reciente primero)
- * 4. Fallback updatedAt descendente
- * 5. Tie-breaker estricto final por id ascendente (total order)
+ * Obtiene la fecha/hora límite (deadline) de una tarea como objeto Date.
+ * Considera dueDateLocal y dueTimeLocal, con fallback a dueAt.
+ * Si solo se especifica fecha sin hora, el deadline es el final del día local (23:59:59.999).
  */
-export function sortTasks(tasks = []) {
-  const statusWeight = {
-    IN_PROGRESS: 0,
-    PENDING: 1,
-    COMPLETED: 2,
-    CANCELED: 3,
-  };
+export function getTaskDeadline(item) {
+  if (!item || item.type !== 'TASK') return null;
 
+  if (item.dueDateLocal && typeof item.dueDateLocal === 'string') {
+    const parts = item.dueDateLocal.split('-').map(Number);
+    if (parts.length === 3 && !parts.some(isNaN)) {
+      const [year, month, day] = parts;
+      if (item.dueTimeLocal && typeof item.dueTimeLocal === 'string') {
+        const timeParts = item.dueTimeLocal.split(':').map(Number);
+        if (timeParts.length >= 2 && !timeParts.slice(0, 2).some(isNaN)) {
+          const [hours, minutes] = timeParts;
+          const d = new Date(year, month - 1, day, hours, minutes, 0, 0);
+          if (!isNaN(d.getTime())) return d;
+        }
+      }
+      // Sin hora: límite al final del día local (23:59:59.999)
+      const d = new Date(year, month - 1, day, 23, 59, 59, 999);
+      if (!isNaN(d.getTime())) return d;
+    }
+  }
+
+  if (item.dueAt) {
+    const d = new Date(item.dueAt);
+    if (!isNaN(d.getTime())) return d;
+  }
+
+  return null;
+}
+
+/**
+ * Determina dinámicamente si una tarea está vencida (overdue).
+ * Una tarea es OVERDUE únicamente si:
+ * 1. type === 'TASK'
+ * 2. status IN ('PENDING', 'IN_PROGRESS')
+ * 3. Existe fecha/hora límite válida
+ * 4. deadline < now
+ * COMPLETED y CANCELED nunca deben mostrarse como vencidas.
+ */
+export function isTaskOverdue(item, now = new Date()) {
+  if (!item || item.type !== 'TASK') return false;
+  if (item.status !== 'PENDING' && item.status !== 'IN_PROGRESS') return false;
+
+  const deadline = getTaskDeadline(item);
+  if (!deadline) return false;
+
+  const currentTime = now instanceof Date ? now.getTime() : new Date(now).getTime();
+  if (isNaN(currentTime)) return false;
+
+  return deadline.getTime() < currentTime;
+}
+
+/**
+ * Asigna el bucket de prioridad visual para ordenamiento de tareas:
+ * 1. OVERDUE + HIGH
+ * 2. OVERDUE + NORMAL
+ * 3. OVERDUE + LOW
+ * 4. PENDING/IN_PROGRESS + HIGH
+ * 5. PENDING/IN_PROGRESS + NORMAL
+ * 6. PENDING/IN_PROGRESS + LOW
+ * 7. Resto por dueAt/dueDate
+ * 8. COMPLETED/CANCELED al final
+ */
+export function getTaskSortBucket(task, now = new Date()) {
+  const isTerminal = task.status === 'COMPLETED' || task.status === 'CANCELED';
+  if (isTerminal) return 8;
+
+  const overdue = isTaskOverdue(task, now);
+  const priority = (task.priority || '').toUpperCase();
+
+  if (overdue) {
+    if (priority === 'HIGH') return 1;
+    if (priority === 'LOW') return 3;
+    // NORMAL o default/no especificado
+    return 2;
+  }
+
+  // Activas no vencidas
+  if (priority === 'HIGH') return 4;
+  if (priority === 'NORMAL') return 5;
+  if (priority === 'LOW') return 6;
+
+  // Resto de tareas activas sin prioridad definida o no estándar
+  return 7;
+}
+
+/**
+ * Ordenamiento determinista y transitivo de tareas con priorización visual:
+ * 1. OVERDUE + HIGH
+ * 2. OVERDUE + NORMAL
+ * 3. OVERDUE + LOW
+ * 4. PENDING/IN_PROGRESS + HIGH
+ * 5. PENDING/IN_PROGRESS + NORMAL
+ * 6. PENDING/IN_PROGRESS + LOW
+ * 7. Resto por dueAt/dueDate
+ * 8. COMPLETED/CANCELED al final
+ *
+ * Dentro de cada grupo: deadline más próxima primero; fallback createdAt descendente.
+ * Clave total final por id ascendente (garantiza transitividad estricta).
+ */
+export function sortTasks(tasks = [], now = new Date()) {
   return [...tasks].sort((a, b) => {
-    // 1. Jerarquía de estados
-    const weightA = statusWeight[a.status] ?? 99;
-    const weightB = statusWeight[b.status] ?? 99;
-    if (weightA !== weightB) {
-      return weightA - weightB;
+    // 1. Jerarquía de buckets recomendada por UX
+    const bucketA = getTaskSortBucket(a, now);
+    const bucketB = getTaskSortBucket(b, now);
+    if (bucketA !== bucketB) {
+      return bucketA - bucketB;
     }
 
-    // 2. Para tareas activas (IN_PROGRESS y PENDING), orden de vencimiento
-    if (weightA < 2) {
-      const hasDateA = Boolean(a.dueDateLocal);
-      const hasDateB = Boolean(b.dueDateLocal);
+    // 2. Si ambos son estados terminales (Bucket 8: COMPLETED / CANCELED)
+    if (bucketA === 8) {
+      const termWeight = { COMPLETED: 0, CANCELED: 1 };
+      const twA = termWeight[a.status] ?? 99;
+      const twB = termWeight[b.status] ?? 99;
+      if (twA !== twB) return twA - twB;
 
-      if (hasDateA && hasDateB) {
-        const cmpDate = a.dueDateLocal.localeCompare(b.dueDateLocal);
-        if (cmpDate !== 0) return cmpDate;
+      const compA = new Date(a.completedAt || 0).getTime();
+      const compB = new Date(b.completedAt || 0).getTime();
+      if (compA !== compB) return compB - compA;
+    }
 
-        // Misma fecha: comparar hora
-        const hasTimeA = Boolean(a.dueTimeLocal);
-        const hasTimeB = Boolean(b.dueTimeLocal);
-        if (hasTimeA && hasTimeB) {
-          const cmpTime = a.dueTimeLocal.localeCompare(b.dueTimeLocal);
-          if (cmpTime !== 0) return cmpTime;
-        } else if (hasTimeA) {
-          return -1; // Con hora específica primero en el día
-        } else if (hasTimeB) {
-          return 1;
-        }
-      } else if (hasDateA) {
-        return -1; // Tarea con fecha primero que tarea sin fecha
-      } else if (hasDateB) {
+    // 3. Dentro de cada grupo: deadline más próxima primero
+    const hasDateA = Boolean(a.dueDateLocal);
+    const hasDateB = Boolean(b.dueDateLocal);
+
+    if (hasDateA && hasDateB) {
+      const cmpDate = a.dueDateLocal.localeCompare(b.dueDateLocal);
+      if (cmpDate !== 0) return cmpDate;
+
+      // Misma fecha: comparar hora
+      const hasTimeA = Boolean(a.dueTimeLocal);
+      const hasTimeB = Boolean(b.dueTimeLocal);
+      if (hasTimeA && hasTimeB) {
+        const cmpTime = a.dueTimeLocal.localeCompare(b.dueTimeLocal);
+        if (cmpTime !== 0) return cmpTime;
+      } else if (hasTimeA) {
+        return -1; // Con hora específica primero en el día
+      } else if (hasTimeB) {
+        return 1;
+      }
+    } else if (hasDateA) {
+      return -1; // Tarea con fecha antes que tarea sin fecha
+    } else if (hasDateB) {
+      return 1;
+    } else if (a.dueAt || b.dueAt) {
+      // Fallback a dueAt si uno o ambos lo tienen
+      const deadA = a.dueAt ? new Date(a.dueAt).getTime() : NaN;
+      const deadB = b.dueAt ? new Date(b.dueAt).getTime() : NaN;
+      const hasDeadA = !isNaN(deadA);
+      const hasDeadB = !isNaN(deadB);
+      if (hasDeadA && hasDeadB) {
+        if (deadA !== deadB) return deadA - deadB;
+      } else if (hasDeadA) {
+        return -1;
+      } else if (hasDeadB) {
         return 1;
       }
     }
 
-    // 3. Fallback determinista por createdAt descendente (más reciente primero)
+    // 4. Si empatan en deadline o ambas carecen de fecha:
+    // IN_PROGRESS antes que PENDING
+    const statusWeight = { IN_PROGRESS: 0, PENDING: 1 };
+    const swA = statusWeight[a.status] ?? 99;
+    const swB = statusWeight[b.status] ?? 99;
+    if (swA !== swB) {
+      return swA - swB;
+    }
+
+    // 5. Fallback determinista por createdAt descendente (más reciente primero)
     const timeA = new Date(a.createdAt || 0).getTime();
     const timeB = new Date(b.createdAt || 0).getTime();
     if (timeA !== timeB) {
       return timeB - timeA;
     }
 
-    // 4. Fallback por updatedAt descendente
+    // 6. Fallback por updatedAt descendente
     const updA = new Date(a.updatedAt || 0).getTime();
     const updB = new Date(b.updatedAt || 0).getTime();
     if (updA !== updB) {
       return updB - updA;
     }
 
-    // 5. Clave total final por id ascendente (garantiza transitividad estricta)
+    // 7. Clave total final por id ascendente (garantiza transitividad estricta)
     return String(a.id || '').localeCompare(String(b.id || ''));
   });
 }

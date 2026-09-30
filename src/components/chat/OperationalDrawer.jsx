@@ -8,14 +8,17 @@ import {
   WarningCircle,
   ArrowClockwise,
   ClipboardText,
+  PushPin,
 } from '@phosphor-icons/react';
 import OperationalCard from './OperationalCard';
 import OperationalModal from './OperationalModal';
+import CustomerIntelligenceSummary from './CustomerIntelligenceSummary';
+import { pinOperationalNote, unpinOperationalNote } from '../../services/operationalService';
 import { sortTasks, sortNotes } from '../../utils/operationalFormatters';
 
 /**
  * Drawer lateral contextual para Notas y Tareas Operacionales
- * Velion Business Agent — Fase 2D-B
+ * Velion Business Agent — Fase 2D-B & Fase D (Customer Intelligence)
  */
 export default function OperationalDrawer({
   isOpen,
@@ -28,6 +31,8 @@ export default function OperationalDrawer({
   onComplete,
   onCancel,
   onArchive,
+  onPin,
+  onUnpin,
   onCreate,
   chatId,
   customerName = '',
@@ -37,6 +42,7 @@ export default function OperationalDrawer({
   const [modalType, setModalType] = useState('TASK');
   const [processingId, setProcessingId] = useState(null);
   const [actionError, setActionError] = useState('');
+  const [tick, setTick] = useState(0);
 
   // Referencia estable al chatId activo para aislar errores asíncronos entre chats
   const currentChatIdRef = useRef(chatId);
@@ -49,28 +55,45 @@ export default function OperationalDrawer({
     setProcessingId(null);
   }, [chatId]);
 
+  // Timer frontend ligero para refresco dinámico de tareas vencidas (cada 45s)
+  useEffect(() => {
+    if (!isOpen) return;
+
+    const timer = setInterval(() => {
+      setTick((prev) => prev + 1);
+    }, 45000);
+
+    return () => clearInterval(timer);
+  }, [isOpen]);
+
   // Separar y ordenar items mediante memoización
-  const { tasks, notes, allSorted, activeTasksCount, activeNotesCount } = useMemo(() => {
+  const { tasks, pinnedNotes, regularNotes, allSorted, activeTasksCount, activeNotesCount } = useMemo(() => {
     const rawTasks = items.filter((i) => i.type === 'TASK');
     const rawNotes = items.filter((i) => i.type === 'NOTE');
 
-    const sortedT = sortTasks(rawTasks);
+    const now = new Date();
+    const sortedT = sortTasks(rawTasks, now);
     const sortedN = sortNotes(rawNotes);
+
+    const pinned = sortedN.filter((n) => n.isPinned);
+    const regular = sortedN.filter((n) => !n.isPinned);
 
     const activeT = rawTasks.filter((t) => t.status === 'PENDING' || t.status === 'IN_PROGRESS').length;
     const activeN = rawNotes.filter((n) => n.status === 'ACTIVE').length;
 
-    // En 'Todas', tareas primero y notas después
-    const combined = [...sortedT, ...sortedN];
+    // En 'Todas', notas fijadas primero, luego notas regulares, luego tareas
+    const combined = [...pinned, ...regular, ...sortedT];
 
     return {
       tasks: sortedT,
-      notes: sortedN,
+      pinnedNotes: pinned,
+      regularNotes: regular,
+      notes: [...pinned, ...regular],
       allSorted: combined,
       activeTasksCount: activeT,
       activeNotesCount: activeN,
     };
-  }, [items]);
+  }, [items, isOpen, tick]);
 
   // Manejo de mutaciones con protección de doble clic y aislamiento de errores por chat
   const handleLifecycleAction = async (actionFn, item) => {
@@ -84,6 +107,54 @@ export default function OperationalDrawer({
       console.error('Error en acción de ciclo de vida:', err);
       if (operationChatId === currentChatIdRef.current) {
         setActionError(err.message || 'Error al ejecutar la acción. Intenta nuevamente.');
+      }
+    } finally {
+      if (operationChatId === currentChatIdRef.current) {
+        setProcessingId(null);
+      }
+    }
+  };
+
+  const handlePinAction = async (item) => {
+    if (processingId) return;
+    const operationChatId = chatId;
+    setProcessingId(item.id);
+    setActionError('');
+    try {
+      if (onPin) {
+        await onPin(item);
+      } else {
+        await pinOperationalNote(item.id);
+        if (onRetry) onRetry();
+      }
+    } catch (err) {
+      console.error('Error al fijar nota:', err);
+      if (operationChatId === currentChatIdRef.current) {
+        setActionError(err.message || 'Error al fijar nota.');
+      }
+    } finally {
+      if (operationChatId === currentChatIdRef.current) {
+        setProcessingId(null);
+      }
+    }
+  };
+
+  const handleUnpinAction = async (item) => {
+    if (processingId) return;
+    const operationChatId = chatId;
+    setProcessingId(item.id);
+    setActionError('');
+    try {
+      if (onUnpin) {
+        await onUnpin(item);
+      } else {
+        await unpinOperationalNote(item.id);
+        if (onRetry) onRetry();
+      }
+    } catch (err) {
+      console.error('Error al desfijar nota:', err);
+      if (operationChatId === currentChatIdRef.current) {
+        setActionError(err.message || 'Error al desfijar nota.');
       }
     } finally {
       if (operationChatId === currentChatIdRef.current) {
@@ -226,7 +297,10 @@ export default function OperationalDrawer({
         )}
 
         {/* ── Contenido de Lista / Skeletons / Empty State ── */}
-        <div className="flex-1 min-h-0 overflow-y-auto px-5 py-4 space-y-3" style={{ WebkitOverflowScrolling: 'touch' }}>
+        <div className="flex-1 min-h-0 overflow-y-auto px-5 py-4 space-y-4" style={{ WebkitOverflowScrolling: 'touch' }}>
+          {/* ── FASE D: AI Customer Summary (Resumen Inteligente) ── */}
+          <CustomerIntelligenceSummary chatId={chatId} customerName={customerName} />
+
           {isLoading ? (
             <div className="flex flex-col items-center justify-center h-48 space-y-3">
               <SpinnerGap size={28} className="animate-spin text-brand" />
@@ -250,7 +324,7 @@ export default function OperationalDrawer({
               )}
             </div>
           ) : currentList.length === 0 ? (
-            <div className="flex flex-col items-center justify-center py-16 text-center px-4">
+            <div className="flex flex-col items-center justify-center py-12 text-center px-4">
               <div className="w-12 h-12 rounded-2xl bg-app flex items-center justify-center mb-3 text-muted">
                 {activeTab === 'TASKS' ? (
                   <CheckSquareOffset size={24} />
@@ -274,18 +348,85 @@ export default function OperationalDrawer({
               </p>
             </div>
           ) : (
-            currentList.map((item) => (
-              <OperationalCard
-                key={item.id}
-                item={item}
-                isProcessing={processingId === item.id}
-                isAnyProcessing={Boolean(processingId)}
-                onStart={(i) => handleLifecycleAction(onStart, i)}
-                onComplete={(i) => handleLifecycleAction(onComplete, i)}
-                onCancel={(i) => handleLifecycleAction(onCancel, i)}
-                onArchive={(i) => handleLifecycleAction(onArchive, i)}
-              />
-            ))
+            <div className="space-y-4">
+              {/* Sección 1: NOTAS FIJADAS (FASE D15) */}
+              {(activeTab === 'NOTES' || activeTab === 'ALL') && pinnedNotes.length > 0 && (
+                <div className="space-y-2">
+                  <div className="flex items-center gap-1.5 text-xs font-bold text-amber-600 dark:text-amber-400">
+                    <PushPin size={14} weight="fill" />
+                    <span>NOTAS FIJADAS ({pinnedNotes.length})</span>
+                  </div>
+                  <div className="space-y-2.5">
+                    {pinnedNotes.map((item) => (
+                      <OperationalCard
+                        key={item.id}
+                        item={item}
+                        isProcessing={processingId === item.id}
+                        isAnyProcessing={Boolean(processingId)}
+                        onStart={(i) => handleLifecycleAction(onStart, i)}
+                        onComplete={(i) => handleLifecycleAction(onComplete, i)}
+                        onCancel={(i) => handleLifecycleAction(onCancel, i)}
+                        onArchive={(i) => handleLifecycleAction(onArchive, i)}
+                        onPin={(i) => handlePinAction(i)}
+                        onUnpin={(i) => handleUnpinAction(i)}
+                      />
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Sección 2: NOTAS REGULARES (FASE D15) */}
+              {(activeTab === 'NOTES' || activeTab === 'ALL') && regularNotes.length > 0 && (
+                <div className="space-y-2">
+                  <div className="flex items-center gap-1.5 text-xs font-bold text-purple-600 dark:text-purple-400">
+                    <FileText size={14} weight="bold" />
+                    <span>NOTAS ({regularNotes.length})</span>
+                  </div>
+                  <div className="space-y-2.5">
+                    {regularNotes.map((item) => (
+                      <OperationalCard
+                        key={item.id}
+                        item={item}
+                        isProcessing={processingId === item.id}
+                        isAnyProcessing={Boolean(processingId)}
+                        onStart={(i) => handleLifecycleAction(onStart, i)}
+                        onComplete={(i) => handleLifecycleAction(onComplete, i)}
+                        onCancel={(i) => handleLifecycleAction(onCancel, i)}
+                        onArchive={(i) => handleLifecycleAction(onArchive, i)}
+                        onPin={(i) => handlePinAction(i)}
+                        onUnpin={(i) => handleUnpinAction(i)}
+                      />
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Sección 3: TAREAS (FASE D15) */}
+              {(activeTab === 'TASKS' || activeTab === 'ALL') && tasks.length > 0 && (
+                <div className="space-y-2">
+                  <div className="flex items-center gap-1.5 text-xs font-bold text-brand">
+                    <CheckSquareOffset size={14} weight="bold" />
+                    <span>TAREAS ({tasks.length})</span>
+                  </div>
+                  <div className="space-y-2.5">
+                    {tasks.map((item) => (
+                      <OperationalCard
+                        key={item.id}
+                        item={item}
+                        isProcessing={processingId === item.id}
+                        isAnyProcessing={Boolean(processingId)}
+                        onStart={(i) => handleLifecycleAction(onStart, i)}
+                        onComplete={(i) => handleLifecycleAction(onComplete, i)}
+                        onCancel={(i) => handleLifecycleAction(onCancel, i)}
+                        onArchive={(i) => handleLifecycleAction(onArchive, i)}
+                        onPin={(i) => handlePinAction(i)}
+                        onUnpin={(i) => handleUnpinAction(i)}
+                      />
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
           )}
         </div>
       </aside>

@@ -79,6 +79,44 @@ function formatDate(dateStr) {
   }
 }
 
+export const COMMERCIAL_STAGE_OPTIONS = [
+  { value: 'ALL', label: 'Todas las etapas' },
+  { value: 'EXPLORING', label: 'Explorando productos' },
+  { value: 'PRODUCT_SELECTED', label: 'Producto seleccionado' },
+  { value: 'DETAILS_PROVIDED', label: 'Datos recibidos' },
+  { value: 'SHIPPING_COORDINATED', label: 'Envío coordinado' },
+  { value: 'PAYMENT_PENDING', label: 'Pago pendiente' },
+  { value: 'VERIFYING', label: 'Pago en verificación' },
+  { value: 'COMPLETED', label: 'Venta completada' },
+  { value: 'HUMAN_HANDOFF', label: 'Atención humana solicitada' },
+  { value: 'SUPPORT', label: 'En soporte' },
+  { value: 'ABANDONED', label: 'Conversación inactiva' }
+];
+
+export function getCommercialStageBadge(stage) {
+  switch (stage) {
+    case 'COMPLETED':
+      return 'bg-emerald-50 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300 border-emerald-200 dark:border-emerald-800';
+    case 'VERIFYING':
+      return 'bg-cyan-50 text-cyan-700 dark:bg-cyan-950/40 dark:text-cyan-300 border-cyan-200 dark:border-cyan-800';
+    case 'PAYMENT_PENDING':
+      return 'bg-amber-50 text-amber-700 dark:bg-amber-950/40 dark:text-amber-300 border-amber-200 dark:border-amber-800';
+    case 'SHIPPING_COORDINATED':
+      return 'bg-blue-50 text-blue-700 dark:bg-blue-950/40 dark:text-blue-300 border-blue-200 dark:border-blue-800';
+    case 'DETAILS_PROVIDED':
+      return 'bg-purple-50 text-purple-700 dark:bg-purple-950/40 dark:text-purple-300 border-purple-200 dark:border-purple-800';
+    case 'PRODUCT_SELECTED':
+      return 'bg-indigo-50 text-indigo-700 dark:bg-indigo-950/40 dark:text-indigo-300 border-indigo-200 dark:border-indigo-800';
+    case 'HUMAN_HANDOFF':
+      return 'bg-rose-50 text-rose-700 dark:bg-rose-950/40 dark:text-rose-300 border-rose-200 dark:border-rose-800';
+    case 'SUPPORT':
+      return 'bg-teal-50 text-teal-700 dark:bg-teal-950/40 dark:text-teal-300 border-teal-200 dark:border-teal-800';
+    case 'EXPLORING':
+    default:
+      return 'bg-slate-50 text-slate-700 dark:bg-slate-900/40 dark:text-slate-300 border-slate-200 dark:border-slate-800';
+  }
+}
+
 /* ─── Fila de tabla (desktop) ─── */
 function ContactRow({ contact, index, onDelete, onToggleBot, onEdit }) {
   return (
@@ -102,6 +140,13 @@ function ContactRow({ contact, index, onDelete, onToggleBot, onEdit }) {
       <td className="px-5 py-3.5">
         <span className="text-sm text-mid font-medium">
           {formatDate(contact.createdAt)}
+        </span>
+      </td>
+
+      {/* Columna: Etapa Comercial */}
+      <td className="px-5 py-3.5">
+        <span className={`inline-flex items-center px-2 py-0.5 rounded text-xs font-semibold border ${getCommercialStageBadge(contact.commercialStage)}`}>
+          {contact.commercialStageLabel || 'Explorando productos'}
         </span>
       </td>
 
@@ -210,9 +255,16 @@ function ContactCard({ contact, index, onDelete, onToggleBot, onEdit }) {
         </div>
       </div>
 
-      <div className="text-xs text-muted">
+      <div className="flex items-center justify-between text-xs text-muted">
         <span className="font-semibold text-hi">Fecha de Registro: </span>
         <span>{formatDate(contact.createdAt)}</span>
+      </div>
+
+      <div className="flex items-center justify-between text-xs text-muted">
+        <span className="font-semibold text-hi">Etapa Comercial:</span>
+        <span className={`inline-flex items-center px-2 py-0.5 rounded text-[11px] font-semibold border ${getCommercialStageBadge(contact.commercialStage)}`}>
+          {contact.commercialStageLabel || 'Explorando productos'}
+        </span>
       </div>
 
       <div className="flex items-center justify-between text-2xs text-muted pt-1 border-t border-line">
@@ -363,6 +415,7 @@ export default function ContactosPage() {
   const [toast, setToast]                 = useState(null);
 
   const [search, setSearch]               = useState('');
+  const [stageFilter, setStageFilter]     = useState('ALL');
   const [currentPage, setCurrentPage]     = useState(1);
   const [showAddModal, setShowAddModal]   = useState(false);
   const [contactToEdit, setContactToEdit] = useState(null);   // objeto contact para editar
@@ -402,7 +455,7 @@ export default function ContactosPage() {
 
   useEffect(() => {
     setCurrentPage(1);
-  }, [search]);
+  }, [search, stageFilter]);
 
   // ── Crear contacto con detección de duplicados ────────────────────────────
   const handleCreateContact = async ({ name, phone }) => {
@@ -512,12 +565,14 @@ export default function ContactosPage() {
 
   const filtered = useMemo(() => {
     const q = search.toLowerCase().trim();
-    if (!q) return contacts;
-    return contacts.filter(c =>
-      (c.name && c.name.toLowerCase().includes(q)) ||
-      (c.phone && c.phone.replace(/\s/g, '').includes(q.replace(/\s/g, '')))
-    );
-  }, [contacts, search]);
+    return contacts.filter(c => {
+      const matchesSearch = !q ||
+        (c.name && c.name.toLowerCase().includes(q)) ||
+        (c.phone && c.phone.replace(/\s/g, '').includes(q.replace(/\s/g, '')));
+      const matchesStage = stageFilter === 'ALL' || (c.commercialStage || 'EXPLORING') === stageFilter;
+      return matchesSearch && matchesStage;
+    });
+  }, [contacts, search, stageFilter]);
 
   const totalPages = Math.ceil(filtered.length / ITEMS_PER_PAGE) || 1;
   const paginatedContacts = useMemo(() => {
@@ -564,38 +619,64 @@ export default function ContactosPage() {
         </div>
       </div>
 
-      {/* ── Buscador + Tabla ── */}
+      {/* ── Buscador + Filtro Etapa Comercial + Tabla ── */}
       <div className="flex flex-col gap-4">
-        <div className="relative">
-          <MagnifyingGlass
-            size={16}
-            className="absolute left-3.5 top-1/2 -translate-y-1/2 text-muted pointer-events-none"
-            aria-hidden="true"
-          />
-          <input
-            id="search-contactos"
-            type="text"
-            value={search}
-            onChange={e => setSearch(e.target.value)}
-            placeholder="Buscar por nombre o número..."
-            className="
-              w-full pl-9 pr-10 py-2.5 rounded-md border border-line bg-card
-              text-sm text-hi placeholder:text-muted
-              focus:outline-none focus:border-brand focus:shadow-input-focus
-              transition-all duration-fast shadow-card
-            "
-            aria-label="Buscar contactos"
-          />
-          {search && (
-            <button
-              type="button"
-              onClick={() => setSearch('')}
-              className="absolute right-3.5 top-1/2 -translate-y-1/2 text-muted hover:text-hi transition-colors duration-fast cursor-pointer p-1"
-              aria-label="Limpiar búsqueda"
+        <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3">
+          <div className="relative flex-1">
+            <MagnifyingGlass
+              size={16}
+              className="absolute left-3.5 top-1/2 -translate-y-1/2 text-muted pointer-events-none"
+              aria-hidden="true"
+            />
+            <input
+              id="search-contactos"
+              type="text"
+              value={search}
+              onChange={e => setSearch(e.target.value)}
+              placeholder="Buscar por nombre o número..."
+              className="
+                w-full pl-9 pr-10 py-2.5 rounded-md border border-line bg-card
+                text-sm text-hi placeholder:text-muted
+                focus:outline-none focus:border-brand focus:shadow-input-focus
+                transition-all duration-fast shadow-card
+              "
+              aria-label="Buscar contactos"
+            />
+            {search && (
+              <button
+                type="button"
+                onClick={() => setSearch('')}
+                className="absolute right-3.5 top-1/2 -translate-y-1/2 text-muted hover:text-hi transition-colors duration-fast cursor-pointer p-1"
+                aria-label="Limpiar búsqueda"
+              >
+                <X size={15} />
+              </button>
+            )}
+          </div>
+
+          <div className="flex items-center gap-2 flex-shrink-0">
+            <label htmlFor="filter-stage" className="text-xs font-semibold text-lo whitespace-nowrap hidden md:inline">
+              Etapa:
+            </label>
+            <select
+              id="filter-stage"
+              value={stageFilter}
+              onChange={e => setStageFilter(e.target.value)}
+              className="
+                px-3 py-2.5 rounded-md border border-line bg-card
+                text-xs font-semibold text-hi
+                focus:outline-none focus:border-brand focus:shadow-input-focus
+                transition-all duration-fast shadow-card cursor-pointer
+              "
+              aria-label="Filtrar por etapa comercial"
             >
-              <X size={15} />
-            </button>
-          )}
+              {COMMERCIAL_STAGE_OPTIONS.map(opt => (
+                <option key={opt.value} value={opt.value}>
+                  {opt.label}
+                </option>
+              ))}
+            </select>
+          </div>
         </div>
 
         <div className="flex items-center justify-between">
@@ -629,7 +710,7 @@ export default function ContactosPage() {
               <table className="w-full border-collapse">
                 <thead>
                   <tr className="bg-app border-b border-line">
-                    {['Cliente', 'Teléfono', 'Fecha de Registro', 'Última Interacción', 'Estado', 'Acciones'].map(c => (
+                    {['Cliente', 'Teléfono', 'Fecha de Registro', 'Etapa Comercial', 'Última Interacción', 'Estado', 'Acciones'].map(c => (
                       <th
                         key={c}
                         className={`px-5 py-3 text-2xs font-semibold text-lo uppercase tracking-wider ${

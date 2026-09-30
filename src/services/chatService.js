@@ -19,6 +19,17 @@ export async function getMessages(chatId) {
 }
 
 /**
+ * Obtiene el timeline unificado (mensajes + eventos del sistema) para una conversación específica (FASE C7)
+ */
+export async function getChatTimeline(chatId, params = {}) {
+  const query = new URLSearchParams(params).toString();
+  const url = `/chats/${chatId}/timeline${query ? `?${query}` : ''}`;
+  return apiClient(url, {
+    method: 'GET',
+  });
+}
+
+/**
  * Envía un mensaje a una conversación específica
  */
 export async function sendMessage(chatId, textData) {
@@ -55,3 +66,13 @@ export async function getChatMediaToken(messageId) {
     method: 'GET',
   });
 }
+
+/**
+ * Obtiene el resumen de inteligencia del cliente para una conversación específica (FASE D25)
+ */
+export async function getCustomerSummary(chatId) {
+  return apiClient(`/chats/${chatId}/customer-summary`, {
+    method: 'GET',
+  });
+}
+

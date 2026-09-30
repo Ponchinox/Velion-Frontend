@@ -390,7 +390,7 @@ export default function AdminPlanesPage() {
                 {/* Connection Limit */}
                 <div>
                   <label htmlFor="plan-conn" className="block text-sm font-semibold text-hi mb-1">
-                    Límite de Conexiones WhatsApp
+                    Límite de Conexiones WhatsApp <span className="text-xs text-muted font-normal">(1 conexión operativa por negocio)</span>
                   </label>
                   <div className="relative">
                     <DeviceMobile className="absolute left-3 top-1/2 -translate-y-1/2 text-muted" size={16} />
@@ -398,9 +398,11 @@ export default function AdminPlanesPage() {
                       id="plan-conn"
                       type="number"
                       required
+                      min="1"
+                      max="1"
                       value={formConnLimit}
-                      onChange={(e) => setFormConnLimit(e.target.value)}
-                      placeholder="3"
+                      onChange={(e) => setFormConnLimit(Math.min(Number(e.target.value) || 1, 1))}
+                      placeholder="1"
                       className="w-full pl-9 pr-3 py-2 rounded-md border border-line bg-card text-sm text-hi font-mono focus:outline-none focus:border-brand"
                     />
                   </div>

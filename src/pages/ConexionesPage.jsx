@@ -955,15 +955,22 @@ export default function ConexionesPage() {
             Vincula tu número de WhatsApp — por código QR o mediante la API Oficial de Meta — para que la IA automatice tus ventas y soporte.
           </p>
         </div>
-        <button
-          onClick={handleOpenConnectFlow}
-          className="inline-flex items-center justify-center gap-2 px-5 py-2.5 rounded-xl
-            bg-brand text-white font-bold text-sm hover:bg-brand-hover active:scale-[0.98]
-            transition-all duration-fast shadow-md cursor-pointer self-start sm:self-auto"
-        >
-          <Plus size={18} weight="bold" />
-          <span>Vincular Número</span>
-        </button>
+        {activeConnectionsCount < connLimit ? (
+          <button
+            onClick={handleOpenConnectFlow}
+            className="inline-flex items-center justify-center gap-2 px-5 py-2.5 rounded-xl
+              bg-brand text-white font-bold text-sm hover:bg-brand-hover active:scale-[0.98]
+              transition-all duration-fast shadow-md cursor-pointer self-start sm:self-auto"
+          >
+            <Plus size={18} weight="bold" />
+            <span>Vincular Número</span>
+          </button>
+        ) : (
+          <div className="inline-flex items-center gap-2 px-3.5 py-2 rounded-xl bg-emerald-500/10 border border-emerald-500/20 text-emerald-600 text-xs font-bold self-start sm:self-auto shadow-sm">
+            <CheckCircle size={16} weight="fill" />
+            <span>1 / 1 Conexión Operativa</span>
+          </div>
+        )}
       </div>
 
       {/* ── CUERPO ── */}
@@ -1014,21 +1021,24 @@ export default function ConexionesPage() {
         {renderModalContent()}
       </Modal>
 
-      {/* ── MODAL: UPSELL ── */}
+      {/* ── MODAL: LÍMITE DE CONEXIÓN ÚNICA ── */}
       <Modal
         isOpen={showUpsellModal}
         onClose={() => setShowUpsellModal(false)}
-        title="Límite Alcanzado"
-        subtitle={`Tu plan actual solo permite ${connLimit} conexión(es). Actualiza tu plan para vincular más números.`}
+        title="Conexión Única Activa"
+        subtitle="Actualmente se admite una sola conexión operativa de WhatsApp por negocio para garantizar la estabilidad del canal."
         maxWidth="max-w-sm"
       >
-        <div className="pt-2">
+        <div className="pt-2 space-y-3 text-center">
+          <p className="text-xs text-lo">
+            Para vincular un nuevo número, primero debes desconectar la conexión actual.
+          </p>
           <button
-            onClick={() => { setShowUpsellModal(false); navigate('/billing'); }}
+            onClick={() => setShowUpsellModal(false)}
             className="w-full py-2.5 rounded-lg bg-brand hover:bg-brand-hover text-white font-bold text-sm
               transition-all shadow-md cursor-pointer text-center"
           >
-            Actualizar Plan
+            Entendido
           </button>
         </div>
       </Modal>

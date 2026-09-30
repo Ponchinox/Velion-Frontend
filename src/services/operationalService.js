@@ -107,3 +107,24 @@ export async function updateOperationalItem(id, data) {
   });
   return response?.item || response;
 }
+
+/**
+ * Fija una nota operacional (FASE D14: PATCH /api/operational-items/:id/pin)
+ */
+export async function pinOperationalNote(id) {
+  const response = await apiClient(`/operational-items/${id}/pin`, {
+    method: 'PATCH',
+  });
+  return response?.item || response;
+}
+
+/**
+ * Desfija una nota operacional (FASE D14: PATCH /api/operational-items/:id/unpin)
+ */
+export async function unpinOperationalNote(id) {
+  const response = await apiClient(`/operational-items/${id}/unpin`, {
+    method: 'PATCH',
+  });
+  return response?.item || response;
+}
+

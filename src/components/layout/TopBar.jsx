@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { SignOut } from '@phosphor-icons/react';
 import { useAuth } from '../../context/AuthContext';
 import * as settingsService from '../../services/settingsService';
+import NotificationBell from '../notifications/NotificationBell';
 
 export default function TopBar() {
   const { user, signOut } = useAuth();
@@ -36,18 +37,22 @@ export default function TopBar() {
         </span>
       </div>
 
-      {/* Profile/Logout on the right for Mobile View */}
-      <button
-        onClick={signOut}
-        className="
-          flex items-center justify-center w-8 h-8 rounded-md
-          border border-line text-lo hover:text-danger hover:bg-red-50
-          transition-colors duration-[120ms] cursor-pointer flex-shrink-0
-        "
-        aria-label="Cerrar sesión"
-      >
-        <SignOut size={16} weight="regular" aria-hidden="true" />
-      </button>
+      {/* Right controls: Bell + SignOut */}
+      <div className="flex items-center gap-2">
+        <NotificationBell />
+
+        <button
+          onClick={signOut}
+          className="
+            flex items-center justify-center w-8 h-8 rounded-md
+            border border-line text-lo hover:text-danger hover:bg-red-50
+            transition-colors duration-[120ms] cursor-pointer flex-shrink-0
+          "
+          aria-label="Cerrar sesión"
+        >
+          <SignOut size={16} weight="regular" aria-hidden="true" />
+        </button>
+      </div>
     </header>
   );
 }

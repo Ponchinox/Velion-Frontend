@@ -22,6 +22,7 @@ import {
 } from '@phosphor-icons/react';
 import { useAuth } from '../../context/AuthContext';
 import * as settingsService from '../../services/settingsService';
+import NotificationBell from '../notifications/NotificationBell';
 
 // ─── Estructura para SuperAdmin ───
 const SUPERADMIN_NAV_GROUPS = [
@@ -225,7 +226,7 @@ export default function Sidebar() {
             </div>
           )}
 
-          <div className="flex flex-col min-w-0">
+          <div className="flex flex-col min-w-0 flex-1">
             <span className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider leading-none">
               Bienvenido
             </span>
@@ -233,6 +234,8 @@ export default function Sidebar() {
               {rawName || 'Usuario'}
             </span>
           </div>
+
+          <NotificationBell />
         </div>
 
         {/* ── 2. Lista de Navegación ── */}
