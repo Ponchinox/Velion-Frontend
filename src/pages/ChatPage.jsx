@@ -22,9 +22,22 @@ import * as chatService from '../services/chatService';
 import * as contactService from '../services/contactService';
 import * as operationalService from '../services/operationalService';
 import OperationalDrawer from '../components/chat/OperationalDrawer';
+/* CommercialFunnelBar: ahora integrado como badge en ChatItem y header */
 import { calculateActiveBadgeCount, upsertItem, reconcileItems } from '../utils/operationalFormatters';
 import { io } from 'socket.io-client';
 import { Play } from 'lucide-react';
+import SystemTimelineItem from '../components/chat/SystemTimelineItem';
+
+/* ─── Categorías amigables de escalación humana (V1) ─── */
+const ESCALATION_CATEGORY_LABELS = {
+  COMMERCIAL_PROPOSAL: 'Propuesta comercial',
+  POST_SALE_ISSUE: 'Problema postventa',
+  PAYMENT_ISSUE: 'Problema de pago',
+  COMPLAINT: 'Reclamo',
+  LEGAL_REQUEST: 'Solicitud legal',
+  EXPLICIT_HUMAN_REQUEST: 'Solicitud de asesor',
+  OTHER_HUMAN_REQUIRED: 'Atención requerida'
+};
 
 /* ─── Configuración de avatares ─── */
 const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:3000';
@@ -36,6 +49,24 @@ const AVATAR_COLORS = [
   'bg-orange-100 text-orange-700',
   'bg-rose-100 text-rose-700',
 ];
+
+/* ─── Estilos del estado comercial para badges ─── */
+const COMMERCIAL_STAGE_STYLES = {
+  EXPLORING:            { short: 'Explorando',    css: 'bg-slate-100 text-slate-500 dark:bg-slate-700/30 dark:text-slate-400' },
+  PRODUCT_SELECTED:     { short: 'Producto',      css: 'bg-blue-50 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300 border border-blue-200 dark:border-blue-800' },
+  DETAILS_PROVIDED:     { short: 'Datos',         css: 'bg-indigo-50 text-indigo-700 dark:bg-indigo-900/30 dark:text-indigo-300 border border-indigo-200 dark:border-indigo-800' },
+  SHIPPING_COORDINATED: { short: 'Envío',         css: 'bg-violet-50 text-violet-700 dark:bg-violet-900/30 dark:text-violet-300 border border-violet-200 dark:border-violet-800' },
+  PAYMENT_PENDING:      { short: 'Pago pend.',    css: 'bg-amber-50 text-amber-800 dark:bg-amber-900/30 dark:text-amber-200 border border-amber-300 dark:border-amber-700' },
+  VERIFYING:            { short: 'Verificando',   css: 'bg-orange-50 text-orange-700 dark:bg-orange-900/30 dark:text-orange-300 border border-orange-300 dark:border-orange-700' },
+  COMPLETED:            { short: 'Completado',    css: 'bg-emerald-50 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800' },
+  HUMAN_HANDOFF:        { short: 'Humano',        css: 'bg-rose-50 text-rose-700 dark:bg-rose-900/30 dark:text-rose-300 border border-rose-200 dark:border-rose-800' },
+  SUPPORT:              { short: 'Soporte',       css: 'bg-cyan-50 text-cyan-700 dark:bg-cyan-900/30 dark:text-cyan-300 border border-cyan-200 dark:border-cyan-800' },
+  ABANDONED:            { short: 'Inactivo',      css: 'bg-slate-100 text-slate-500 dark:bg-slate-700/30 dark:text-slate-400' },
+};
+
+function getStageStyle(stage) {
+  return COMMERCIAL_STAGE_STYLES[stage] || COMMERCIAL_STAGE_STYLES.EXPLORING;
+}
 
 function getAvatarStyle(name = '', index = 0) {
   const initials = name
@@ -204,7 +235,25 @@ function BubbleMedia({ msg, onImageClick }) {
   }
 
   const mediaSrc = resolveMediaUrl(activeMediaUrl);
-  if (!mediaSrc) return null;
+  if (!mediaSrc) {
+    if (mediaType) {
+      const typeLabel = {
+        image: 'Imagen',
+        video: 'Video',
+        audio: 'Nota de voz / Audio',
+        document: 'Documento',
+        sticker: 'Sticker'
+      }[mediaType] || 'Archivo';
+
+      return (
+        <div className="flex items-center gap-2 p-2.5 my-1 rounded-xl bg-black/10 dark:bg-white/10 text-xs text-muted border border-dashed border-line">
+          <WarningCircle size={18} className="text-amber-500 flex-shrink-0" />
+          <span>Multimedia recibida ({typeLabel})</span>
+        </div>
+      );
+    }
+    return null;
+  }
 
   if (mediaType === 'image' || mediaType === 'sticker') {
     return (
@@ -474,6 +523,17 @@ function groupMessagesWithAlbums(rawMessages) {
 
   for (let i = 0; i < rawMessages.length; i++) {
     const msg = rawMessages[i];
+
+    // FASE C11: Hitos visuales de Timeline de Sistema
+    if (msg.kind === 'EVENT') {
+      result.push({
+        type: 'event',
+        id: `event-${msg.id || msg.eventId || i}`,
+        event: msg
+      });
+      continue;
+    }
+
     const isAlbumMember = msg.mediaType === 'image' && Boolean(msg.mediaGroupId);
 
     if (isAlbumMember) {
@@ -636,12 +696,12 @@ function Bubble({ msg, onImageClick }) {
         {isFailed && (
           <div className="text-[11px] text-rose-100 flex items-center gap-1 mt-1 font-medium bg-black/10 px-2 py-0.5 rounded">
             <WarningCircle size={13} weight="bold" className="flex-shrink-0" />
-            <span>{msg.error || 'No se pudo enviar el archivo.'}</span>
+            <span>{msg.error || (hasStructuredMedia ? 'No se pudo enviar el archivo.' : 'No se pudo enviar el mensaje.')}</span>
           </div>
         )}
 
         {/* Fallback de seguridad absoluto: nunca burbuja vacía */}
-        {!displayText && !hasStructuredMedia && !isFailed && (
+        {!displayText && !hasStructuredMedia && !isFailed && !msg.mediaUrl && !msg.image && (
           <p className="text-xs text-muted italic">Mensaje sin contenido visible</p>
         )}
 
@@ -698,12 +758,35 @@ function ChatItem({ chat, index, isActive, onClick }) {
           </div>
         </div>
         <div className="flex items-center justify-between gap-2 mt-0.5">
-          <p className="text-xs text-lo truncate">{chat.lastMsg}</p>
-          {chat.unread > 0 && (
-            <span className="inline-flex items-center justify-center w-5 h-5 rounded-full bg-brand text-white text-[10px] font-bold flex-shrink-0">
-              {chat.unread > 99 ? '99+' : chat.unread}
-            </span>
-          )}
+          <p className="text-xs text-lo truncate flex-1 min-w-0">{chat.lastMsg}</p>
+          <div className="flex items-center gap-1 flex-shrink-0">
+            {/* ── Badge de etapa comercial ── */}
+            {chat.commercialStage && (() => {
+              const stStyle = getStageStyle(chat.commercialStage);
+              const isExploring = chat.commercialStage === 'EXPLORING';
+              return (
+                <span
+                  className={`inline-flex items-center px-1.5 py-0.5 rounded text-[9px] font-bold whitespace-nowrap ${stStyle.css} ${isExploring ? 'opacity-60' : ''}`}
+                  title={chat.commercialStageLabel || stStyle.short}
+                >
+                  {stStyle.short}
+                </span>
+              );
+            })()}
+            {chat.isBotPaused && chat.escalationCategory && (
+              <span
+                className="px-1.5 py-0.5 rounded text-[9px] font-bold bg-rose-50 text-rose-700 dark:bg-rose-950/40 dark:text-rose-300 border border-rose-200 dark:border-rose-800 whitespace-nowrap"
+                title={`Requiere atención: ${ESCALATION_CATEGORY_LABELS[chat.escalationCategory] || chat.escalationCategory}`}
+              >
+                Atención
+              </span>
+            )}
+            {chat.unread > 0 && (
+              <span className="inline-flex items-center justify-center w-5 h-5 rounded-full bg-brand text-white text-[10px] font-bold flex-shrink-0">
+                {chat.unread > 99 ? '99+' : chat.unread}
+              </span>
+            )}
+          </div>
         </div>
       </div>
     </button>
@@ -730,32 +813,46 @@ function ConversationPanel({
   const [showAttachMenu, setShowAttachMenu] = useState(false);
 
   /*
-   * FIX ANDROID SCROLL:
-   * Usamos un ref al contenedor de mensajes y hacemos scroll programático
-   * con scrollTop en lugar de scrollIntoView, que tiene bugs en WebKit/Android.
-   * requestAnimationFrame garantiza que el DOM ya está pintado antes de scrollear.
+   * FIX ANDROID SCROLL & FASE C23:
+   * Auto-scroll programático respetuoso:
+   * Si el usuario está leyendo mensajes antiguos (scrolled up > 150px), no forzamos el scroll.
+   * Si está al fondo (o en carga inicial), scrolleamos automáticamente.
    */
   const messagesContainerRef = useRef(null);
   const textareaRef = useRef(null);
   const fileInputRef = useRef(null);
   const docInputRef = useRef(null);
+  const isNearBottomRef = useRef(true);
 
   const { initials, colorCls } = getAvatarStyle(chat.name, index);
   const isMetaWindowClosed = chat.provider === 'META' && chat.isWindowOpen === false;
 
-  /* Auto-scroll al final — compatible con Android WebKit */
-  const scrollToBottom = useCallback(() => {
+  const handleScroll = useCallback(() => {
+    const el = messagesContainerRef.current;
+    if (!el) return;
+    const threshold = 150;
+    isNearBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight <= threshold;
+  }, []);
+
+  /* Auto-scroll al final — compatible con Android WebKit y respetuoso con lectura histórica */
+  const scrollToBottom = useCallback((force = false) => {
     requestAnimationFrame(() => {
       const el = messagesContainerRef.current;
-      if (el) {
+      if (el && (force || isNearBottomRef.current)) {
         el.scrollTop = el.scrollHeight;
       }
     });
   }, []);
 
   useEffect(() => {
-    scrollToBottom();
-  }, [messages, isLoadingMessages, scrollToBottom]);
+    if (!isLoadingMessages) {
+      scrollToBottom(true);
+    }
+  }, [isLoadingMessages, chat?.id, scrollToBottom]);
+
+  useEffect(() => {
+    scrollToBottom(false);
+  }, [messages?.length, scrollToBottom]);
 
   /* Auto-resize del textarea */
   useEffect(() => {
@@ -830,15 +927,45 @@ function ConversationPanel({
           <div className="min-w-0">
             <p className="text-sm font-semibold text-hi leading-tight truncate">{chat.name}</p>
             <p className="text-xs text-lo font-mono">{chat.phone || 'Sin número'}</p>
+            {chat.isBotPaused && chat.escalationSummary && (
+              <div className="mt-1.5 px-2.5 py-1 rounded bg-amber-500/10 border border-amber-500/20 text-xs text-hi flex items-center gap-1.5 max-w-xl">
+                <span className="font-semibold text-amber-700 dark:text-amber-400 whitespace-nowrap">
+                  {ESCALATION_CATEGORY_LABELS[chat.escalationCategory] || 'Atención requerida'}:
+                </span>
+                <span className="text-lo truncate" title={chat.escalationSummary}>
+                  {chat.escalationSummary}
+                </span>
+              </div>
+            )}
           </div>
 
           {/* Badges de Estado */}
-          <div className="flex flex-wrap items-center gap-2 sm:ml-2">
+          <div className="flex flex-wrap items-center gap-1.5 sm:gap-2 sm:ml-2">
+            {/* ── Badge de etapa comercial (integrado en header) ── */}
+            {chat.commercialStage && (() => {
+              const stStyle = getStageStyle(chat.commercialStage);
+              return (
+                <span
+                  className={`inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-bold whitespace-nowrap ${stStyle.css}`}
+                  title={chat.commercialStageLabel || stStyle.short}
+                >
+                  <Circle size={6} weight="fill" className="flex-shrink-0" />
+                  <span className="hidden sm:inline">{chat.commercialStageLabel || stStyle.short}</span>
+                  <span className="sm:hidden">{stStyle.short}</span>
+                </span>
+              );
+            })()}
+
             {chat.isBotPaused && (
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-1.5 sm:gap-2">
                 <span className="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-bold bg-amber-50 text-amber-700 border border-amber-200 whitespace-nowrap">
                   Bot Pausado
                 </span>
+                {chat.escalationCategory && (
+                  <span className="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-bold bg-rose-50 text-rose-700 dark:bg-rose-950/40 dark:text-rose-300 border border-rose-200 dark:border-rose-800 whitespace-nowrap">
+                    Requiere atención • {ESCALATION_CATEGORY_LABELS[chat.escalationCategory] || chat.escalationCategory}
+                  </span>
+                )}
                 <button
                   onClick={onResumeBot}
                   className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded bg-brand/10 hover:bg-brand/20 text-brand text-[10px] font-bold transition-all border border-brand/20 cursor-pointer whitespace-nowrap"
@@ -906,6 +1033,8 @@ function ConversationPanel({
         </button>
       </div>
 
+      {/* ── Embudo comercial: ahora integrado como badge en el header (arriba) ── */}
+
       {/* ── Área de mensajes ──
           FIX ANDROID: flex-1 + min-h-0 + overflow-y-auto + -webkit-overflow-scrolling: touch
           El min-h-0 es CRÍTICO en flexbox para que el contenedor no crezca sin límite
@@ -913,6 +1042,7 @@ function ConversationPanel({
       */}
       <div
         ref={messagesContainerRef}
+        onScroll={handleScroll}
         className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden px-3 sm:px-4 py-4 space-y-3 bg-[#ECE5DD] dark:bg-app/40"
         style={{ WebkitOverflowScrolling: 'touch', overscrollBehavior: 'contain' }}
         role="log"
@@ -929,6 +1059,14 @@ function ConversationPanel({
           </div>
         ) : (
           groupMessagesWithAlbums(messages).map(item => {
+            if (item.type === 'event') {
+              return (
+                <SystemTimelineItem
+                  key={item.id}
+                  item={item.event}
+                />
+              );
+            }
             if (item.type === 'album' && item.messages.length > 1) {
               return (
                 <MediaAlbumBubble
@@ -1195,6 +1333,20 @@ export default function ChatPage() {
       // Ordenar inmediatamente al recibir datos: más reciente arriba
       const sorted = (data || []).sort((a, b) => getChatTimestamp(b) - getChatTimestamp(a));
       setChats(sorted);
+
+      // FASE C24: Soporte Deep Link (?chatId=...)
+      try {
+        const urlParams = new URLSearchParams(window.location.search);
+        const deepLinkChatId = urlParams.get('chatId');
+        if (deepLinkChatId && !activeChatIdRef.current && sorted.some(c => c.id === deepLinkChatId)) {
+          setActiveChatId(deepLinkChatId);
+          setShowConversation(true);
+          loadMessages(deepLinkChatId);
+          loadOperationalItems(deepLinkChatId);
+        }
+      } catch (err) {
+        // Ignorar si window.location no está disponible
+      }
     } catch {
       if (!silent) setChatsError('No se pudieron cargar los chats.');
     } finally {
@@ -1213,14 +1365,27 @@ export default function ChatPage() {
   const loadMessages = async (chatId) => {
     setIsLoadingMessages(true);
     try {
-      const data = await chatService.getMessages(chatId);
-      setActiveChatMessages(data || []);
-    } catch {
-      const selectedMock = chats.find(c => c.id === chatId);
-      if (selectedMock && selectedMock.messages) {
-        setActiveChatMessages(selectedMock.messages);
+      // FASE C7 / C10: Cargar timeline unificado (mensajes + eventos del sistema)
+      const data = await chatService.getChatTimeline(chatId);
+      if (data && Array.isArray(data.items)) {
+        setActiveChatMessages(data.items);
+      } else if (Array.isArray(data)) {
+        setActiveChatMessages(data);
       } else {
-        setActiveChatMessages([]);
+        const fallbackMsgs = await chatService.getMessages(chatId);
+        setActiveChatMessages(fallbackMsgs || []);
+      }
+    } catch {
+      try {
+        const msgs = await chatService.getMessages(chatId);
+        setActiveChatMessages(msgs || []);
+      } catch {
+        const selectedMock = chats.find(c => c.id === chatId);
+        if (selectedMock && selectedMock.messages) {
+          setActiveChatMessages(selectedMock.messages);
+        } else {
+          setActiveChatMessages([]);
+        }
       }
     } finally {
       setIsLoadingMessages(false);
@@ -1339,8 +1504,14 @@ export default function ChatPage() {
     socket.on('contact_updated', (data) => {
       console.log('🔄 [Socket.IO] Contact updated:', data);
       setChats(prev => prev.map(c => {
-        if (c.id === data.contactId || (data.phone && c.phone && c.phone.includes(data.phone.replace(/\D/g, '')))) {
-          return { ...c, isBotPaused: data.botPaused !== undefined ? data.botPaused : c.isBotPaused };
+        if (c.id === data.contactId || c.id === data.chatId || (data.phone && c.phone && c.phone.includes(data.phone.replace(/\D/g, '')))) {
+          const isPaused = data.botPaused !== undefined ? data.botPaused : c.isBotPaused;
+          return {
+            ...c,
+            isBotPaused: isPaused,
+            escalationCategory: isPaused ? (data.escalationCategory !== undefined ? data.escalationCategory : c.escalationCategory) : null,
+            escalationSummary: isPaused ? (data.escalationSummary !== undefined ? data.escalationSummary : c.escalationSummary) : null,
+          };
         }
         return c;
       }));
@@ -1349,8 +1520,14 @@ export default function ChatPage() {
     socket.on('bot_status_changed', (data) => {
       console.log('🔄 [Socket.IO] Bot status changed:', data);
       setChats(prev => prev.map(c => {
-        if (c.id === data.contactId || (data.phone && c.phone && c.phone.includes(data.phone.replace(/\D/g, '')))) {
-          return { ...c, isBotPaused: data.botPaused !== undefined ? data.botPaused : c.isBotPaused };
+        if (c.id === data.contactId || c.id === data.chatId || (data.phone && c.phone && c.phone.includes(data.phone.replace(/\D/g, '')))) {
+          const isPaused = data.botPaused !== undefined ? data.botPaused : c.isBotPaused;
+          return {
+            ...c,
+            isBotPaused: isPaused,
+            escalationCategory: isPaused ? (data.escalationCategory !== undefined ? data.escalationCategory : c.escalationCategory) : null,
+            escalationSummary: isPaused ? (data.escalationSummary !== undefined ? data.escalationSummary : c.escalationSummary) : null,
+          };
         }
         return c;
       }));
@@ -1392,13 +1569,33 @@ export default function ChatPage() {
       }
     };
 
+    /* ─── Listener Realtime para Timeline de Sistema (FASE C20, C21) ─── */
+    const handleTimelineItemCreated = (data) => {
+      console.log('📌 [Socket.IO] Timeline item recibido:', data);
+      const item = data?.item;
+      if (!item || !item.chatId) return;
+
+      if (item.chatId === activeChatIdRef.current) {
+        setActiveChatMessages(prev => {
+          const exists = prev.some(m =>
+            (m.id && item.id && m.id === item.id) ||
+            (m.eventId && item.eventId && m.eventId === item.eventId)
+          );
+          if (exists) return prev;
+          return [...prev, item];
+        });
+      }
+    };
+
     socket.on('operational_item_created', handleOperationalCreated);
     socket.on('operational_item_updated', handleOperationalUpdated);
+    socket.on('customer_timeline_item_created', handleTimelineItemCreated);
 
     return () => {
       if (reloadTimeoutRef.current) clearTimeout(reloadTimeoutRef.current);
       socket.off('operational_item_created', handleOperationalCreated);
       socket.off('operational_item_updated', handleOperationalUpdated);
+      socket.off('customer_timeline_item_created', handleTimelineItemCreated);
       socket.disconnect();
       console.log('🔌 [Socket.IO] Conexión WebSocket desconectada.');
     };
@@ -1536,10 +1733,11 @@ export default function ChatPage() {
       }
     } catch (error) {
       console.error('Error enviando mensaje:', error);
+      const isMedia = Boolean(attachment);
       setActiveChatMessages(prev => prev.map(m => m.id === tempId ? {
         ...m,
         status: 'failed',
-        error: error.message || 'No se pudo enviar el archivo.'
+        error: error.message || (isMedia ? 'No se pudo enviar el archivo.' : 'No se pudo enviar el mensaje.')
       } : m));
     }
   };
