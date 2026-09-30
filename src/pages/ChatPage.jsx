@@ -766,7 +766,7 @@ function ChatItem({ chat, index, isActive, onClick }) {
               const isExploring = chat.commercialStage === 'EXPLORING';
               return (
                 <span
-                  className={`inline-flex items-center px-1.5 py-0.5 rounded text-[9px] font-bold whitespace-nowrap ${stStyle.css} ${isExploring ? 'opacity-60' : ''}`}
+                  className={`inline-flex items-center px-1.5 py-0.5 rounded text-[9px] font-bold whitespace-nowrap ${stStyle.css}`}
                   title={chat.commercialStageLabel || stStyle.short}
                 >
                   {stStyle.short}
