@@ -763,7 +763,6 @@ function ChatItem({ chat, index, isActive, onClick }) {
             {/* ── Badge de etapa comercial ── */}
             {chat.commercialStage && (() => {
               const stStyle = getStageStyle(chat.commercialStage);
-              const isExploring = chat.commercialStage === 'EXPLORING';
               return (
                 <span
                   className={`inline-flex items-center px-1.5 py-0.5 rounded text-[9px] font-bold whitespace-nowrap ${stStyle.css}`}
