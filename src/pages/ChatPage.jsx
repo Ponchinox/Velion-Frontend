@@ -22,7 +22,7 @@ import * as chatService from '../services/chatService';
 import * as contactService from '../services/contactService';
 import * as operationalService from '../services/operationalService';
 import OperationalDrawer from '../components/chat/OperationalDrawer';
-/* CommercialFunnelBar: ahora integrado como badge en ChatItem y header */
+import CommercialFunnelBar from '../components/chat/CommercialFunnelBar';
 import { calculateActiveBadgeCount, upsertItem, reconcileItems } from '../utils/operationalFormatters';
 import { io } from 'socket.io-client';
 import { Play } from 'lucide-react';
@@ -1032,7 +1032,8 @@ function ConversationPanel({
         </button>
       </div>
 
-      {/* ── Embudo comercial: ahora integrado como badge en el header (arriba) ── */}
+      {/* ── Barra visual del embudo comercial ── */}
+      <CommercialFunnelBar chat={chat} />
 
       {/* ── Área de mensajes ──
           FIX ANDROID: flex-1 + min-h-0 + overflow-y-auto + -webkit-overflow-scrolling: touch
